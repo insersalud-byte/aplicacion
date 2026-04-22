@@ -1223,6 +1223,45 @@ function SettingsPage({ data, updateData }) {
     alert('Configuración guardada');
   };
 
+  const handleBackup = () => {
+    const backup = {
+      version: 1,
+      date: new Date().toISOString(),
+      data
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `insersalud-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleRestore = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const backup = JSON.parse(event.target.result);
+        const restored = backup.data || backup;
+        if (!restored.patients || !restored.equipment) {
+          alert('Archivo de backup inválido');
+          return;
+        }
+        if (confirm(`¿Restaurar backup del ${backup.date ? new Date(backup.date).toLocaleString('es-AR') : 'archivo'}? Se reemplazarán todos los datos actuales.`)) {
+          updateData(restored);
+          alert('Datos restaurados correctamente');
+        }
+      } catch {
+        alert('Error al leer el archivo de backup');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
   const handleImport = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -1282,6 +1321,20 @@ function SettingsPage({ data, updateData }) {
     <div>
       <div className="page-header">
         <h1 className="page-title">Configuración</h1>
+      </div>
+
+      <div className="card">
+        <h3 className="card-title">💾 Backup y Restauración</h3>
+        <p style={{ color: '#5A6978', marginBottom: 16 }}>Guardá una copia de todos tus datos o restaurá desde un backup anterior.</p>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <button className="btn btn-primary" onClick={handleBackup}>
+            ⬇️ Descargar Backup
+          </button>
+          <label className="btn btn-secondary" style={{ cursor: 'pointer' }}>
+            ⬆️ Restaurar Backup
+            <input type="file" accept=".json" onChange={handleRestore} style={{ display: 'none' }} />
+          </label>
+        </div>
       </div>
 
       <div className="card">
