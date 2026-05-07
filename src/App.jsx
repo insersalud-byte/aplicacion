@@ -145,7 +145,7 @@ function HomePage({ data, updateData, setCurrentPage }) {
   
   const activeRentals = rentals.filter(r => r.status === 'activo');
   const expiringRentals = rentals.filter(r => r.status === 'activo' && r.endDate && getDaysUntilEnd(r.endDate) > 0 && getDaysUntilEnd(r.endDate) <= 7);
-  const expiredRentals = rentals.filter(r => r.status === 'activo' && r.endDate && new Date(r.endDate) < new Date(today));
+  const expiredRentals = rentals.filter(r => (r.status === 'activo' || r.status === 'vencido') && r.endDate && new Date(r.endDate) < new Date(today));
   const availableEquipment = equipment.filter(e => e.available);
   const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
   const monthlyTotal = monthlyRentals.reduce((sum, rental) => sum + Number(rental.price || 0), 0);
