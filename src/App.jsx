@@ -154,6 +154,40 @@ function HomePage({ data, updateData, setCurrentPage }) {
   ), 0);
   const monthlyPending = monthlyTotal - monthlyCollected;
 
+  const groupedMonthly = monthlyRentals.reduce((acc, rental) => {
+    const key = monthlyView === 'patient' ? rental.patientId : rental.equipmentId;
+    const fallbackLabel = monthlyView === 'patient' ? 'Sin paciente' : 'Sin equipo';
+    const source = monthlyView === 'patient' ? patients : equipment;
+    const entity = source.find(item => item.id === key);
+    const label = entity?.name || fallbackLabel;
+    const amount = Number(rental.price || 0);
+    const paid = isRentalPaidForMonth(rental, currentMonthKey);
+    const groupKey = key || fallbackLabel;
+
+    if (!acc[groupKey]) {
+      acc[groupKey] = {
+        id: groupKey,
+        label,
+        total: 0,
+        collected: 0,
+        pending: 0,
+        rentals: []
+      };
+    }
+
+    acc[groupKey].total += amount;
+    if (paid) {
+      acc[groupKey].collected += amount;
+    } else {
+      acc[groupKey].pending += amount;
+    }
+    acc[groupKey].rentals.push(rental);
+
+    return acc;
+  }, {});
+
+  const groupedMonthlyItems = Object.values(groupedMonthly).sort((a, b) => b.total - a.total);
+
   const handleToggleMonthlyPayment = (rentalId) => {
     updateData(currentData => ({
       ...currentData,
@@ -233,6 +267,50 @@ function HomePage({ data, updateData, setCurrentPage }) {
             <span className="monthly-summary-label">Alquileres del mes</span>
             <strong className="monthly-summary-value">{monthlyRentals.length}</strong>
           </div>
+        </div>
+
+        <div className="summary-toggle">
+          <button
+            type="button"
+            className={`filter-btn ${monthlyView === 'patient' ? 'active' : ''}`}
+            onClick={() => setMonthlyView('patient')}
+          >
+            Por paciente
+          </button>
+          <button
+            type="button"
+            className={`filter-btn ${monthlyView === 'equipment' ? 'active' : ''}`}
+            onClick={() => setMonthlyView('equipment')}
+          >
+            Por equipo
+          </button>
+        </div>
+
+        <div className="summary-groups">
+          {groupedMonthlyItems.length === 0 ? (
+            <div className="empty-state">
+              <div className="empty-title">No hay facturación para este mes</div>
+            </div>
+          ) : (
+            groupedMonthlyItems.slice(0, 6).map(item => (
+              <div key={item.id} className="summary-group-card">
+                <div className="summary-group-header">
+                  <div>
+                    <h4>{item.label}</h4>
+                    <p className="page-subtitle">{item.rentals.length} alquiler(es)</p>
+                  </div>
+                  <div className="summary-group-totals">
+                    <strong>{formatCurrency(item.total)}</strong>
+                    <span className="summary-group-pending">Pendiente: {formatCurrency(item.pending)}</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                  <span>🟢 Cobrado: {formatCurrency(item.collected)}</span>
+                  <span>🟡 Pendiente: {formatCurrency(item.pending)}</span>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </div>
 
