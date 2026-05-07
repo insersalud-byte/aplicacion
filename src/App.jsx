@@ -142,9 +142,26 @@ function HomePage({ data, updateData, setCurrentPage }) {
   const [showMonthlySummary, setShowMonthlySummary] = useState(false);
   const [monthlyView, setMonthlyView] = useState('patient');
   const currentMonthKey = getMonthKey(new Date());
+
+  // Actualizar automáticamente status de alquileres vencidos
+  useEffect(() => {
+    const expiredRentalsToUpdate = rentals.filter(r => 
+      r.status === 'activo' && r.endDate && new Date(r.endDate) < new Date(today)
+    );
+    
+    if (expiredRentalsToUpdate.length > 0) {
+      updateData(currentData => ({
+        ...currentData,
+        rentals: currentData.rentals.map(rental => {
+          const isExpired = rental.status === 'activo' && rental.endDate && new Date(rental.endDate) < new Date(today);
+          return isExpired ? { ...rental, status: 'vencido' } : rental;
+        })
+      }));
+    }
+  }, [rentals, today, updateData]);
   
   const activeRentals = rentals.filter(r => r.status === 'activo');
-  const expiringRentals = rentals.filter(r => r.status === 'activo' && r.endDate && getDaysUntilEnd(r.endDate) > 0 && getDaysUntilEnd(r.endDate) <= 7);
+  const expiringRentals = rentals.filter(r => r.status === 'activo' && r.endDate && getDaysUntilEnd(r.endDate) > 0 && getDaysUntilEnd(r.endDate) <= 2);
   const expiredRentals = rentals.filter(r => (r.status === 'activo' || r.status === 'vencido') && r.endDate && new Date(r.endDate) < new Date(today));
   const availableEquipment = equipment.filter(e => e.available);
   const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
