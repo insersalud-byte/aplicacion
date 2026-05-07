@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp } from './data/database';
+import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail } from './data/database';
 import './App.css';
 
 function getMonthKey(date = new Date()) {
@@ -2112,6 +2112,70 @@ function FacturacionPage({ data, updateData }) {
     }
   };
 
+  const saveInvoice = async () => {
+    if (cart.length === 0) {
+      alert('Agregue productos al carrito');
+      return;
+    }
+    
+    if (!selectedPatient) {
+      alert('Seleccione un paciente');
+      return;
+    }
+
+    const invoiceNumber = `FAC-${Date.now().toString(36).toUpperCase()}`;
+    const invoiceData = {
+      id: generateId(),
+      invoiceNumber,
+      date: getToday(),
+      patientId: selectedPatient,
+      clientName: selectedPatientData?.name || 'Cliente',
+      clientPhone: selectedPatientData?.phone || '',
+      clientAddress: selectedPatientData?.address || '',
+      items: cart,
+      total: cartTotal,
+      notes,
+      status: 'generada',
+      createdAt: getToday()
+    };
+
+    try {
+      const doc = await generateInvoicePDF(invoiceData, settings);
+      
+      // Guardar factura en histórico
+      const newInvoices = [...(data.invoices || []), invoiceData];
+      updateData({ ...data, invoices: newInvoices });
+      
+      // Descargar PDF automáticamente
+      downloadInvoicePDF(doc, invoiceNumber);
+      
+      alert(`Factura ${invoiceNumber} generada y guardada`);
+      clearCart();
+    } catch (error) {
+      console.error('Error generando PDF:', error);
+      alert('Error al generar la factura');
+    }
+  };
+
+  const sendInvoiceEmail = () => {
+    if (cart.length === 0) {
+      alert('Agregue productos al carrito');
+      return;
+    }
+    
+    if (!selectedPatient) {
+      alert('Seleccione un paciente');
+      return;
+    }
+
+    const invoiceNumber = `FAC-${Date.now().toString(36).toUpperCase()}`;
+    const email = selectedPatientData?.email || prompt('Ingrese correo electrónico:', '');
+    
+    if (email) {
+      sendInvoiceByEmail(email, invoiceNumber, selectedPatientData?.name, formatCurrency(cartTotal));
+    }
+  };
+
   const handleAddNewPatient = () => {
     if (!newPatient.name) {
       alert('Ingrese nombre del paciente');
@@ -2363,9 +2427,15 @@ function FacturacionPage({ data, updateData }) {
               />
             </div>
 
-            <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button className="btn btn-success" style={{ flex: 1 }} onClick={saveInvoice}>
+                📄 Generar & Descargar PDF
+              </button>
               <button className="btn btn-primary" style={{ flex: 1 }} onClick={sendViaWhatsApp}>
-                📱 Enviar por WhatsApp
+                📱 WhatsApp
+              </button>
+              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={sendInvoiceEmail}>
+                ✉️ Enviar por Mail
               </button>
               <button className="btn btn-danger" onClick={clearCart}>🗑️</button>
             </div>

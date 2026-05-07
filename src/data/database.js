@@ -7,10 +7,12 @@ export const initialData = {
   quotations: [],
   descartables: [],
   mascaras: [],
+  invoices: [],
   settings: {
     companyName: 'Inser Salud',
     companyPhone: '+54 11 1234-5678',
     companyAddress: 'Buenos Aires, Argentina',
+    companyEmail: 'info@insersalud.com',
     monthlyRentalPrice: 15000,
     dailyRentalPrice: 500,
     salePriceMultiplier: 3.5
@@ -156,4 +158,104 @@ export function sendWhatsApp(phone, message) {
   const formattedPhone = cleaned.startsWith('54') ? cleaned : '54' + cleaned;
   const encodedMessage = encodeURIComponent(message);
   window.open(`https://wa.me/${formattedPhone}?text=${encodedMessage}`, '_blank');
+}
+
+export async function generateInvoicePDF(invoiceData, settings) {
+  const { jsPDF } = await import('jspdf');
+  const html2canvas = (await import('html2canvas')).default;
+
+  const doc = new jsPDF('p', 'mm', 'a4');
+  const width = doc.internal.pageSize.getWidth();
+  const height = doc.internal.pageSize.getHeight();
+  
+  let y = 20;
+  
+  // Encabezado
+  doc.setFontSize(20);
+  doc.text(settings.companyName || 'FACTURA', width / 2, y, { align: 'center' });
+  y += 15;
+  
+  doc.setFontSize(10);
+  doc.text(`Fecha: ${formatDate(invoiceData.date)}`, 20, y);
+  doc.text(`N°: ${invoiceData.invoiceNumber}`, width - 40, y);
+  y += 10;
+  
+  if (settings.companyPhone) {
+    doc.text(`Tel: ${settings.companyPhone}`, 20, y);
+  }
+  if (settings.companyAddress) {
+    doc.text(`${settings.companyAddress}`, 20, y + 5);
+  }
+  y += 15;
+  
+  // Cliente
+  doc.setFontSize(11);
+  doc.text('CLIENTE:', 20, y);
+  y += 7;
+  doc.setFontSize(10);
+  doc.text(invoiceData.clientName, 20, y);
+  if (invoiceData.clientPhone) {
+    doc.text(`Tel: ${invoiceData.clientPhone}`, 20, y + 5);
+  }
+  if (invoiceData.clientAddress) {
+    doc.text(`Dir: ${invoiceData.clientAddress}`, 20, y + 10);
+  }
+  y += 20;
+  
+  // Tabla de ítems
+  doc.setFontSize(10);
+  doc.setFont(undefined, 'bold');
+  doc.text('Descripción', 20, y);
+  doc.text('Cant.', 120, y, { align: 'center' });
+  doc.text('Precio Unit.', 150, y, { align: 'center' });
+  doc.text('Total', 190, y, { align: 'right' });
+  y += 8;
+  
+  doc.setFont(undefined, 'normal');
+  invoiceData.items.forEach(item => {
+    const subtotal = item.price * item.quantity;
+    doc.text(item.name.substring(0, 60), 20, y);
+    doc.text(String(item.quantity), 120, y, { align: 'center' });
+    doc.text(formatCurrency(item.price), 150, y, { align: 'center' });
+    doc.text(formatCurrency(subtotal), 190, y, { align: 'right' });
+    y += 6;
+  });
+  
+  y += 5;
+  doc.setDrawColor(220, 220, 220);
+  doc.line(20, y, 200, y);
+  y += 8;
+  
+  // Totales
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(11);
+  doc.text(`TOTAL: ${formatCurrency(invoiceData.total)}`, width - 20, y, { align: 'right' });
+  
+  if (invoiceData.notes) {
+    y += 15;
+    doc.setFont(undefined, 'normal');
+    doc.setFontSize(9);
+    doc.text('Observaciones:', 20, y);
+    y += 5;
+    const splitNotes = doc.splitTextToSize(invoiceData.notes, 170);
+    doc.text(splitNotes, 20, y);
+  }
+  
+  return doc;
+}
+
+export function downloadInvoicePDF(doc, invoiceNumber) {
+  doc.save(`Factura_${invoiceNumber}.pdf`);
+}
+
+export function sendInvoiceByEmail(email, invoiceNumber, clientName, total) {
+  if (!email) {
+    alert('Ingrese un correo electrónico');
+    return;
+  }
+  
+  const subject = encodeURIComponent(`Factura ${invoiceNumber}`);
+  const body = encodeURIComponent(`Estimado/a ${clientName},\n\nAdjunto encontrará su factura N° ${invoiceNumber} por un total de ${total}.\n\nSaludos cordiales.`);
+  
+  window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
 }
