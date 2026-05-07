@@ -2,6 +2,37 @@ import { useState, useEffect } from 'react';
 import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp } from './data/database';
 import './App.css';
 
+function getMonthKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function formatMonthLabel(monthKey) {
+  const [year, month] = monthKey.split('-').map(Number);
+  return new Date(year, month - 1, 1).toLocaleDateString('es-AR', {
+    month: 'long',
+    year: 'numeric'
+  });
+}
+
+function isRentalInMonth(rental, monthKey) {
+  const [year, month] = monthKey.split('-').map(Number);
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month, 0, 23, 59, 59, 999);
+  const rentalStart = rental.startDate ? new Date(`${rental.startDate}T00:00:00`) : null;
+  const rentalEnd = rental.endDate ? new Date(`${rental.endDate}T23:59:59`) : null;
+
+  if (!rentalStart) return false;
+  if (rental.status === 'finalizado') return false;
+
+  return rentalStart <= monthEnd && (!rentalEnd || rentalEnd >= monthStart);
+}
+
+function isRentalPaidForMonth(rental, monthKey) {
+  return Boolean(rental.paymentStatusByMonth?.[monthKey]?.paid);
+}
+
 function App() {
   const [currentPage, setCurrentPage] = useState('home');
   const [data, setData] = useState(null);
@@ -13,9 +44,12 @@ function App() {
     setLoading(false);
   }, []);
 
-  const updateData = (newData) => {
-    setData(newData);
-    saveData(newData);
+  const updateData = (updater) => {
+    setData(currentData => {
+      const nextData = typeof updater === 'function' ? updater(currentData) : updater;
+      saveData(nextData);
+      return nextData;
+    });
   };
 
   if (loading || !data) {
@@ -24,7 +58,7 @@ function App() {
 
   const renderPage = () => {
     switch (currentPage) {
-      case 'home': return <HomePage data={data} setCurrentPage={setCurrentPage} />;
+      case 'home': return <HomePage data={data} updateData={updateData} setCurrentPage={setCurrentPage} />;
       case 'patients': return <PatientsPage data={data} updateData={updateData} />;
       case 'rentals': return <RentalsPage data={data} updateData={updateData} />;
       case 'equipment': return <EquipmentPage data={data} updateData={updateData} />;
@@ -34,7 +68,7 @@ function App() {
       case 'descartables': return <DescartablesPage data={data} updateData={updateData} />;
       case 'facturacion': return <FacturacionPage data={data} updateData={updateData} />;
       case 'settings': return <SettingsPage data={data} updateData={updateData} />;
-      default: return <HomePage data={data} setCurrentPage={setCurrentPage} />;
+      default: return <HomePage data={data} updateData={updateData} setCurrentPage={setCurrentPage} />;
     }
   };
 
@@ -102,14 +136,44 @@ function App() {
   );
 }
 
-function HomePage({ data, setCurrentPage }) {
-  const { patients, equipment, rentals, settings } = data;
+function HomePage({ data, updateData, setCurrentPage }) {
+  const { patients, equipment, rentals } = data;
   const today = getToday();
+  const [showMonthlySummary, setShowMonthlySummary] = useState(false);
+  const [monthlyView, setMonthlyView] = useState('patient');
+  const currentMonthKey = getMonthKey(new Date());
   
   const activeRentals = rentals.filter(r => r.status === 'activo');
   const expiringRentals = rentals.filter(r => r.status === 'activo' && r.endDate && getDaysUntilEnd(r.endDate) > 0 && getDaysUntilEnd(r.endDate) <= 7);
   const expiredRentals = rentals.filter(r => r.status === 'activo' && r.endDate && new Date(r.endDate) < new Date(today));
   const availableEquipment = equipment.filter(e => e.available);
+  const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
+  const monthlyTotal = monthlyRentals.reduce((sum, rental) => sum + Number(rental.price || 0), 0);
+  const monthlyCollected = monthlyRentals.reduce((sum, rental) => (
+    isRentalPaidForMonth(rental, currentMonthKey) ? sum + Number(rental.price || 0) : sum
+  ), 0);
+  const monthlyPending = monthlyTotal - monthlyCollected;
+
+  const handleToggleMonthlyPayment = (rentalId) => {
+    updateData(currentData => ({
+      ...currentData,
+      rentals: currentData.rentals.map(rental => {
+        if (rental.id !== rentalId) return rental;
+
+        const paid = !isRentalPaidForMonth(rental, currentMonthKey);
+        return {
+          ...rental,
+          paymentStatusByMonth: {
+            ...(rental.paymentStatusByMonth || {}),
+            [currentMonthKey]: {
+              paid,
+              updatedAt: new Date().toISOString()
+            }
+          }
+        };
+      })
+    }));
+  };
 
   return (
     <div>
@@ -138,6 +202,37 @@ function HomePage({ data, setCurrentPage }) {
           <div className="stat-icon">✓</div>
           <div className="stat-value">{availableEquipment.length}</div>
           <div className="stat-label">Equipos Disponibles</div>
+        </div>
+      </div>
+
+      <div className="card monthly-summary-card">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">Resumen mensual</h3>
+            <p className="page-subtitle">Control de cobro de {formatMonthLabel(currentMonthKey)}</p>
+          </div>
+          <button className="btn btn-primary" onClick={() => setShowMonthlySummary(true)}>
+            Ver detalle
+          </button>
+        </div>
+
+        <div className="monthly-summary-grid">
+          <div className="monthly-summary-item">
+            <span className="monthly-summary-label">Total del mes</span>
+            <strong className="monthly-summary-value">{formatCurrency(monthlyTotal)}</strong>
+          </div>
+          <div className="monthly-summary-item success">
+            <span className="monthly-summary-label">Cobrado</span>
+            <strong className="monthly-summary-value">{formatCurrency(monthlyCollected)}</strong>
+          </div>
+          <div className="monthly-summary-item warning">
+            <span className="monthly-summary-label">Falta cobrar</span>
+            <strong className="monthly-summary-value">{formatCurrency(monthlyPending)}</strong>
+          </div>
+          <div className="monthly-summary-item">
+            <span className="monthly-summary-label">Alquileres del mes</span>
+            <strong className="monthly-summary-value">{monthlyRentals.length}</strong>
+          </div>
         </div>
       </div>
 
@@ -185,6 +280,157 @@ function HomePage({ data, setCurrentPage }) {
             <div className="quick-action-label">Cotización</div>
           </div>
         </div>
+      </div>
+
+      {showMonthlySummary && (
+        <MonthlySummaryModal
+          rentals={rentals}
+          patients={patients}
+          equipment={equipment}
+          monthKey={currentMonthKey}
+          viewMode={monthlyView}
+          onChangeView={setMonthlyView}
+          onTogglePayment={handleToggleMonthlyPayment}
+          onClose={() => setShowMonthlySummary(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode, onChangeView, onTogglePayment, onClose }) {
+  const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, monthKey));
+  const totals = monthlyRentals.reduce((acc, rental) => {
+    const amount = Number(rental.price || 0);
+    const paid = isRentalPaidForMonth(rental, monthKey);
+
+    acc.total += amount;
+    if (paid) {
+      acc.collected += amount;
+    } else {
+      acc.pending += amount;
+    }
+
+    return acc;
+  }, { total: 0, collected: 0, pending: 0 });
+
+  const grouped = monthlyRentals.reduce((acc, rental) => {
+    const key = viewMode === 'patient' ? rental.patientId : rental.equipmentId;
+    const fallbackLabel = viewMode === 'patient' ? 'Sin paciente' : 'Sin equipo';
+    const source = viewMode === 'patient' ? patients : equipment;
+    const entity = source.find(item => item.id === key);
+    const label = entity?.name || fallbackLabel;
+    const amount = Number(rental.price || 0);
+    const paid = isRentalPaidForMonth(rental, monthKey);
+    const groupKey = key || fallbackLabel;
+
+    if (!acc[groupKey]) {
+      acc[groupKey] = {
+        id: groupKey,
+        label,
+        total: 0,
+        collected: 0,
+        pending: 0,
+        rentals: []
+      };
+    }
+
+    acc[groupKey].total += amount;
+    if (paid) {
+      acc[groupKey].collected += amount;
+    } else {
+      acc[groupKey].pending += amount;
+    }
+    acc[groupKey].rentals.push(rental);
+
+    return acc;
+  }, {});
+
+  const groupedItems = Object.values(grouped).sort((a, b) => b.total - a.total);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal monthly-modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <h2 className="modal-title">Resumen mensual</h2>
+            <p className="page-subtitle">{formatMonthLabel(monthKey)}</p>
+          </div>
+          <span className="modal-close" onClick={onClose}>×</span>
+        </div>
+
+        <div className="monthly-summary-grid">
+          <div className="monthly-summary-item">
+            <span className="monthly-summary-label">Total del mes</span>
+            <strong className="monthly-summary-value">{formatCurrency(totals.total)}</strong>
+          </div>
+          <div className="monthly-summary-item success">
+            <span className="monthly-summary-label">Cobrado</span>
+            <strong className="monthly-summary-value">{formatCurrency(totals.collected)}</strong>
+          </div>
+          <div className="monthly-summary-item warning">
+            <span className="monthly-summary-label">Falta cobrar</span>
+            <strong className="monthly-summary-value">{formatCurrency(totals.pending)}</strong>
+          </div>
+        </div>
+
+        <div className="summary-toggle">
+          <button type="button" className={`filter-btn ${viewMode === 'patient' ? 'active' : ''}`} onClick={() => onChangeView('patient')}>
+            Por paciente
+          </button>
+          <button type="button" className={`filter-btn ${viewMode === 'equipment' ? 'active' : ''}`} onClick={() => onChangeView('equipment')}>
+            Por equipo
+          </button>
+        </div>
+
+        {groupedItems.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-title">No hay alquileres para este mes</div>
+          </div>
+        ) : (
+          <div className="summary-groups">
+            {groupedItems.map(item => (
+              <div key={item.id} className="summary-group-card">
+                <div className="summary-group-header">
+                  <div>
+                    <h4>{item.label}</h4>
+                    <p className="page-subtitle">{item.rentals.length} alquiler(es)</p>
+                  </div>
+                  <div className="summary-group-totals">
+                    <strong>{formatCurrency(item.total)}</strong>
+                    <span className="summary-group-pending">Pendiente: {formatCurrency(item.pending)}</span>
+                  </div>
+                </div>
+
+                {item.rentals.map(rental => {
+                  const patient = patients.find(p => p.id === rental.patientId);
+                  const equip = equipment.find(e => e.id === rental.equipmentId);
+                  const paid = isRentalPaidForMonth(rental, monthKey);
+
+                  return (
+                    <div key={rental.id} className="summary-rental-row">
+                      <div>
+                        <div className="summary-rental-title">
+                          {patient?.name || 'Paciente'} - {equip?.name || 'Equipo'}
+                        </div>
+                        <div className="summary-rental-meta">
+                          {formatDate(rental.startDate)} | {formatCurrency(rental.price)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className={`btn btn-sm ${paid ? 'btn-success' : 'btn-outline'}`}
+                        onClick={() => onTogglePayment(rental.id)}
+                      >
+                        {paid ? 'Cobrado' : 'Marcar cobrado'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -334,7 +580,7 @@ function RentalsPage({ data, updateData }) {
     const newRentals = editingRental
       ? rentals.map(r => r.id === rental.id ? rental : r)
       : [...rentals, { ...rental, id: generateId(), createdAt: getToday() }];
-    updateData({ ...data, rentals: newRentals });
+    updateData(currentData => ({ ...currentData, rentals: newRentals }));
     setShowModal(false);
     setEditingRental(null);
   };
@@ -342,7 +588,7 @@ function RentalsPage({ data, updateData }) {
   const handleDelete = (id) => {
     if (confirm('¿Eliminar alquiler?')) {
       const newRentals = rentals.filter(r => r.id !== id);
-      updateData({ ...data, rentals: newRentals });
+      updateData(currentData => ({ ...currentData, rentals: newRentals }));
     }
   };
 
@@ -418,7 +664,10 @@ function RentalsPage({ data, updateData }) {
           onSave={handleSave} 
           onAddPatient={(patient) => {
             const newPatient = { ...patient, id: generateId(), createdAt: getToday() };
-            updateData({ ...data, patients: [...patients, newPatient] });
+            updateData(currentData => ({
+              ...currentData,
+              patients: [...currentData.patients, newPatient]
+            }));
             return newPatient;
           }}
           onClose={() => { setShowModal(false); setEditingRental(null); }} 
