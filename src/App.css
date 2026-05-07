@@ -279,23 +279,67 @@ body {
 /* Tables */
 .table-container {
   overflow-x: auto;
+  max-width: 100%;
 }
 
 .table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 800px;
 }
 
 .table th, .table td {
-  padding: 14px 16px;
+  padding: 12px 8px;
   text-align: left;
   border-bottom: 1px solid var(--blue-100);
+  white-space: nowrap;
 }
 
 .table th {
   font-weight: 600;
   color: var(--primary-dark);
   background: var(--blue-50);
+  font-size: 13px;
+}
+
+.table td {
+  font-size: 13px;
+}
+
+/* Column widths for rentals table */
+.table th:nth-child(1), .table td:nth-child(1) { /* Paciente */
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table th:nth-child(2), .table td:nth-child(2) { /* Equipo */
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table th:nth-child(3), .table td:nth-child(3) { /* Inicio */
+  width: 100px;
+}
+
+.table th:nth-child(4), .table td:nth-child(4) { /* Fin */
+  width: 100px;
+}
+
+.table th:nth-child(5), .table td:nth-child(5) { /* Precio */
+  width: 120px;
+  text-align: right;
+}
+
+.table th:nth-child(6), .table td:nth-child(6) { /* Estado */
+  width: 100px;
+  text-align: center;
+}
+
+.table th:nth-child(7), .table td:nth-child(7) { /* Acciones */
+  width: 120px;
+  text-align: center;
 }
 
 .table tr:hover {
