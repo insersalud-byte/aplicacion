@@ -1,0 +1,18 @@
+{
+  "patients": [],
+  "equipment": [],
+  "rentals": [],
+  "quotations": [],
+  "descartables": [],
+  "mascaras": [],
+  "invoices": [],
+  "settings": {
+    "companyName": "Inser Salud",
+    "companyPhone": "+54 11 1234-5678",
+    "companyAddress": "Buenos Aires, Argentina",
+    "companyEmail": "info@insersalud.com",
+    "monthlyRentalPrice": 15000,
+    "dailyRentalPrice": 500,
+    "salePriceMultiplier": 3.5
+  }
+}

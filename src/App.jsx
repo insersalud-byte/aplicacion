@@ -33,21 +33,89 @@ function isRentalPaidForMonth(rental, monthKey) {
   return Boolean(rental.paymentStatusByMonth?.[monthKey]?.paid);
 }
 
+function getMonthDateFromKey(monthKey) {
+  const [year, month] = monthKey.split('-').map(Number);
+  return new Date(year, month - 1, 1);
+}
+
+function getMonthDifferenceInclusive(startDate, endDate) {
+  if (!startDate || !endDate || startDate > endDate) return 0;
+
+  return (
+    (endDate.getFullYear() - startDate.getFullYear()) * 12 +
+    (endDate.getMonth() - startDate.getMonth()) +
+    1
+  );
+}
+
+function getRentalCoveredMonths(rental, referenceMonthKey) {
+  if (!rental.startDate) return 0;
+
+  const rentalStart = new Date(`${rental.startDate}T00:00:00`);
+  const startMonth = new Date(rentalStart.getFullYear(), rentalStart.getMonth(), 1);
+  const referenceMonth = getMonthDateFromKey(referenceMonthKey);
+  const rentalEnd = rental.endDate ? new Date(`${rental.endDate}T00:00:00`) : null;
+  const endMonth = rentalEnd
+    ? new Date(rentalEnd.getFullYear(), rentalEnd.getMonth(), 1)
+    : referenceMonth;
+  const effectiveEndMonth = endMonth < referenceMonth ? endMonth : referenceMonth;
+
+  return getMonthDifferenceInclusive(startMonth, effectiveEndMonth);
+}
+
+function getExplicitPaidMonthsCount(rental, referenceMonthKey) {
+  const referenceMonth = getMonthDateFromKey(referenceMonthKey);
+
+  return Object.entries(rental.paymentStatusByMonth || {}).filter(([monthKey, value]) => {
+    if (!value?.paid) return false;
+
+    const monthDate = getMonthDateFromKey(monthKey);
+    return isRentalInMonth(rental, monthKey) && monthDate <= referenceMonth;
+  }).length;
+}
+
+function getRentalCollectedMonths(rental, referenceMonthKey) {
+  const referenceMonth = getMonthDateFromKey(referenceMonthKey);
+  const rentalEnd = rental.endDate ? new Date(`${rental.endDate}T00:00:00`) : null;
+  const isUpToDate = rental.status === 'activo' && (!rentalEnd || rentalEnd >= referenceMonth);
+
+  if (isUpToDate || isRentalPaidForMonth(rental, referenceMonthKey)) {
+    return getRentalCoveredMonths(rental, referenceMonthKey);
+  }
+
+  return getExplicitPaidMonthsCount(rental, referenceMonthKey);
+}
+
+function getRentalCollectedAmount(rental, referenceMonthKey) {
+  return getRentalCollectedMonths(rental, referenceMonthKey) * Number(rental.price || 0);
+}
+
 function App() {
   const [currentPage, setCurrentPage] = useState('home');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const loaded = loadData();
-    setData(loaded);
-    setLoading(false);
+    let active = true;
+
+    const initializeData = async () => {
+      const loaded = await loadData();
+      if (!active) return;
+      setData(loaded);
+      setLoading(false);
+    };
+
+    initializeData();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const updateData = (updater) => {
     setData(currentData => {
       const nextData = typeof updater === 'function' ? updater(currentData) : updater;
-      saveData(nextData);
+      void saveData(nextData);
       return nextData;
     });
   };
@@ -68,6 +136,7 @@ function App() {
       case 'descartables': return <DescartablesPage data={data} updateData={updateData} />;
       case 'facturacion': return <FacturacionPage data={data} updateData={updateData} />;
       case 'settings': return <SettingsPage data={data} updateData={updateData} />;
+      case 'api': return <ApiPage />;
       default: return <HomePage data={data} updateData={updateData} setCurrentPage={setCurrentPage} />;
     }
   };
@@ -127,6 +196,7 @@ function App() {
           <span className="nav-icon">⚙️</span>
           <span className="nav-label">Configuración</span>
         </div>
+
       </nav>
       
       <main className="main-content">
@@ -179,6 +249,8 @@ function HomePage({ data, updateData, setCurrentPage }) {
     const label = entity?.name || fallbackLabel;
     const amount = Number(rental.price || 0);
     const paid = isRentalPaidForMonth(rental, currentMonthKey);
+    const collectedAmount = getRentalCollectedAmount(rental, currentMonthKey);
+    const collectedMonths = getRentalCollectedMonths(rental, currentMonthKey);
     const groupKey = key || fallbackLabel;
 
     if (!acc[groupKey]) {
@@ -187,15 +259,16 @@ function HomePage({ data, updateData, setCurrentPage }) {
         label,
         total: 0,
         collected: 0,
+        collectedMonths: 0,
         pending: 0,
         rentals: []
       };
     }
 
     acc[groupKey].total += amount;
-    if (paid) {
-      acc[groupKey].collected += amount;
-    } else {
+    acc[groupKey].collected += collectedAmount;
+    acc[groupKey].collectedMonths += collectedMonths;
+    if (!paid) {
       acc[groupKey].pending += amount;
     }
     acc[groupKey].rentals.push(rental);
@@ -322,8 +395,9 @@ function HomePage({ data, updateData, setCurrentPage }) {
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                  <span>🟢 Cobrado: {formatCurrency(item.collected)}</span>
-                  <span>🟡 Pendiente: {formatCurrency(item.pending)}</span>
+                  <span>Cobrado acumulado: {formatCurrency(item.collected)}</span>
+                  <span>Meses cobrados: {item.collectedMonths}</span>
+                  <span>Pendiente del mes: {formatCurrency(item.pending)}</span>
                 </div>
               </div>
             ))
@@ -374,6 +448,10 @@ function HomePage({ data, updateData, setCurrentPage }) {
             <div className="quick-action-icon">💰</div>
             <div className="quick-action-label">Cotización</div>
           </div>
+          <div className="quick-action" onClick={() => setCurrentPage('api')}>
+            <div className="quick-action-icon">🔌</div>
+            <div className="quick-action-label">API</div>
+          </div>
         </div>
       </div>
 
@@ -398,11 +476,11 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
   const totals = monthlyRentals.reduce((acc, rental) => {
     const amount = Number(rental.price || 0);
     const paid = isRentalPaidForMonth(rental, monthKey);
+    const collectedAmount = getRentalCollectedAmount(rental, monthKey);
 
     acc.total += amount;
-    if (paid) {
-      acc.collected += amount;
-    } else {
+    acc.collected += collectedAmount;
+    if (!paid) {
       acc.pending += amount;
     }
 
@@ -417,6 +495,8 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
     const label = entity?.name || fallbackLabel;
     const amount = Number(rental.price || 0);
     const paid = isRentalPaidForMonth(rental, monthKey);
+    const collectedAmount = getRentalCollectedAmount(rental, monthKey);
+    const collectedMonths = getRentalCollectedMonths(rental, monthKey);
     const groupKey = key || fallbackLabel;
 
     if (!acc[groupKey]) {
@@ -425,15 +505,16 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
         label,
         total: 0,
         collected: 0,
+        collectedMonths: 0,
         pending: 0,
         rentals: []
       };
     }
 
     acc[groupKey].total += amount;
-    if (paid) {
-      acc[groupKey].collected += amount;
-    } else {
+    acc[groupKey].collected += collectedAmount;
+    acc[groupKey].collectedMonths += collectedMonths;
+    if (!paid) {
       acc[groupKey].pending += amount;
     }
     acc[groupKey].rentals.push(rental);
@@ -460,11 +541,11 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
             <strong className="monthly-summary-value">{formatCurrency(totals.total)}</strong>
           </div>
           <div className="monthly-summary-item success">
-            <span className="monthly-summary-label">Cobrado</span>
+            <span className="monthly-summary-label">Cobrado acumulado</span>
             <strong className="monthly-summary-value">{formatCurrency(totals.collected)}</strong>
           </div>
           <div className="monthly-summary-item warning">
-            <span className="monthly-summary-label">Falta cobrar</span>
+            <span className="monthly-summary-label">Falta cobrar del mes</span>
             <strong className="monthly-summary-value">{formatCurrency(totals.pending)}</strong>
           </div>
         </div>
@@ -497,10 +578,18 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
                   </div>
                 </div>
 
+                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+                  <span>Cobrado acumulado: {formatCurrency(item.collected)}</span>
+                  <span>Meses cobrados: {item.collectedMonths}</span>
+                  <span>Pendiente del mes: {formatCurrency(item.pending)}</span>
+                </div>
+
                 {item.rentals.map(rental => {
                   const patient = patients.find(p => p.id === rental.patientId);
                   const equip = equipment.find(e => e.id === rental.equipmentId);
                   const paid = isRentalPaidForMonth(rental, monthKey);
+                  const collectedMonths = getRentalCollectedMonths(rental, monthKey);
+                  const collectedAmount = getRentalCollectedAmount(rental, monthKey);
 
                   return (
                     <div key={rental.id} className="summary-rental-row">
@@ -509,7 +598,7 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
                           {patient?.name || 'Paciente'} - {equip?.name || 'Equipo'}
                         </div>
                         <div className="summary-rental-meta">
-                          {formatDate(rental.startDate)} | {formatCurrency(rental.price)}
+                          {formatDate(rental.startDate)} | {formatCurrency(rental.price)} | {collectedMonths} mes(es) cobrados | {formatCurrency(collectedAmount)}
                         </div>
                       </div>
                       <button
@@ -873,14 +962,24 @@ function RentalModal({ rental, patients, equipment, onSave, onAddPatient, onClos
 }
 
 function EquipmentPage({ data, updateData }) {
-  const { equipment } = data;
+  const { equipment, rentals, patients } = data;
   const [filter, setFilter] = useState('todos');
   const [showModal, setShowModal] = useState(false);
   const [editingEquipment, setEditingEquipment] = useState(null);
 
+  const getCurrentRental = (equipId) => {
+    return rentals.find(r => r.equipmentId === equipId && (r.status === 'activo' || new Date(r.endDate) >= new Date()));
+  };
+
+  const getCurrentPatient = (equipId) => {
+    const rental = getCurrentRental(equipId);
+    return rental ? patients.find(p => p.id === rental.patientId) : null;
+  };
+
   const filteredEquipment = equipment.filter(e => {
     if (filter === 'todos') return true;
-    if (filter === 'disponible') return e.available;
+    if (filter === 'disponible') return !getCurrentRental(e.id);
+    if (filter === 'alquilado') return !!getCurrentRental(e.id);
     return e.status === filter;
   });
 
@@ -911,7 +1010,7 @@ function EquipmentPage({ data, updateData }) {
       <div className="filters">
         {['todos', 'disponible', 'alquilado', 'mantenimiento'].map(f => (
           <button key={f} className={`filter-btn ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
-            {f.charAt(0).toUpperCase() + f.slice(1)}
+            {f === 'disponible' ? '🟢 Disponible' : f === 'alquilado' ? '🔴 Alquilado' : f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
       </div>
@@ -937,11 +1036,14 @@ function EquipmentPage({ data, updateData }) {
                   <th>Tipo</th>
                   <th>Ownership</th>
                   <th>Estado</th>
+                  <th>Paciente actual</th>
                   <th>Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredEquipment.map(equip => (
+                {filteredEquipment.map(equip => {
+                  const currentPatient = getCurrentPatient(equip.id);
+                  return (
                   <tr key={equip.id}>
                     <td>
                       {equip.imageUrl ? (
@@ -962,7 +1064,10 @@ function EquipmentPage({ data, updateData }) {
                         {equip.ownership === 'propio' ? '🏠 Propio' : '📋 Alquilado'}
                       </span>
                     </td>
-                    <td><span className={`badge badge-${equip.status}`}>{equip.status}</span></td>
+                    <td><span className={`badge badge-${currentPatient ? 'active' : equip.status}`}>
+                      {currentPatient ? 'alquilado' : equip.status}
+                    </span></td>
+                    <td>{currentPatient ? currentPatient.name : '—'}</td>
                     <td>
                       <button className="btn btn-sm btn-secondary" onClick={() => { 
                           const duplicate = { ...equip, id: null, serialNumber: equip.serialNumber + '-COPY' };
@@ -973,7 +1078,8 @@ function EquipmentPage({ data, updateData }) {
                       <button className="btn btn-sm btn-danger" onClick={() => handleDelete(equip.id)}>🗑️</button>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1742,6 +1848,178 @@ function SettingsPage({ data, updateData }) {
       </div>
 
       <button className="btn btn-danger btn-block" onClick={handleClear}>🗑️ Borrar Todos los Datos</button>
+    </div>
+  );
+}
+
+function ApiPage() {
+  const baseUrl = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
+  const jsClientCode = `const API_BASE_URL = '${baseUrl}/api';
+
+async function api(path, options = {}) {
+  const response = await fetch(\`\${API_BASE_URL}\${path}\`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    },
+    ...options
+  });
+
+  if (!response.ok) {
+    throw new Error(\`API error \${response.status}\`);
+  }
+
+  return response.status === 204 ? null : response.json();
+}
+
+export async function getDatabase() {
+  return api('/db');
+}
+
+export async function getEquipment() {
+  return api('/equipment');
+}
+
+export async function getRentals() {
+  return api('/rentals');
+}
+
+export async function updateRentalPrice(id, price) {
+  return api(\`/rentals/\${id}\`, {
+    method: 'PATCH',
+    body: JSON.stringify({ price })
+  });
+}
+
+export async function updateMascaraPrice(id, price) {
+  return api(\`/mascaras/\${id}\`, {
+    method: 'PATCH',
+    body: JSON.stringify({ price })
+  });
+}
+
+export async function updateDescartablePrice(id, price) {
+  return api(\`/descartables/\${id}\`, {
+    method: 'PATCH',
+    body: JSON.stringify({ price })
+  });
+}`;
+  const assistantExampleCode = `import {
+  getDatabase,
+  getEquipment,
+  updateMascaraPrice
+} from './insersalud-api.js';
+
+async function main() {
+  const db = await getDatabase();
+  console.log('Pacientes:', db.patients.length);
+  console.log('Equipos:', db.equipment.length);
+
+  const equipment = await getEquipment();
+  console.log('Primer equipo:', equipment[0]);
+
+  await updateMascaraPrice('ID_DE_LA_MASCARA', 18000);
+  console.log('Precio actualizado');
+}
+
+main().catch(console.error);`;
+  const curlExamples = `curl ${baseUrl}/api/db
+
+curl -X PATCH ${baseUrl}/api/rentals/ID_DEL_ALQUILER ^
+  -H "Content-Type: application/json" ^
+  -d "{\\"price\\":25000}"
+
+curl -X PATCH ${baseUrl}/api/mascaras/ID_DE_LA_MASCARA ^
+  -H "Content-Type: application/json" ^
+  -d "{\\"price\\":18000}"`;
+
+  const handleCopy = async (text) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      alert('Contenido copiado');
+    } catch (error) {
+      alert('No se pudo copiar');
+    }
+  };
+
+  return (
+    <div>
+      <div className="page-header">
+        <h1 className="page-title">API</h1>
+        <p className="page-subtitle">Acceso para otro asistente o sistema externo</p>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">Base de la API</h3>
+            <p className="page-subtitle">Usar esta URL como punto de entrada desde otro programa</p>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={() => handleCopy(`${baseUrl}/api`)}>
+            Copiar URL
+          </button>
+        </div>
+        <div className="api-code-block">{baseUrl}/api</div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">Código para otro programa</h3>
+            <p className="page-subtitle">Copiar este archivo y usarlo para conectarse a esta aplicación</p>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => handleCopy(jsClientCode)}>
+            Copiar código JS
+          </button>
+        </div>
+        <pre className="api-code-block">{jsClientCode}</pre>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">Uso dentro de otro asistente</h3>
+            <p className="page-subtitle">Ejemplo real de cómo llamarlo desde un programa externo</p>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={() => handleCopy(assistantExampleCode)}>
+            Copiar ejemplo
+          </button>
+        </div>
+        <pre className="api-code-block">{assistantExampleCode}</pre>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">Comandos rápidos</h3>
+            <p className="page-subtitle">Pruebas directas para leer la base o cambiar precios</p>
+          </div>
+          <button className="btn btn-secondary btn-sm" onClick={() => handleCopy(curlExamples)}>
+            Copiar comandos
+          </button>
+        </div>
+        <pre className="api-code-block">{curlExamples}</pre>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3 className="card-title">Qué puede hacer</h3>
+            <p className="page-subtitle">Operaciones disponibles sobre la base de esta app</p>
+          </div>
+        </div>
+        <div className="api-endpoint-list">
+          {[
+            'Leer toda la base de datos',
+            'Leer equipos, alquileres, mascaras y descartables',
+            'Actualizar precios por id',
+            'Modificar configuracion general',
+            'Crear, editar y borrar registros por API'
+          ].map(item => (
+            <div key={item} className="api-endpoint-item">{item}</div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'insersalud_db';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 export const initialData = {
   patients: [],
@@ -19,23 +20,95 @@ export const initialData = {
   }
 };
 
-export function loadData() {
+function normalizeData(data = {}) {
+  return {
+    ...initialData,
+    ...data,
+    settings: {
+      ...initialData.settings,
+      ...(data.settings || {})
+    },
+    patients: Array.isArray(data.patients) ? data.patients : [],
+    equipment: Array.isArray(data.equipment) ? data.equipment : [],
+    rentals: Array.isArray(data.rentals) ? data.rentals : [],
+    quotations: Array.isArray(data.quotations) ? data.quotations : [],
+    descartables: Array.isArray(data.descartables) ? data.descartables : [],
+    mascaras: Array.isArray(data.mascaras) ? data.mascaras : [],
+    invoices: Array.isArray(data.invoices) ? data.invoices : []
+  };
+}
+
+function loadLocalData() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      return JSON.parse(saved);
+      return normalizeData(JSON.parse(saved));
     }
   } catch (e) {
     console.error('Error loading data:', e);
   }
-  return { ...initialData };
+  return normalizeData(initialData);
 }
 
-export function saveData(data) {
+function hasDataEntries(data) {
+  return ['patients', 'equipment', 'rentals', 'quotations', 'descartables', 'mascaras', 'invoices']
+    .some(key => Array.isArray(data[key]) && data[key].length > 0);
+}
+
+async function requestJson(path, options = {}) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    },
+    ...options
+  });
+
+  if (!response.ok) {
+    throw new Error(`API ${response.status}`);
+  }
+
+  return response.status === 204 ? null : response.json();
+}
+
+export async function loadData() {
+  const localData = loadLocalData();
+
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    const remoteData = normalizeData(await requestJson('/db'));
+
+    if (!hasDataEntries(remoteData) && hasDataEntries(localData)) {
+      await requestJson('/db', {
+        method: 'PUT',
+        body: JSON.stringify(localData)
+      });
+      return localData;
+    }
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteData));
+    return remoteData;
+  } catch (e) {
+    console.error('Error loading remote data, using local storage:', e);
+    return localData;
+  }
+}
+
+export async function saveData(data) {
+  const normalized = normalizeData(data);
+
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
   } catch (e) {
     console.error('Error saving data:', e);
+  }
+
+  try {
+    await requestJson('/db', {
+      method: 'PUT',
+      body: JSON.stringify(normalized)
+    });
+  } catch (e) {
+    console.error('Error saving remote data:', e);
   }
 }
 
