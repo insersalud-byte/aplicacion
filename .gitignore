@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Base de datos del servidor (persiste en el servidor, no sobreescribir con deploy)
+data/database.json
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
