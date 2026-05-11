@@ -209,8 +209,6 @@ function App() {
 function HomePage({ data, updateData, setCurrentPage }) {
   const { patients, equipment, rentals } = data;
   const today = getToday();
-  const [showMonthlySummary, setShowMonthlySummary] = useState(false);
-  const [monthlyView, setMonthlyView] = useState('patient');
   const currentMonthKey = getMonthKey(new Date());
 
   // Actualizar automáticamente status de alquileres vencidos
@@ -240,43 +238,6 @@ function HomePage({ data, updateData, setCurrentPage }) {
     isRentalPaidForMonth(rental, currentMonthKey) ? sum + Number(rental.price || 0) : sum
   ), 0);
   const monthlyPending = monthlyTotal - monthlyCollected;
-
-  const groupedMonthly = monthlyRentals.reduce((acc, rental) => {
-    const key = monthlyView === 'patient' ? rental.patientId : rental.equipmentId;
-    const fallbackLabel = monthlyView === 'patient' ? 'Sin paciente' : 'Sin equipo';
-    const source = monthlyView === 'patient' ? patients : equipment;
-    const entity = source.find(item => item.id === key);
-    const label = entity?.name || fallbackLabel;
-    const amount = Number(rental.price || 0);
-    const paid = isRentalPaidForMonth(rental, currentMonthKey);
-    const collectedAmount = getRentalCollectedAmount(rental, currentMonthKey);
-    const collectedMonths = getRentalCollectedMonths(rental, currentMonthKey);
-    const groupKey = key || fallbackLabel;
-
-    if (!acc[groupKey]) {
-      acc[groupKey] = {
-        id: groupKey,
-        label,
-        total: 0,
-        collected: 0,
-        collectedMonths: 0,
-        pending: 0,
-        rentals: []
-      };
-    }
-
-    acc[groupKey].total += amount;
-    acc[groupKey].collected += collectedAmount;
-    acc[groupKey].collectedMonths += collectedMonths;
-    if (!paid) {
-      acc[groupKey].pending += amount;
-    }
-    acc[groupKey].rentals.push(rental);
-
-    return acc;
-  }, {});
-
-  const groupedMonthlyItems = Object.values(groupedMonthly).sort((a, b) => b.total - a.total);
 
   const handleToggleMonthlyPayment = (rentalId) => {
     updateData(currentData => ({
@@ -335,9 +296,6 @@ function HomePage({ data, updateData, setCurrentPage }) {
             <h3 className="card-title">Resumen mensual</h3>
             <p className="page-subtitle">Control de cobro de {formatMonthLabel(currentMonthKey)}</p>
           </div>
-          <button className="btn btn-primary" onClick={() => setShowMonthlySummary(true)}>
-            Ver detalle
-          </button>
         </div>
 
         <div className="monthly-summary-grid">
@@ -359,50 +317,6 @@ function HomePage({ data, updateData, setCurrentPage }) {
           </div>
         </div>
 
-        <div className="summary-toggle">
-          <button
-            type="button"
-            className={`filter-btn ${monthlyView === 'patient' ? 'active' : ''}`}
-            onClick={() => setMonthlyView('patient')}
-          >
-            Por paciente
-          </button>
-          <button
-            type="button"
-            className={`filter-btn ${monthlyView === 'equipment' ? 'active' : ''}`}
-            onClick={() => setMonthlyView('equipment')}
-          >
-            Por equipo
-          </button>
-        </div>
-
-        <div className="summary-groups">
-          {groupedMonthlyItems.length === 0 ? (
-            <div className="empty-state">
-              <div className="empty-title">No hay facturación para este mes</div>
-            </div>
-          ) : (
-            groupedMonthlyItems.slice(0, 6).map(item => (
-              <div key={item.id} className="summary-group-card">
-                <div className="summary-group-header">
-                  <div>
-                    <h4>{item.label}</h4>
-                    <p className="page-subtitle">{item.rentals.length} alquiler(es)</p>
-                  </div>
-                  <div className="summary-group-totals">
-                    <strong>{formatCurrency(item.total)}</strong>
-                    <span className="summary-group-pending">Pendiente: {formatCurrency(item.pending)}</span>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                  <span>Cobrado acumulado: {formatCurrency(item.collected)}</span>
-                  <span>Meses cobrados: {item.collectedMonths}</span>
-                  <span>Pendiente del mes: {formatCurrency(item.pending)}</span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
       </div>
 
       {expiringRentals.length > 0 && (
@@ -410,20 +324,16 @@ function HomePage({ data, updateData, setCurrentPage }) {
           <div className="card-header">
             <h3 className="card-title">Próximos a Vencer</h3>
           </div>
-          {expiringRentals.slice(0, 3).map(rental => {
-            const patient = patients.find(p => p.id === rental.patientId);
-            const equip = equipment.find(e => e.id === rental.equipmentId);
-            return (
-              <div key={rental.id} className="patient-card">
-                <div className="patient-avatar">{(patient?.name || 'P').charAt(0)}</div>
-                <div className="patient-info">
-                  <div className="patient-name">{patient?.name || 'Paciente'}</div>
-                  <div className="patient-detail">{equip?.name || 'Equipo'}</div>
-                </div>
-                <span className="badge badge-por_vencer">{getDaysUntilEnd(rental.endDate)} días</span>
-              </div>
-            );
-          })}
+          <div className="monthly-summary-grid">
+            <div className="monthly-summary-item warning">
+              <span className="monthly-summary-label">Alquileres por vencer</span>
+              <strong className="monthly-summary-value">{expiringRentals.length}</strong>
+            </div>
+            <div className="monthly-summary-item">
+              <span className="monthly-summary-label">Ver detalle completo</span>
+              <strong className="monthly-summary-value">Entrá a Alquileres</strong>
+            </div>
+          </div>
         </div>
       )}
 
@@ -455,18 +365,6 @@ function HomePage({ data, updateData, setCurrentPage }) {
         </div>
       </div>
 
-      {showMonthlySummary && (
-        <MonthlySummaryModal
-          rentals={rentals}
-          patients={patients}
-          equipment={equipment}
-          monthKey={currentMonthKey}
-          viewMode={monthlyView}
-          onChangeView={setMonthlyView}
-          onTogglePayment={handleToggleMonthlyPayment}
-          onClose={() => setShowMonthlySummary(false)}
-        />
-      )}
     </div>
   );
 }
@@ -569,7 +467,7 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
               <div key={item.id} className="summary-group-card">
                 <div className="summary-group-header">
                   <div>
-                    <h4>{item.label}</h4>
+                    <h4>{viewMode === 'patient' ? 'Paciente' : 'Equipo'}</h4>
                     <p className="page-subtitle">{item.rentals.length} alquiler(es)</p>
                   </div>
                   <div className="summary-group-totals">
@@ -585,8 +483,6 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
                 </div>
 
                 {item.rentals.map(rental => {
-                  const patient = patients.find(p => p.id === rental.patientId);
-                  const equip = equipment.find(e => e.id === rental.equipmentId);
                   const paid = isRentalPaidForMonth(rental, monthKey);
                   const collectedMonths = getRentalCollectedMonths(rental, monthKey);
                   const collectedAmount = getRentalCollectedAmount(rental, monthKey);
@@ -595,7 +491,7 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
                     <div key={rental.id} className="summary-rental-row">
                       <div>
                         <div className="summary-rental-title">
-                          {patient?.name || 'Paciente'} - {equip?.name || 'Equipo'}
+                          {viewMode === 'patient' ? 'Alquiler del paciente' : 'Alquiler del equipo'}
                         </div>
                         <div className="summary-rental-meta">
                           {formatDate(rental.startDate)} | {formatCurrency(rental.price)} | {collectedMonths} mes(es) cobrados | {formatCurrency(collectedAmount)}
@@ -1260,49 +1156,47 @@ function MascarasPage({ data, updateData }) {
           <div className="empty-title">Sin Productos</div>
         </div>
       ) : (
-        <div className="card">
-          <div className="table-container">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Nombre</th>
-                  <th>Tipo</th>
-                  <th>Stock</th>
-                  <th>Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredMascaras.map(mascara => (
-                  <tr key={mascara.id}>
-                    <td>
-                      <strong>{mascara.name}</strong>
-                      {mascara.description && <div style={{ fontSize: 12, color: '#5A6978' }}>{mascara.description}</div>}
-                    </td>
-                    <td>{mascara.type}</td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                        <button className="btn btn-sm" onClick={() => updateStock(mascara.id, -1)}>➖</button>
-                        <span style={{ 
-                          minWidth: 40, 
-                          textAlign: 'center',
-                          color: mascara.stock <= mascara.minStock ? '#E53935' : '#43A047',
-                          fontWeight: 'bold'
-                        }}>
-                          {mascara.stock}
-                        </span>
-                        <button className="btn btn-sm" onClick={() => updateStock(mascara.id, 1)}>➕</button>
-                      </div>
-                    </td>
-                    <td>
-                      <button className="btn btn-sm btn-secondary" onClick={() => { setEditingMascara(mascara); setShowModal(true); }}>✏️</button>
-                      <button className="btn btn-sm btn-secondary" onClick={() => handleDuplicate(mascara)}>📋</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(mascara.id)}>🗑️</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 20 }}>
+          {filteredMascaras.map(mascara => (
+            <div key={mascara.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div style={{ width: '100%', height: 200, background: '#f0f4f8', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                {mascara.imageUrl ? (
+                  <img src={mascara.imageUrl} alt={mascara.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <span style={{ fontSize: 64 }}>😷</span>
+                )}
+              </div>
+              <div style={{ padding: '16px', flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div>
+                  <strong style={{ fontSize: 16 }}>{mascara.name}</strong>
+                  <div style={{ fontSize: 12, color: '#5A6978', marginTop: 2 }}>{mascara.type}</div>
+                  {mascara.description && <div style={{ fontSize: 12, color: '#5A6978', marginTop: 4 }}>{mascara.description}</div>}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
+                  <button className="btn btn-sm" onClick={() => updateStock(mascara.id, -1)}>➖</button>
+                  <span style={{
+                    minWidth: 44,
+                    textAlign: 'center',
+                    color: mascara.stock <= mascara.minStock ? '#E53935' : '#43A047',
+                    fontWeight: 'bold',
+                    fontSize: 20
+                  }}>
+                    {mascara.stock}
+                  </span>
+                  <button className="btn btn-sm" onClick={() => updateStock(mascara.id, 1)}>➕</button>
+                  <span style={{ fontSize: 11, color: '#9AA5B4', marginLeft: 4 }}>min: {mascara.minStock}</span>
+                </div>
+                {mascara.precio > 0 && (
+                  <div style={{ fontSize: 13, color: '#1565C0', fontWeight: 'bold' }}>{formatCurrency(mascara.precio)}</div>
+                )}
+                <div style={{ display: 'flex', gap: 6, marginTop: 'auto', paddingTop: 8 }}>
+                  <button className="btn btn-sm btn-secondary" style={{ flex: 1 }} onClick={() => { setEditingMascara(mascara); setShowModal(true); }}>✏️ Editar</button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => handleDuplicate(mascara)}>📋</button>
+                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(mascara.id)}>🗑️</button>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -1314,14 +1208,26 @@ function MascarasPage({ data, updateData }) {
 }
 
 function MascaraModal({ mascara, onSave, onClose }) {
-  const [form, setForm] = useState(mascara || { 
-    name: '', 
-    type: 'mascarilla', 
-    stock: 0, 
-    minStock: 5, 
+  const [form, setForm] = useState(mascara || {
+    name: '',
+    type: 'mascarilla',
+    stock: 0,
+    minStock: 5,
     description: '',
-    precio: 0
+    precio: 0,
+    imageUrl: ''
   });
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setForm({ ...form, imageUrl: reader.result });
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -1377,7 +1283,20 @@ function MascaraModal({ mascara, onSave, onClose }) {
             <label className="form-label">Descripción</label>
             <textarea className="form-textarea" value={form.description} onChange={e => setForm({...form, description: e.target.value})} />
           </div>
-          
+
+          <div className="form-group">
+            <label className="form-label">Foto del producto</label>
+            <input type="file" accept="image/*" onChange={handleImageUpload} className="form-input" />
+            {form.imageUrl && (
+              <div style={{ marginTop: 10, textAlign: 'center' }}>
+                <img src={form.imageUrl} alt="Preview" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8 }} />
+                <button type="button" className="btn btn-sm btn-danger" style={{ marginTop: 5 }} onClick={() => setForm({ ...form, imageUrl: '' })}>
+                  Eliminar foto
+                </button>
+              </div>
+            )}
+          </div>
+
           <button type="submit" className="btn btn-primary btn-block">Guardar</button>
         </form>
       </div>

@@ -55,6 +55,47 @@ function hasDataEntries(data) {
     .some(key => Array.isArray(data[key]) && data[key].length > 0);
 }
 
+function mergeCollection(localItems = [], remoteItems = [], identityKeys = []) {
+  const merged = [];
+  const seen = new Set();
+
+  const buildKey = (item) => {
+    if (!item) return null;
+    if (item.id) return `id:${item.id}`;
+
+    const identity = identityKeys
+      .map(key => `${key}:${String(item[key] ?? '').trim().toLowerCase()}`)
+      .join('|');
+
+    return identity ? `identity:${identity}` : null;
+  };
+
+  for (const item of [...localItems, ...remoteItems]) {
+    const key = buildKey(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+
+  return merged;
+}
+
+function mergeDataSources(localData, remoteData) {
+  return normalizeData({
+    patients: mergeCollection(localData.patients, remoteData.patients, ['name', 'phone', 'dni']),
+    equipment: mergeCollection(localData.equipment, remoteData.equipment, ['serialNumber', 'name']),
+    rentals: mergeCollection(localData.rentals, remoteData.rentals, ['patientId', 'equipmentId', 'startDate', 'endDate']),
+    quotations: mergeCollection(localData.quotations, remoteData.quotations, ['customerName', 'customerPhone', 'equipmentId', 'createdAt']),
+    descartables: mergeCollection(localData.descartables, remoteData.descartables, ['name', 'category', 'supplier']),
+    mascaras: mergeCollection(localData.mascaras, remoteData.mascaras, ['name', 'type']),
+    invoices: mergeCollection(localData.invoices, remoteData.invoices, ['invoiceNumber', 'date']),
+    settings: {
+      ...remoteData.settings,
+      ...localData.settings
+    }
+  });
+}
+
 async function requestJson(path, options = {}) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: {
@@ -76,6 +117,7 @@ export async function loadData() {
 
   try {
     const remoteData = normalizeData(await requestJson('/db'));
+    const mergedData = mergeDataSources(localData, remoteData);
 
     if (!hasDataEntries(remoteData) && hasDataEntries(localData)) {
       await requestJson('/db', {
@@ -85,8 +127,15 @@ export async function loadData() {
       return localData;
     }
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(remoteData));
-    return remoteData;
+    if (JSON.stringify(mergedData) !== JSON.stringify(remoteData)) {
+      await requestJson('/db', {
+        method: 'PUT',
+        body: JSON.stringify(mergedData)
+      });
+    }
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedData));
+    return mergedData;
   } catch (e) {
     console.error('Error loading remote data, using local storage:', e);
     return localData;
