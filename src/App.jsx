@@ -1305,7 +1305,7 @@ function MascaraModal({ mascara, onSave, onClose }) {
 }
 
 function QuotationsPage({ data, updateData }) {
-  const { quotations, equipment, settings } = data;
+  const { quotations, equipment, mascaras, settings } = data;
   const [showModal, setShowModal] = useState(false);
   const [editingQuotation, setEditingQuotation] = useState(null);
 
@@ -1396,16 +1396,21 @@ function QuotationsPage({ data, updateData }) {
       )}
 
       {showModal && (
-        <QuotationModal quotation={editingQuotation} equipment={equipment} onSave={handleSave} onClose={() => { setShowModal(false); setEditingQuotation(null); }} />
+        <QuotationModal quotation={editingQuotation} equipment={equipment} mascaras={mascaras || []} onSave={handleSave} onClose={() => { setShowModal(false); setEditingQuotation(null); }} />
       )}
     </div>
   );
 }
 
-function QuotationModal({ quotation, equipment, onSave, onClose }) {
+function QuotationModal({ quotation, equipment, mascaras, onSave, onClose }) {
   const [form, setForm] = useState(quotation || {
     customerName: '', customerPhone: '', equipmentId: '', type: 'alquiler', price: '', period: '', notes: ''
   });
+
+  const allItems = [
+    ...(equipment || []).map(e => ({ ...e, _kind: 'equipo' })),
+    ...(mascaras || []).map(m => ({ ...m, _kind: 'mascarilla' }))
+  ];
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -1413,8 +1418,8 @@ function QuotationModal({ quotation, equipment, onSave, onClose }) {
       alert('Completa los campos obligatorios');
       return;
     }
-    const eq = equipment.find(e => e.id === form.equipmentId);
-    onSave({ ...form, equipment: eq, price: Number(form.price) });
+    const item = allItems.find(i => i.id === form.equipmentId);
+    onSave({ ...form, equipment: item, price: Number(form.price) });
   };
 
   return (
@@ -1437,19 +1442,28 @@ function QuotationModal({ quotation, equipment, onSave, onClose }) {
           </div>
           
           <div className="form-group">
-            <label className="form-label">Equipo *</label>
+            <label className="form-label">Producto *</label>
             <select className="form-select" value={form.equipmentId} onChange={e => setForm({...form, equipmentId: e.target.value})} required>
               <option value="">Seleccionar...</option>
-              {equipment.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+              {equipment.length > 0 && (
+                <optgroup label="🔧 Equipos">
+                  {equipment.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </optgroup>
+              )}
+              {mascaras.length > 0 && (
+                <optgroup label="😷 Mascarillas">
+                  {mascaras.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                </optgroup>
+              )}
             </select>
             {form.equipmentId && (() => {
-              const eq = equipment.find(e => e.id === form.equipmentId);
-              return eq ? (
+              const item = allItems.find(i => i.id === form.equipmentId);
+              return item ? (
                 <div style={{ marginTop: 10 }}>
-                  {eq.imageUrl && (
-                    <img src={eq.imageUrl} alt={eq.name} style={{ maxWidth: '100%', maxHeight: 150, borderRadius: 8, marginBottom: 8 }} />
+                  {item.imageUrl && (
+                    <img src={item.imageUrl} alt={item.name} style={{ maxWidth: '100%', maxHeight: 150, borderRadius: 8, marginBottom: 8 }} />
                   )}
-                  {eq.description && <p style={{ fontSize: 13, color: '#5A6978' }}>{eq.description}</p>}
+                  {item.description && <p style={{ fontSize: 13, color: '#5A6978' }}>{item.description}</p>}
                 </div>
               ) : null;
             })()}
@@ -2158,7 +2172,7 @@ function DescartablesPage({ data, updateData }) {
 }
 
 function FacturacionPage({ data, updateData }) {
-  const { descartables, patients, settings } = data;
+  const { descartables, mascaras, patients, settings } = data;
   const [cart, setCart] = useState([]);
   const [selectedPatient, setSelectedPatient] = useState('');
   const [search, setSearch] = useState('');
@@ -2180,7 +2194,14 @@ function FacturacionPage({ data, updateData }) {
     { value: 'otros', label: '📦 Otros' }
   ];
 
-  const filteredProducts = descartables.filter(item => {
+  const mascarasAsProducts = (mascaras || []).map(m => ({
+    ...m,
+    category: 'mascarillas',
+    price: m.precio || 0
+  }));
+  const allProducts = [...descartables, ...mascarasAsProducts];
+
+  const filteredProducts = allProducts.filter(item => {
     const matchesSearch = item.name.toLowerCase().includes(search.toLowerCase());
     const matchesCategory = categoryFilter === 'todos' || item.category === categoryFilter;
     return matchesSearch && matchesCategory;
