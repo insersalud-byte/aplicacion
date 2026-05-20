@@ -300,22 +300,63 @@ function HomePage({ data, updateData, setCurrentPage }) {
         const list = activeFilter === 'activos' ? activeRentals : activeFilter === 'porVencer' ? expiringRentals : expiredRentals;
         const title = activeFilter === 'activos' ? 'Alquileres Activos' : activeFilter === 'porVencer' ? 'Por Vencer' : 'Vencidos';
         const color = activeFilter === 'activos' ? '#1E5AA8' : activeFilter === 'porVencer' ? '#F9A825' : '#E53935';
+        const isVencidos = activeFilter === 'vencidos';
+
+        const getUnpaidMonths = (rental) => {
+          if (!rental.endDate) return [];
+          const end = new Date(rental.endDate);
+          const now = new Date();
+          const months = [];
+          let d = new Date(end.getFullYear(), end.getMonth(), 1);
+          while (d <= now) {
+            const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+            if (!isRentalPaidForMonth(rental, mk)) months.push(mk);
+            d.setMonth(d.getMonth() + 1);
+          }
+          return months;
+        };
+
+        const handlePayMonth = (rentalId, mk) => {
+          updateData(currentData => ({
+            ...currentData,
+            rentals: currentData.rentals.map(r => {
+              if (r.id !== rentalId) return r;
+              return { ...r, paymentStatusByMonth: { ...(r.paymentStatusByMonth || {}), [mk]: { paid: true, updatedAt: new Date().toISOString() } } };
+            })
+          }));
+        };
+
         return list.length > 0 ? (
           <div className="card" style={{ borderTop: `3px solid ${color}` }}>
             <h3 className="card-title" style={{ color }}>{title} ({list.length})</h3>
             {list.map(r => {
               const pat = patients.find(p => p.id === r.patientId);
               const eq = equipment.find(e => e.id === r.equipmentId);
+              const unpaid = isVencidos ? getUnpaidMonths(r) : [];
               return (
-                <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #E3F2FD' }}>
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{pat?.name || 'Sin paciente'}</div>
-                    <div style={{ fontSize: 13, color: '#5A6978' }}>{eq?.name || 'Sin equipo'}</div>
+                <div key={r.id} style={{ padding: '10px 0', borderBottom: '1px solid #E3F2FD' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <div style={{ fontWeight: 600 }}>{pat?.name || 'Sin paciente'}</div>
+                      <div style={{ fontSize: 13, color: '#5A6978' }}>{eq?.name || 'Sin equipo'}</div>
+                    </div>
+                    <div style={{ textAlign: 'right' }}>
+                      <div style={{ fontWeight: 600, color }}>{formatCurrency(r.price)}/mes</div>
+                      <div style={{ fontSize: 12, color: '#5A6978' }}>Vence: {formatDate(r.endDate)}</div>
+                      {isVencidos && unpaid.length > 0 && (
+                        <div style={{ fontSize: 12, fontWeight: 700, color: '#E53935', marginTop: 2 }}>{unpaid.length} {unpaid.length === 1 ? 'mes' : 'meses'} sin pagar</div>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontWeight: 600, color }}>{formatCurrency(r.price)}/mes</div>
-                    <div style={{ fontSize: 12, color: '#5A6978' }}>Vence: {formatDate(r.endDate)}</div>
-                  </div>
+                  {isVencidos && unpaid.length > 0 && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                      {unpaid.map(mk => (
+                        <button key={mk} className="btn btn-sm btn-success" onClick={() => handlePayMonth(r.id, mk)} style={{ fontSize: 11, padding: '4px 8px' }}>
+                          Pagar {formatMonthLabel(mk)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               );
             })}
