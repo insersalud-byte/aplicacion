@@ -24,6 +24,7 @@ const initialData = {
   descartables: [],
   mascaras: [],
   invoices: [],
+  equiposNuevos: [],
   settings: {
     companyName: 'Inser Salud',
     companyPhone: '+54 11 1234-5678',
@@ -43,6 +44,7 @@ const collectionNames = [
   'descartables',
   'mascaras',
   'invoices',
+  'equiposNuevos',
 ];
 
 const settingsFields = [
@@ -63,6 +65,7 @@ const collectionFieldMap = {
   descartables: ['id', 'name', 'category', 'unit', 'price', 'stock', 'minStock', 'supplier', 'description', 'updatedAt'],
   mascaras: ['id', 'name', 'type', 'stock', 'minStock', 'description', 'precio', 'createdAt'],
   invoices: ['id', 'invoiceNumber', 'date', 'patientId', 'clientName', 'clientPhone', 'clientAddress', 'items', 'total', 'notes', 'status', 'createdAt'],
+  equiposNuevos: ['id', 'name', 'description', 'price', 'priceUsd', 'priceVentaUsd', 'imageUrl', 'stock', 'createdAt'],
 };
 
 function pickAllowedFields(source, allowedFields) {

@@ -1,3 +1,5 @@
+import { seedEquiposNuevos } from './seedEquiposNuevos';
+
 const STORAGE_KEY = 'insersalud_db';
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -9,7 +11,7 @@ export const initialData = {
   descartables: [],
   mascaras: [],
   invoices: [],
-  equiposNuevos: [],
+  equiposNuevos: seedEquiposNuevos,
   settings: {
     companyName: 'Inser Salud',
     companyPhone: '+54 11 1234-5678',
@@ -44,7 +46,11 @@ function loadLocalData() {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      return normalizeData(JSON.parse(saved));
+      const data = normalizeData(JSON.parse(saved));
+      if (!data.equiposNuevos || data.equiposNuevos.length === 0) {
+        data.equiposNuevos = seedEquiposNuevos;
+      }
+      return data;
     }
   } catch (e) {
     console.error('Error loading data:', e);
@@ -91,6 +97,7 @@ function mergeDataSources(localData, remoteData) {
     descartables: mergeCollection(localData.descartables, remoteData.descartables, ['name', 'category', 'supplier']),
     mascaras: mergeCollection(localData.mascaras, remoteData.mascaras, ['name', 'type']),
     invoices: mergeCollection(localData.invoices, remoteData.invoices, ['invoiceNumber', 'date']),
+    equiposNuevos: mergeCollection(localData.equiposNuevos, remoteData.equiposNuevos, ['name', 'price']),
     settings: {
       ...remoteData.settings,
       ...localData.settings

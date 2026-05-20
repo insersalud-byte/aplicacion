@@ -1325,8 +1325,10 @@ function EquiposNuevosPage({ data, updateData }) {
             <div key={eq.id} className="card" style={{ padding: 14 }}>
               {eq.imageUrl && <img src={eq.imageUrl} alt={eq.name} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, marginBottom: 10 }} />}
               <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{eq.name}</div>
-              {eq.description && <div style={{ fontSize: 13, color: '#5A6978', marginBottom: 6 }}>{eq.description}</div>}
-              <div style={{ fontSize: 18, fontWeight: 700, color: '#1E5AA8', marginBottom: 8 }}>{formatCurrency(eq.price)}</div>
+              {eq.description && <div style={{ fontSize: 13, color: '#5A6978', marginBottom: 4 }}>{eq.description}</div>}
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#1E5AA8' }}>{formatCurrency(eq.price)}</div>
+              {eq.priceUsd > 0 && <div style={{ fontSize: 13, color: '#43A047', fontWeight: 600 }}>USD {eq.priceUsd}</div>}
+              {eq.priceVentaUsd > 0 && <div style={{ fontSize: 12, color: '#5A6978', marginBottom: 8 }}>Venta: USD {eq.priceVentaUsd}</div>}
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn btn-sm btn-secondary" onClick={() => { setEditing(eq); setShowModal(true); }}>✏️</button>
                 <button className="btn btn-sm btn-danger" onClick={() => handleDelete(eq.id)}>🗑️</button>
@@ -1337,7 +1339,7 @@ function EquiposNuevosPage({ data, updateData }) {
       )}
       {showModal && (() => {
         const EquipoNuevoModal = () => {
-          const [form, setForm] = useState(editing || { name: '', description: '', price: '', imageUrl: '' });
+          const [form, setForm] = useState(editing || { name: '', description: '', price: '', priceUsd: '', priceVentaUsd: '', imageUrl: '' });
           const handleImg = (e) => {
             const file = e.target.files[0];
             if (file) { const r = new FileReader(); r.onloadend = () => setForm({ ...form, imageUrl: r.result }); r.readAsDataURL(file); }
@@ -1349,10 +1351,14 @@ function EquiposNuevosPage({ data, updateData }) {
                   <h2 className="modal-title">{editing ? 'Editar' : 'Nuevo'} Equipo</h2>
                   <span className="modal-close" onClick={() => { setShowModal(false); setEditing(null); }}>x</span>
                 </div>
-                <form onSubmit={e => { e.preventDefault(); if (!form.name) { alert('Nombre obligatorio'); return; } handleSave({ ...form, price: Number(form.price) }); }}>
+                <form onSubmit={e => { e.preventDefault(); if (!form.name) { alert('Nombre obligatorio'); return; } handleSave({ ...form, price: Number(form.price), priceUsd: Number(form.priceUsd || 0), priceVentaUsd: Number(form.priceVentaUsd || 0) }); }}>
                   <div className="form-group"><label className="form-label">Nombre *</label><input type="text" className="form-input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div>
-                  <div className="form-group"><label className="form-label">Descripcion</label><textarea className="form-textarea" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div>
-                  <div className="form-group"><label className="form-label">Precio</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
+                  <div className="form-group"><label className="form-label">Descripcion (Marca / Modelo)</label><textarea className="form-textarea" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div>
+                  <div className="form-group"><label className="form-label">Precio ARS</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                    <div className="form-group"><label className="form-label">Precio USD</label><input type="number" className="form-input" value={form.priceUsd || ''} onChange={e => setForm({...form, priceUsd: e.target.value})} /></div>
+                    <div className="form-group"><label className="form-label">Venta USD</label><input type="number" className="form-input" value={form.priceVentaUsd || ''} onChange={e => setForm({...form, priceVentaUsd: e.target.value})} /></div>
+                  </div>
                   <div className="form-group">
                     <label className="form-label">Foto</label>
                     <input type="file" accept="image/*" onChange={handleImg} className="form-input" />
