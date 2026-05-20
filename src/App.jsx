@@ -968,6 +968,7 @@ function RentalModal({ rental, patients, equipment, onSave, onAddPatient, onClos
 function EquipmentPage({ data, updateData }) {
   const { equipment, rentals, patients } = data;
   const [filter, setFilter] = useState('todos');
+  const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingEquipment, setEditingEquipment] = useState(null);
 
@@ -981,10 +982,18 @@ function EquipmentPage({ data, updateData }) {
   };
 
   const filteredEquipment = equipment.filter(e => {
-    if (filter === 'todos') return true;
-    if (filter === 'disponible') return !getCurrentRental(e.id);
-    if (filter === 'alquilado') return !!getCurrentRental(e.id);
-    return e.status === filter;
+    if (filter === 'disponible' && getCurrentRental(e.id)) return false;
+    if (filter === 'alquilado' && !getCurrentRental(e.id)) return false;
+    if (filter === 'mantenimiento' && e.status !== 'mantenimiento') return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const patient = getCurrentPatient(e.id);
+      const hayMatch = (e.name || '').toLowerCase().includes(q)
+        || (e.serialNumber || '').toLowerCase().includes(q)
+        || (patient?.name || '').toLowerCase().includes(q);
+      if (!hayMatch) return false;
+    }
+    return true;
   });
 
   const handleSave = (equip) => {
@@ -1011,6 +1020,10 @@ function EquipmentPage({ data, updateData }) {
         <p className="page-subtitle">{equipment.length} equipos registrados</p>
       </div>
 
+      <div className="card" style={{ padding: 12, marginBottom: 15 }}>
+        <input type="text" className="form-input" placeholder="Buscar por equipo, serie o paciente..." value={search} onChange={e => setSearch(e.target.value)} />
+      </div>
+
       <div className="filters">
         {['todos', 'disponible', 'alquilado', 'mantenimiento'].map(f => (
           <button key={f} className={`filter-btn ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
@@ -1029,64 +1042,41 @@ function EquipmentPage({ data, updateData }) {
           <div className="empty-title">Sin Equipos</div>
         </div>
       ) : (
-        <div className="card">
-          <div className="table-container">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Foto</th>
-                  <th>Nombre</th>
-                  <th>Serie</th>
-                  <th>Tipo</th>
-                  <th>Ownership</th>
-                  <th>Estado</th>
-                  <th>Paciente actual</th>
-                  <th>Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredEquipment.map(equip => {
-                  const currentPatient = getCurrentPatient(equip.id);
-                  return (
-                  <tr key={equip.id}>
-                    <td>
-                      {equip.imageUrl ? (
-                        <img src={equip.imageUrl} alt={equip.name} style={{ width: 50, height: 50, objectFit: 'cover', borderRadius: 4 }} />
-                      ) : (
-                        <span style={{ fontSize: 24 }}>🔧</span>
-                      )}
-                    </td>
-                    <td>{equip.name}</td>
-                    <td>{equip.serialNumber}</td>
-                    <td>{equip.type}</td>
-                    <td>
-                      <span style={{ 
-                        color: equip.ownership === 'propio' ? '#43A047' : '#E53935',
-                        fontWeight: 'bold',
-                        fontSize: 12
-                      }}>
-                        {equip.ownership === 'propio' ? '🏠 Propio' : '📋 Alquilado'}
-                      </span>
-                    </td>
-                    <td><span className={`badge badge-${currentPatient ? 'active' : equip.status}`}>
-                      {currentPatient ? 'alquilado' : equip.status}
-                    </span></td>
-                    <td>{currentPatient ? currentPatient.name : '—'}</td>
-                    <td>
-                      <button className="btn btn-sm btn-secondary" onClick={() => { 
-                          const duplicate = { ...equip, id: null, serialNumber: equip.serialNumber + '-COPY' };
-                          setEditingEquipment(duplicate); 
-                          setShowModal(true); 
-                        }}>📋</button>
-                      <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment(equip); setShowModal(true); }}>✏️</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(equip.id)}>🗑️</button>
-                    </td>
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          {filteredEquipment.map(equip => {
+            const currentPatient = getCurrentPatient(equip.id);
+            const isRented = !!currentPatient;
+            return (
+              <div key={equip.id} className="card" style={{ padding: 14, borderLeft: isRented ? '4px solid #E53935' : '4px solid #43A047' }}>
+                <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
+                  {equip.imageUrl ? (
+                    <img src={equip.imageUrl} alt={equip.name} style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
+                  ) : (
+                    <div style={{ width: 48, height: 48, borderRadius: 6, background: '#f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 22 }}>🔧</div>
+                  )}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: isRented ? '#E53935' : '#1a1a1a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{equip.name}</div>
+                    <div style={{ fontSize: 12, color: '#666' }}>Serie: {equip.serialNumber}</div>
+                    {equip.type && <div style={{ fontSize: 11, color: '#999' }}>{equip.type} {equip.ownership === 'propio' ? '| Propio' : '| Tercero'}</div>}
+                  </div>
+                </div>
+                {isRented ? (
+                  <div style={{ background: '#FFEBEE', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+                    <span style={{ color: '#E53935', fontWeight: 600, fontSize: 13 }}>Alquilado a: {currentPatient.name}</span>
+                  </div>
+                ) : (
+                  <div style={{ background: '#E8F5E9', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
+                    <span style={{ color: '#43A047', fontWeight: 600, fontSize: 13 }}>Disponible</span>
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment({ ...equip, id: null, serialNumber: equip.serialNumber + '-COPY' }); setShowModal(true); }}>📋</button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment(equip); setShowModal(true); }}>✏️</button>
+                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(equip.id)}>🗑️</button>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
