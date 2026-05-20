@@ -1441,6 +1441,30 @@ function QuotationsPage({ data, updateData }) {
     }
   };
 
+  const handleDownloadPDF = async (quote) => {
+    const number = `COT-${(quote.id || Date.now()).toString(36).toUpperCase()}`;
+    const invoiceData = {
+      invoiceNumber: number,
+      date: quote.createdAt || getToday(),
+      clientName: quote.customerName,
+      clientPhone: quote.customerPhone || '',
+      items: [{
+        name: `${quote.equipment?.name || 'Producto'} (${quote.type})`,
+        price: Number(quote.price) || 0,
+        quantity: 1
+      }],
+      total: Number(quote.price) || 0,
+      notes: quote.notes || ''
+    };
+    try {
+      const doc = await generateInvoicePDF(invoiceData, settings, 'cotizacion');
+      downloadInvoicePDF(doc, number, 'cotizacion');
+    } catch (err) {
+      console.error(err);
+      alert('Error al generar PDF');
+    }
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -1484,6 +1508,7 @@ function QuotationsPage({ data, updateData }) {
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
                   <button className="btn btn-success btn-sm" onClick={() => handleSend(quote)}>📱 WhatsApp</button>
+                  <button className="btn btn-primary btn-sm" onClick={() => handleDownloadPDF(quote)}>📄 PDF</button>
                   <button className="btn btn-secondary btn-sm" onClick={() => { setEditingQuotation(quote); setShowModal(true); }}>✏️</button>
                   <button className="btn btn-danger btn-sm" onClick={() => handleDelete(quote.id)}>🗑️</button>
                 </div>
@@ -2456,15 +2481,13 @@ function FacturacionPage({ data, updateData }) {
     };
 
     try {
-      const doc = await generateInvoicePDF(invoiceData, settings);
-      
-      // Guardar factura en histórico
+      const doc = await generateInvoicePDF(invoiceData, settings, 'factura');
+
       const newInvoices = [...(data.invoices || []), invoiceData];
       updateData({ ...data, invoices: newInvoices });
-      
-      // Descargar PDF automáticamente
-      downloadInvoicePDF(doc, invoiceNumber);
-      
+
+      downloadInvoicePDF(doc, invoiceNumber, 'factura');
+
       alert(`Factura ${invoiceNumber} generada y guardada`);
       clearCart();
     } catch (error) {

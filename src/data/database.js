@@ -282,102 +282,143 @@ export function sendWhatsApp(phone, message) {
   window.open(`https://wa.me/${formattedPhone}?text=${encodedMessage}`, '_blank');
 }
 
-export async function generateInvoicePDF(invoiceData, settings) {
+export async function generateInvoicePDF(invoiceData, settings, type = 'factura') {
   const { jsPDF } = await import('jspdf');
-  const html2canvas = (await import('html2canvas')).default;
 
   const doc = new jsPDF('p', 'mm', 'a4');
   const width = doc.internal.pageSize.getWidth();
   const height = doc.internal.pageSize.getHeight();
-  
-  let y = 20;
-  
-  // Encabezado
-  doc.setFontSize(20);
-  doc.text(settings.companyName || 'FACTURA', width / 2, y, { align: 'center' });
-  y += 15;
-  
-  doc.setFontSize(10);
-  doc.text(`Fecha: ${formatDate(invoiceData.date)}`, 20, y);
-  doc.text(`N°: ${invoiceData.invoiceNumber}`, width - 40, y);
-  y += 10;
-  
-  if (settings.companyPhone) {
-    doc.text(`Tel: ${settings.companyPhone}`, 20, y);
-  }
-  if (settings.companyAddress) {
-    doc.text(`${settings.companyAddress}`, 20, y + 5);
-  }
-  y += 15;
-  
-  // Cliente
-  doc.setFontSize(11);
-  doc.text('CLIENTE:', 20, y);
-  y += 7;
-  doc.setFontSize(10);
-  doc.text(invoiceData.clientName, 20, y);
-  if (invoiceData.clientPhone) {
-    doc.text(`Tel: ${invoiceData.clientPhone}`, 20, y + 5);
-  }
-  if (invoiceData.clientAddress) {
-    doc.text(`Dir: ${invoiceData.clientAddress}`, 20, y + 10);
-  }
-  y += 20;
-  
-  // Tabla de ítems
-  doc.setFontSize(10);
+  const isCotizacion = type === 'cotizacion';
+  const title = isCotizacion ? 'COTIZACION' : 'FACTURA';
+
+  let y = 15;
+
+  // Logo / Company name
+  doc.setFillColor(30, 90, 168);
+  doc.rect(0, 0, width, 45, 'F');
+
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(26);
   doc.setFont(undefined, 'bold');
-  doc.text('Descripción', 20, y);
-  doc.text('Cant.', 120, y, { align: 'center' });
-  doc.text('Precio Unit.', 150, y, { align: 'center' });
-  doc.text('Total', 190, y, { align: 'right' });
-  y += 8;
-  
+  doc.text(settings.companyName || 'INSER SALUD', width / 2, y + 5, { align: 'center' });
+  y += 12;
+  doc.setFontSize(10);
   doc.setFont(undefined, 'normal');
-  invoiceData.items.forEach(item => {
-    const subtotal = item.price * item.quantity;
-    doc.text(item.name.substring(0, 60), 20, y);
-    doc.text(String(item.quantity), 120, y, { align: 'center' });
-    doc.text(formatCurrency(item.price), 150, y, { align: 'center' });
-    doc.text(formatCurrency(subtotal), 190, y, { align: 'right' });
-    y += 6;
-  });
-  
+  if (settings.companyPhone) doc.text(`Tel: ${settings.companyPhone}`, width / 2, y + 5, { align: 'center' });
   y += 5;
-  doc.setDrawColor(220, 220, 220);
-  doc.line(20, y, 200, y);
-  y += 8;
-  
-  // Totales
+  if (settings.companyAddress) doc.text(settings.companyAddress, width / 2, y + 5, { align: 'center' });
+  y += 5;
+  if (settings.companyEmail) doc.text(settings.companyEmail, width / 2, y + 5, { align: 'center' });
+
+  // Title bar
+  y = 52;
+  doc.setTextColor(30, 90, 168);
+  doc.setFontSize(18);
   doc.setFont(undefined, 'bold');
+  doc.text(title, width / 2, y, { align: 'center' });
+  y += 10;
+
+  // Doc info
+  doc.setTextColor(60, 60, 60);
+  doc.setFontSize(10);
+  doc.setFont(undefined, 'normal');
+  doc.text(`Fecha: ${formatDate(invoiceData.date)}`, 20, y);
+  if (invoiceData.invoiceNumber) doc.text(`N°: ${invoiceData.invoiceNumber}`, width - 20, y, { align: 'right' });
+  y += 10;
+
+  // Separator
+  doc.setDrawColor(30, 90, 168);
+  doc.setLineWidth(0.5);
+  doc.line(20, y, width - 20, y);
+  y += 8;
+
+  // Client
   doc.setFontSize(11);
-  doc.text(`TOTAL: ${formatCurrency(invoiceData.total)}`, width - 20, y, { align: 'right' });
-  
+  doc.setFont(undefined, 'bold');
+  doc.text('CLIENTE', 20, y);
+  y += 7;
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(10);
+  if (invoiceData.clientName) doc.text(invoiceData.clientName, 20, y);
+  if (invoiceData.clientPhone) doc.text(`Tel: ${invoiceData.clientPhone}`, width - 20, y, { align: 'right' });
+  y += 6;
+  if (invoiceData.clientAddress) { doc.text(`Dir: ${invoiceData.clientAddress}`, 20, y); y += 6; }
+  y += 8;
+
+  // Table header
+  doc.setFillColor(240, 245, 250);
+  doc.rect(20, y - 4, width - 40, 8, 'F');
+  doc.setFontSize(9);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(30, 90, 168);
+  doc.text('Descripcion', 22, y);
+  doc.text('Cant.', 120, y, { align: 'center' });
+  doc.text('P. Unit.', 150, y, { align: 'center' });
+  doc.text('Subtotal', width - 22, y, { align: 'right' });
+  y += 8;
+
+  // Table rows
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(60, 60, 60);
+  invoiceData.items.forEach((item, i) => {
+    const subtotal = item.price * (item.quantity || 1);
+    if (i % 2 === 1) {
+      doc.setFillColor(248, 250, 252);
+      doc.rect(20, y - 4, width - 40, 7, 'F');
+    }
+    doc.text(String(item.name || '').substring(0, 55), 22, y);
+    doc.text(String(item.quantity || 1), 120, y, { align: 'center' });
+    doc.text(formatCurrency(item.price), 150, y, { align: 'center' });
+    doc.text(formatCurrency(subtotal), width - 22, y, { align: 'right' });
+    y += 7;
+  });
+
+  y += 3;
+  doc.setDrawColor(30, 90, 168);
+  doc.line(20, y, width - 20, y);
+  y += 8;
+
+  // Total
+  doc.setFont(undefined, 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(30, 90, 168);
+  doc.text(`TOTAL: ${formatCurrency(invoiceData.total)}`, width - 22, y, { align: 'right' });
+
   if (invoiceData.notes) {
-    y += 15;
+    y += 12;
     doc.setFont(undefined, 'normal');
     doc.setFontSize(9);
+    doc.setTextColor(100, 100, 100);
     doc.text('Observaciones:', 20, y);
     y += 5;
     const splitNotes = doc.splitTextToSize(invoiceData.notes, 170);
     doc.text(splitNotes, 20, y);
   }
-  
+
+  // Footer - "Sin valor fiscal" for facturas
+  if (!isCotizacion) {
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.setFont(undefined, 'italic');
+    doc.text('Sin valor fiscal', width / 2, height - 10, { align: 'center' });
+  }
+
   return doc;
 }
 
-export function downloadInvoicePDF(doc, invoiceNumber) {
-  doc.save(`Factura_${invoiceNumber}.pdf`);
+export function downloadInvoicePDF(doc, number, type = 'factura') {
+  const prefix = type === 'cotizacion' ? 'Cotizacion' : 'Factura';
+  doc.save(`${prefix}_${number}.pdf`);
 }
 
 export function sendInvoiceByEmail(email, invoiceNumber, clientName, total) {
   if (!email) {
-    alert('Ingrese un correo electrónico');
+    alert('Ingrese un correo electronico');
     return;
   }
-  
+
   const subject = encodeURIComponent(`Factura ${invoiceNumber}`);
-  const body = encodeURIComponent(`Estimado/a ${clientName},\n\nAdjunto encontrará su factura N° ${invoiceNumber} por un total de ${total}.\n\nSaludos cordiales.`);
-  
+  const body = encodeURIComponent(`Estimado/a ${clientName},\n\nAdjunto encontrara su factura N° ${invoiceNumber} por un total de ${total}.\n\nSaludos cordiales.`);
+
   window.location.href = `mailto:${email}?subject=${subject}&body=${body}`;
 }
