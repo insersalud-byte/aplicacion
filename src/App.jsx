@@ -794,10 +794,11 @@ function RentalsPage({ data, updateData }) {
       )}
 
       {showModal && (
-        <RentalModal 
-          rental={editingRental} 
-          patients={patients} 
-          equipment={equipment} 
+        <RentalModal
+          rental={editingRental}
+          patients={patients}
+          equipment={equipment}
+          rentals={rentals}
           onSave={handleSave} 
           onAddPatient={(patient) => {
             const newPatient = { ...patient, id: generateId(), createdAt: getToday() };
@@ -823,7 +824,7 @@ function nextMonthDate(start) {
   return `${ny}-${String(nm).padStart(2, '0')}-${String(Math.min(d, maxDay)).padStart(2, '0')}`;
 }
 
-function RentalModal({ rental, patients, equipment, onSave, onAddPatient, onClose }) {
+function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatient, onClose }) {
   const isEditing = Boolean(rental);
   const [form, setForm] = useState(() => {
     if (rental) return rental;
@@ -890,6 +891,9 @@ function RentalModal({ rental, patients, equipment, onSave, onAddPatient, onClos
     }));
     onSave(rentalsToCreate);
   };
+
+  const rentedEquipIds = new Set((rentals || []).filter(r => r.status === 'activo' || (r.endDate && new Date(r.endDate) >= new Date())).map(r => r.equipmentId));
+  const availableEquipment = isEditing ? equipment : equipment.filter(e => !rentedEquipIds.has(e.id));
 
   const handleAddNewPatient = () => {
     if (!newPatient.name) {
@@ -961,7 +965,7 @@ function RentalModal({ rental, patients, equipment, onSave, onAddPatient, onClos
               <label className="form-label">Equipos *</label>
               {items.map((it, idx) => {
                 const usedIds = items.filter((_, i) => i !== idx).map(x => x.equipmentId).filter(Boolean);
-                const options = equipment.filter(e => !usedIds.includes(e.id));
+                const options = availableEquipment.filter(e => !usedIds.includes(e.id));
                 return (
                   <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 140px 110px auto', gap: 6, marginBottom: 8, alignItems: 'center' }}>
                     <select className="form-select" value={it.equipmentId} onChange={e => updateItem(idx, { equipmentId: e.target.value })} required>
