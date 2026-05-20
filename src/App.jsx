@@ -131,6 +131,7 @@ function App() {
       case 'rentals': return <RentalsPage data={data} updateData={updateData} />;
       case 'equipment': return <EquipmentPage data={data} updateData={updateData} />;
       case 'mascaras': return <MascarasPage data={data} updateData={updateData} />;
+      case 'equiposNuevos': return <EquiposNuevosPage data={data} updateData={updateData} />;
       case 'quotations': return <QuotationsPage data={data} updateData={updateData} />;
       case 'calendar': return <CalendarPage data={data} />;
       case 'descartables': return <DescartablesPage data={data} updateData={updateData} />;
@@ -171,7 +172,12 @@ function App() {
           <span className="nav-icon">😷</span>
           <span className="nav-label">Mascarillas</span>
         </div>
-        
+
+        <div className={`nav-item ${currentPage === 'equiposNuevos' ? 'active' : ''}`} onClick={() => setCurrentPage('equiposNuevos')}>
+          <span className="nav-icon">🆕</span>
+          <span className="nav-label">Equipos Nuevos</span>
+        </div>
+
         <div className={`nav-item ${currentPage === 'quotations' ? 'active' : ''}`} onClick={() => setCurrentPage('quotations')}>
           <span className="nav-icon">💰</span>
           <span className="nav-label">Cotizaciones</span>
@@ -1265,6 +1271,91 @@ function EquipmentModal({ equipment, onSave, onClose }) {
   );
 }
 
+function EquiposNuevosPage({ data, updateData }) {
+  const { equiposNuevos } = data;
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [search, setSearch] = useState('');
+
+  const filtered = (equiposNuevos || []).filter(e => !search || (e.name || '').toLowerCase().includes(search.toLowerCase()));
+
+  const handleSave = (item) => {
+    const list = equiposNuevos || [];
+    const updated = item.id ? list.map(e => e.id === item.id ? item : e) : [...list, { ...item, id: generateId() }];
+    updateData({ ...data, equiposNuevos: updated });
+    setShowModal(false);
+    setEditing(null);
+  };
+
+  const handleDelete = (id) => {
+    if (confirm('¿Eliminar equipo?')) {
+      updateData({ ...data, equiposNuevos: (equiposNuevos || []).filter(e => e.id !== id) });
+    }
+  };
+
+  return (
+    <div>
+      <div className="page-header">
+        <h1 className="page-title">Equipos Nuevos</h1>
+        <p className="page-subtitle">{(equiposNuevos || []).length} equipos en catalogo</p>
+      </div>
+      <div className="card" style={{ padding: 12, marginBottom: 15 }}>
+        <input type="text" className="form-input" placeholder="Buscar equipo..." value={search} onChange={e => setSearch(e.target.value)} />
+      </div>
+      <button className="btn btn-primary btn-block" onClick={() => { setEditing(null); setShowModal(true); }} style={{ marginBottom: 20 }}>+ Agregar Equipo Nuevo</button>
+      {filtered.length === 0 ? (
+        <div className="empty-state"><div className="empty-icon">🆕</div><div className="empty-title">Sin equipos nuevos</div></div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          {filtered.map(eq => (
+            <div key={eq.id} className="card" style={{ padding: 14 }}>
+              {eq.imageUrl && <img src={eq.imageUrl} alt={eq.name} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, marginBottom: 10 }} />}
+              <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{eq.name}</div>
+              {eq.description && <div style={{ fontSize: 13, color: '#5A6978', marginBottom: 6 }}>{eq.description}</div>}
+              <div style={{ fontSize: 18, fontWeight: 700, color: '#1E5AA8', marginBottom: 8 }}>{formatCurrency(eq.price)}</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn btn-sm btn-secondary" onClick={() => { setEditing(eq); setShowModal(true); }}>✏️</button>
+                <button className="btn btn-sm btn-danger" onClick={() => handleDelete(eq.id)}>🗑️</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {showModal && (() => {
+        const EquipoNuevoModal = () => {
+          const [form, setForm] = useState(editing || { name: '', description: '', price: '', imageUrl: '' });
+          const handleImg = (e) => {
+            const file = e.target.files[0];
+            if (file) { const r = new FileReader(); r.onloadend = () => setForm({ ...form, imageUrl: r.result }); r.readAsDataURL(file); }
+          };
+          return (
+            <div className="modal-overlay" onClick={() => { setShowModal(false); setEditing(null); }}>
+              <div className="modal" onClick={e => e.stopPropagation()}>
+                <div className="modal-header">
+                  <h2 className="modal-title">{editing ? 'Editar' : 'Nuevo'} Equipo</h2>
+                  <span className="modal-close" onClick={() => { setShowModal(false); setEditing(null); }}>x</span>
+                </div>
+                <form onSubmit={e => { e.preventDefault(); if (!form.name) { alert('Nombre obligatorio'); return; } handleSave({ ...form, price: Number(form.price) }); }}>
+                  <div className="form-group"><label className="form-label">Nombre *</label><input type="text" className="form-input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div>
+                  <div className="form-group"><label className="form-label">Descripcion</label><textarea className="form-textarea" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div>
+                  <div className="form-group"><label className="form-label">Precio</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
+                  <div className="form-group">
+                    <label className="form-label">Foto</label>
+                    <input type="file" accept="image/*" onChange={handleImg} className="form-input" />
+                    {form.imageUrl && <div style={{ marginTop: 10, textAlign: 'center' }}><img src={form.imageUrl} alt="Preview" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8 }} /><button type="button" className="btn btn-sm btn-danger" style={{ marginTop: 5 }} onClick={() => setForm({ ...form, imageUrl: '' })}>Eliminar foto</button></div>}
+                  </div>
+                  <button type="submit" className="btn btn-primary btn-block">Guardar</button>
+                </form>
+              </div>
+            </div>
+          );
+        };
+        return <EquipoNuevoModal />;
+      })()}
+    </div>
+  );
+}
+
 function MascarasPage({ data, updateData }) {
   const { mascaras } = data;
   const [filter, setFilter] = useState('todos');
@@ -1485,219 +1576,230 @@ function MascaraModal({ mascara, onSave, onClose }) {
   );
 }
 
-function QuotationsPage({ data, updateData }) {
-  const { quotations, equipment, mascaras, settings } = data;
-  const [showModal, setShowModal] = useState(false);
-  const [editingQuotation, setEditingQuotation] = useState(null);
+function SalesCartPage({ data, updateData, pageType }) {
+  const { equipment, mascaras, descartables, equiposNuevos, patients, settings, quotations, invoices } = data;
+  const isCotizacion = pageType === 'cotizacion';
+  const title = isCotizacion ? 'Cotizaciones' : 'Facturacion';
+  const collectionKey = isCotizacion ? 'quotations' : 'invoices';
+  const savedItems = isCotizacion ? (quotations || []) : (invoices || []);
 
-  const handleSave = (quotation) => {
-    const newQuotations = editingQuotation
-      ? quotations.map(q => q.id === quotation.id ? quotation : q)
-      : [...quotations, { ...quotation, id: generateId(), createdAt: getToday() }];
-    updateData({ ...data, quotations: newQuotations });
-    setShowModal(false);
-    setEditingQuotation(null);
-  };
+  const [cart, setCart] = useState([]);
+  const [customerName, setCustomerName] = useState('');
+  const [customerPhone, setCustomerPhone] = useState('');
+  const [notes, setNotes] = useState('');
+  const [search, setSearch] = useState('');
+  const [category, setCategory] = useState('todos');
+  const [showLibre, setShowLibre] = useState(false);
+  const [libreItem, setLibreItem] = useState({ name: '', price: 0, quantity: 1 });
 
-  const handleSend = (quotation) => {
-    let message = `*COTIZACIÓN*\n`;
-    message += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    message += `*Equipo:* ${quotation.equipment?.name || 'Equipo'}\n`;
-    if (quotation.equipment?.description) {
-      message += `*Descripción:* ${quotation.equipment.description}\n`;
+  const categories = [
+    { value: 'todos', label: 'Todos' },
+    { value: 'equipos', label: '🔧 Equipos' },
+    { value: 'equiposNuevos', label: '🆕 Equipos Nuevos' },
+    { value: 'mascarillas', label: '😷 Mascarillas' },
+    { value: 'descartables', label: '🧤 Descartables' }
+  ];
+
+  const allProducts = [
+    ...(equipment || []).map(e => ({ ...e, _cat: 'equipos', _label: 'Equipo' })),
+    ...(equiposNuevos || []).map(e => ({ ...e, _cat: 'equiposNuevos', _label: 'Equipo Nuevo' })),
+    ...(mascaras || []).map(m => ({ ...m, price: m.precio || m.price || 0, _cat: 'mascarillas', _label: 'Mascarilla' })),
+    ...(descartables || []).map(d => ({ ...d, _cat: 'descartables', _label: 'Descartable' }))
+  ];
+
+  const filtered = allProducts.filter(p => {
+    if (category !== 'todos' && p._cat !== category) return false;
+    if (search && !(p.name || '').toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const addToCart = (product) => {
+    const existing = cart.find(c => c.id === product.id);
+    if (existing) {
+      setCart(cart.map(c => c.id === product.id ? { ...c, quantity: c.quantity + 1 } : c));
+    } else {
+      setCart([...cart, { ...product, quantity: 1, price: Number(product.price) || 0 }]);
     }
-    message += `*Tipo:* ${quotation.type}\n`;
-    message += `*Precio:* ${formatCurrency(quotation.price)}${quotation.type === 'alquiler' ? '/mes' : ''}\n\n`;
-    message += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    message += `*Cliente:* ${quotation.customerName}\n`;
-    if (quotation.customerPhone) message += `*Tel:* ${quotation.customerPhone}\n`;
-    message += `\n📞 ${settings.companyPhone}\n`;
-    if (settings.companyAddress) message += `${settings.companyAddress}\n`;
-    
-    sendWhatsApp(quotation.customerPhone, message);
   };
 
-  const handleDelete = (id) => {
-    if (confirm('¿Eliminar cotización?')) {
-      const newQuotations = quotations.filter(q => q.id !== id);
-      updateData({ ...data, quotations: newQuotations });
-    }
+  const addLibre = () => {
+    if (!libreItem.name || libreItem.price <= 0) { alert('Ingrese nombre y precio'); return; }
+    setCart([...cart, { id: 'libre-' + Date.now(), name: libreItem.name, price: Number(libreItem.price), quantity: Number(libreItem.quantity) || 1, _cat: 'libre', _label: 'Item libre' }]);
+    setLibreItem({ name: '', price: 0, quantity: 1 });
+    setShowLibre(false);
   };
 
-  const handleDownloadPDF = async (quote) => {
-    const number = `COT-${(quote.id || Date.now()).toString(36).toUpperCase()}`;
+  const updateCartItem = (id, field, value) => setCart(cart.map(c => c.id === id ? { ...c, [field]: value } : c));
+  const removeFromCart = (id) => setCart(cart.filter(c => c.id !== id));
+  const clearCart = () => { setCart([]); setCustomerName(''); setCustomerPhone(''); setNotes(''); };
+  const cartTotal = cart.reduce((s, c) => s + (c.price * c.quantity), 0);
+
+  const buildWhatsAppMsg = () => {
+    const prefix = isCotizacion ? 'COTIZACION' : 'FACTURA';
+    let msg = `*${settings.companyName || 'Inser Salud'}*\n*${prefix}*\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    if (customerName) msg += `*Cliente:* ${customerName}\n`;
+    if (customerPhone) msg += `*Tel:* ${customerPhone}\n`;
+    msg += `\n*DETALLE:*\n`;
+    cart.forEach(c => { msg += `- ${c.name} x${c.quantity} = ${formatCurrency(c.price * c.quantity)}\n`; });
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
+    msg += `*TOTAL: ${formatCurrency(cartTotal)}*\n`;
+    if (notes) msg += `\n*Obs:* ${notes}\n`;
+    msg += `\n${settings.companyPhone || ''}\n${settings.companyAddress || ''}`;
+    return msg;
+  };
+
+  const handleWhatsApp = () => {
+    if (cart.length === 0) { alert('Agregue productos'); return; }
+    sendWhatsApp(customerPhone, buildWhatsAppMsg());
+  };
+
+  const handlePDF = async () => {
+    if (cart.length === 0) { alert('Agregue productos'); return; }
+    const prefix = isCotizacion ? 'COT' : 'FAC';
+    const number = `${prefix}-${Date.now().toString(36).toUpperCase()}`;
     const invoiceData = {
       invoiceNumber: number,
-      date: quote.createdAt || getToday(),
-      clientName: quote.customerName,
-      clientPhone: quote.customerPhone || '',
-      items: [{
-        name: `${quote.equipment?.name || 'Producto'} (${quote.type})`,
-        price: Number(quote.price) || 0,
-        quantity: 1
-      }],
-      total: Number(quote.price) || 0,
-      notes: quote.notes || ''
+      date: getToday(),
+      clientName: customerName,
+      clientPhone: customerPhone,
+      items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity })),
+      total: cartTotal,
+      notes
     };
     try {
-      const doc = await generateInvoicePDF(invoiceData, settings, 'cotizacion');
-      downloadInvoicePDF(doc, number, 'cotizacion');
+      const doc = await generateInvoicePDF(invoiceData, settings, isCotizacion ? 'cotizacion' : 'factura');
+      downloadInvoicePDF(doc, number, isCotizacion ? 'cotizacion' : 'factura');
+      const record = { id: generateId(), ...invoiceData, customerName, customerPhone, cartItems: cart, createdAt: getToday() };
+      updateData({ ...data, [collectionKey]: [...savedItems, record] });
+      alert(`${isCotizacion ? 'Cotizacion' : 'Factura'} ${number} generada`);
+      clearCart();
     } catch (err) {
       console.error(err);
       alert('Error al generar PDF');
     }
   };
 
+  const handleDeleteSaved = (id) => {
+    if (confirm('¿Eliminar?')) {
+      updateData({ ...data, [collectionKey]: savedItems.filter(s => s.id !== id) });
+    }
+  };
+
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">Cotizaciones</h1>
-        <p className="page-subtitle">{quotations.length} cotizaciones</p>
+        <h1 className="page-title">{isCotizacion ? '💰' : '🛒'} {title}</h1>
       </div>
 
-      <button className="btn btn-primary btn-block" onClick={() => { setEditingQuotation(null); setShowModal(true); }} style={{ marginBottom: 20 }}>
-        + Nueva Cotización
-      </button>
-
-      {quotations.length === 0 ? (
-        <div className="empty-state">
-          <div className="empty-icon">💰</div>
-          <div className="empty-title">Sin Cotizaciones</div>
+      <div className="card">
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          {categories.map(c => (
+            <button key={c.value} className={`filter-btn ${category === c.value ? 'active' : ''}`} onClick={() => setCategory(c.value)}>{c.label}</button>
+          ))}
         </div>
-      ) : (
-        quotations.map(quote => (
-          <div key={quote.id} className="card">
-            <div style={{ display: 'flex', gap: 16 }}>
-              {quote.equipment?.imageUrl && (
-                <img 
-                  src={quote.equipment.imageUrl} 
-                  alt={quote.equipment?.name} 
-                  style={{ width: 120, height: 120, objectFit: 'cover', borderRadius: 8 }} 
-                />
-              )}
-              <div style={{ flex: 1 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                  <div>
-                    <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>{quote.customerName}</div>
-                    <div style={{ color: '#5A6978', marginBottom: 4 }}>{quote.equipment?.name}</div>
-                    <div style={{ fontSize: 24, fontWeight: 700, color: '#1E5AA8' }}>
-                      {formatCurrency(quote.price)} {quote.type === 'alquiler' ? '/mes' : ''}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <span className={`badge badge-${quote.type === 'alquiler' ? 'active' : 'finalizado'}`}>{quote.type}</span>
-                    <div style={{ marginTop: 8, fontSize: 12, color: '#8896A7' }}>{formatDate(quote.createdAt)}</div>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-                  <button className="btn btn-success btn-sm" onClick={() => handleSend(quote)}>📱 WhatsApp</button>
-                  <button className="btn btn-primary btn-sm" onClick={() => handleDownloadPDF(quote)}>📄 PDF</button>
-                  <button className="btn btn-secondary btn-sm" onClick={() => { setEditingQuotation(quote); setShowModal(true); }}>✏️</button>
-                  <button className="btn btn-danger btn-sm" onClick={() => handleDelete(quote.id)}>🗑️</button>
-                </div>
+        <input type="text" className="form-input" placeholder="Buscar producto..." value={search} onChange={e => setSearch(e.target.value)} style={{ marginBottom: 12 }} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10, maxHeight: 300, overflowY: 'auto' }}>
+          {filtered.map(p => (
+            <div key={p.id + p._cat} style={{ border: '1px solid #E3F2FD', borderRadius: 8, padding: 10, background: '#FAFDFF' }}>
+              {p.imageUrl && <img src={p.imageUrl} alt={p.name} style={{ width: '100%', height: 80, objectFit: 'cover', borderRadius: 6, marginBottom: 6 }} />}
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
+              <div style={{ fontSize: 11, color: '#5A6978' }}>{p._label}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
+                <span style={{ color: '#1E5AA8', fontWeight: 700 }}>{formatCurrency(p.price)}</span>
+                <button className="btn btn-primary btn-sm" onClick={() => addToCart(p)} style={{ padding: '2px 8px', fontSize: 12 }}>+</button>
               </div>
             </div>
-          </div>
-        ))
-      )}
+          ))}
+        </div>
+      </div>
 
-      {showModal && (
-        <QuotationModal quotation={editingQuotation} equipment={equipment} mascaras={mascaras || []} onSave={handleSave} onClose={() => { setShowModal(false); setEditingQuotation(null); }} />
+      <div className="card" style={{ marginTop: 15 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <h3 className="card-title" style={{ margin: 0 }}>Carrito ({cart.length})</h3>
+          <button className="btn btn-sm" onClick={() => setShowLibre(!showLibre)}>+ Item libre</button>
+        </div>
+
+        {showLibre && (
+          <div style={{ background: '#FFF8E1', border: '1px solid #FFC107', borderRadius: 8, padding: 10, marginBottom: 10 }}>
+            <input type="text" className="form-input" placeholder="Nombre" value={libreItem.name} onChange={e => setLibreItem({...libreItem, name: e.target.value})} style={{ marginBottom: 6 }} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+              <input type="number" className="form-input" placeholder="Precio $" value={libreItem.price || ''} onChange={e => setLibreItem({...libreItem, price: Number(e.target.value)})} />
+              <input type="number" className="form-input" placeholder="Cantidad" value={libreItem.quantity} onChange={e => setLibreItem({...libreItem, quantity: Number(e.target.value)})} />
+            </div>
+            <button className="btn btn-primary btn-sm" style={{ width: '100%' }} onClick={addLibre}>Agregar</button>
+          </div>
+        )}
+
+        <div className="form-group">
+          <label className="form-label">Cliente</label>
+          <input type="text" className="form-input" placeholder="Nombre del cliente" value={customerName} onChange={e => setCustomerName(e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">WhatsApp</label>
+          <input type="tel" className="form-input" placeholder="Telefono" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} />
+        </div>
+
+        {cart.length === 0 ? (
+          <p style={{ textAlign: 'center', color: '#5A6978', padding: 10 }}>Carrito vacio</p>
+        ) : cart.map(c => (
+          <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #E3F2FD' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+              <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12 }}>
+                <span>$</span>
+                <input type="number" style={{ width: 70, border: '1px solid #E3F2FD', borderRadius: 4, padding: '2px 4px', fontSize: 12 }} value={c.price} onChange={e => updateCartItem(c.id, 'price', Number(e.target.value))} />
+                <span>x</span>
+                <input type="number" style={{ width: 45, border: '1px solid #E3F2FD', borderRadius: 4, padding: '2px 4px', fontSize: 12 }} value={c.quantity} onChange={e => updateCartItem(c.id, 'quantity', Number(e.target.value))} />
+                <span style={{ fontWeight: 700, color: '#1E5AA8' }}>= {formatCurrency(c.price * c.quantity)}</span>
+              </div>
+            </div>
+            <button className="btn btn-sm btn-danger" onClick={() => removeFromCart(c.id)}>x</button>
+          </div>
+        ))}
+
+        <div style={{ borderTop: '2px solid #E3F2FD', paddingTop: 10, marginTop: 10, marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 'bold' }}>
+            <span>Total:</span>
+            <span style={{ color: '#1E5AA8' }}>{formatCurrency(cartTotal)}</span>
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Observaciones</label>
+          <textarea className="form-input" rows={2} placeholder="Notas..." value={notes} onChange={e => setNotes(e.target.value)} />
+        </div>
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn btn-success" style={{ flex: 1 }} onClick={handlePDF}>📄 {isCotizacion ? 'Cotizacion' : 'Factura'} PDF</button>
+          <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleWhatsApp}>📱 WhatsApp</button>
+          <button className="btn btn-danger" onClick={clearCart}>🗑️</button>
+        </div>
+      </div>
+
+      {savedItems.length > 0 && (
+        <div className="card" style={{ marginTop: 15 }}>
+          <h3 className="card-title">Historial ({savedItems.length})</h3>
+          {[...savedItems].reverse().map(s => (
+            <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #E3F2FD' }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>{s.customerName || s.clientName || 'Sin nombre'}</div>
+                <div style={{ fontSize: 12, color: '#5A6978' }}>{formatDate(s.createdAt)} - {s.invoiceNumber}</div>
+              </div>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontWeight: 700, color: '#1E5AA8' }}>{formatCurrency(s.total)}</span>
+                <button className="btn btn-sm btn-danger" onClick={() => handleDeleteSaved(s.id)}>🗑️</button>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
-function QuotationModal({ quotation, equipment, mascaras, onSave, onClose }) {
-  const [form, setForm] = useState(quotation || {
-    customerName: '', customerPhone: '', equipmentId: '', type: 'alquiler', price: '', period: '', notes: ''
-  });
-
-  const allItems = [
-    ...(equipment || []).map(e => ({ ...e, _kind: 'equipo' })),
-    ...(mascaras || []).map(m => ({ ...m, _kind: 'mascarilla' }))
-  ];
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!form.customerName || !form.equipmentId) {
-      alert('Completa los campos obligatorios');
-      return;
-    }
-    const item = allItems.find(i => i.id === form.equipmentId);
-    onSave({ ...form, equipment: item, price: Number(form.price) });
-  };
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2 className="modal-title">{quotation ? 'Editar' : 'Nueva'} Cotización</h2>
-          <span className="modal-close" onClick={onClose}>×</span>
-        </div>
-        
-        <form onSubmit={handleSubmit}>
-          <div className="form-group">
-            <label className="form-label">Cliente *</label>
-            <input type="text" className="form-input" value={form.customerName} onChange={e => setForm({...form, customerName: e.target.value})} required />
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Teléfono</label>
-            <input type="tel" className="form-input" value={form.customerPhone} onChange={e => setForm({...form, customerPhone: e.target.value})} />
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Producto *</label>
-            <select className="form-select" value={form.equipmentId} onChange={e => setForm({...form, equipmentId: e.target.value})} required>
-              <option value="">Seleccionar...</option>
-              {equipment.length > 0 && (
-                <optgroup label="🔧 Equipos">
-                  {equipment.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}
-                </optgroup>
-              )}
-              {mascaras.length > 0 && (
-                <optgroup label="😷 Mascarillas">
-                  {mascaras.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-                </optgroup>
-              )}
-            </select>
-            {form.equipmentId && (() => {
-              const item = allItems.find(i => i.id === form.equipmentId);
-              return item ? (
-                <div style={{ marginTop: 10 }}>
-                  {item.imageUrl && (
-                    <img src={item.imageUrl} alt={item.name} style={{ maxWidth: '100%', maxHeight: 150, borderRadius: 8, marginBottom: 8 }} />
-                  )}
-                  {item.description && <p style={{ fontSize: 13, color: '#5A6978' }}>{item.description}</p>}
-                </div>
-              ) : null;
-            })()}
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Tipo</label>
-            <select className="form-select" value={form.type} onChange={e => setForm({...form, type: e.target.value})}>
-              <option value="alquiler">Alquiler</option>
-              <option value="venta">Venta</option>
-            </select>
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Precio</label>
-            <input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} />
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Notas</label>
-            <textarea className="form-textarea" value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} />
-          </div>
-          
-          <button type="submit" className="btn btn-primary btn-block">Guardar</button>
-        </form>
-      </div>
-    </div>
-  );
+function QuotationsPage({ data, updateData }) {
+  return <SalesCartPage data={data} updateData={updateData} pageType="cotizacion" />;
 }
 
 function CalendarPage({ data }) {
@@ -2378,493 +2480,7 @@ function DescartablesPage({ data, updateData }) {
 }
 
 function FacturacionPage({ data, updateData }) {
-  const { descartables, mascaras, patients, settings } = data;
-  const [cart, setCart] = useState([]);
-  const [selectedPatient, setSelectedPatient] = useState('');
-  const [search, setSearch] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('todos');
-  const [notes, setNotes] = useState('');
-  const [showPatientForm, setShowPatientForm] = useState(false);
-  const [newPatient, setNewPatient] = useState({ name: '', phone: '', dni: '', address: '' });
-  const [showLibreForm, setShowLibreForm] = useState(false);
-  const [libreItem, setLibreItem] = useState({ name: '', price: 0, quantity: 1 });
-  const [editingItem, setEditingItem] = useState(null);
-
-  const categories = [
-    { value: 'todos', label: 'Todas' },
-    { value: 'consumibles', label: '🧤 Consumibles' },
-    { value: 'filtros', label: '🔍 Filtros' },
-    { value: 'mascarillas', label: '😷 Mascarillas' },
-    { value: 'tubuladuras', label: '🫁 Tubuladuras' },
-    { value: 'cables', label: '🔌 Cables' },
-    { value: 'otros', label: '📦 Otros' }
-  ];
-
-  const mascarasAsProducts = (mascaras || []).map(m => ({
-    ...m,
-    category: 'mascarillas',
-    price: m.precio || 0
-  }));
-  const allProducts = [...descartables, ...mascarasAsProducts];
-
-  const filteredProducts = allProducts.filter(item => {
-    const matchesSearch = item.name.toLowerCase().includes(search.toLowerCase());
-    const matchesCategory = categoryFilter === 'todos' || item.category === categoryFilter;
-    return matchesSearch && matchesCategory;
-  });
-
-  const addToCart = (product) => {
-    const existing = cart.find(item => item.id === product.id);
-    if (existing) {
-      setCart(cart.map(item => 
-        item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
-      ));
-    } else {
-      setCart([...cart, { ...product, quantity: 1 }]);
-    }
-  };
-
-  const updateQuantity = (id, quantity) => {
-    if (quantity <= 0) {
-      setCart(cart.filter(item => item.id !== id));
-    } else {
-      setCart(cart.map(item => 
-        item.id === id ? { ...item, quantity } : item
-      ));
-    }
-  };
-
-  const addLibreItem = () => {
-    if (!libreItem.name || libreItem.price <= 0) {
-      alert('Ingrese nombre y precio');
-      return;
-    }
-    const newItem = {
-      id: 'libre-' + Date.now(),
-      name: libreItem.name,
-      price: libreItem.price,
-      quantity: libreItem.quantity,
-      isLibre: true
-    };
-    setCart([...cart, newItem]);
-    setLibreItem({ name: '', price: 0, quantity: 1 });
-    setShowLibreForm(false);
-  };
-
-  const updateCartItem = (id, field, value) => {
-    setCart(cart.map(item => 
-      item.id === id ? { ...item, [field]: value } : item
-    ));
-  };
-
-  const removeFromCart = (id) => {
-    setCart(cart.filter(item => item.id !== id));
-  };
-
-  const clearCart = () => {
-    setCart([]);
-    setNotes('');
-    setSelectedPatient('');
-  };
-
-  const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-
-  const selectedPatientData = patients.find(p => p.id === selectedPatient);
-
-  const generateInvoice = () => {
-    const invoiceNumber = `FAC-${Date.now().toString(36).toUpperCase()}`;
-    const date = getToday();
-    
-    let message = `*${settings.companyName || 'Inser Salud'}*\n`;
-    message += `📋 *FACTURA PROFORMA*\n`;
-    message += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    message += `N°: ${invoiceNumber}\n`;
-    message += `Fecha: ${formatDate(date)}\n`;
-    
-    if (selectedPatientData) {
-      message += `\n*Cliente:*\n${selectedPatientData.name}\n`;
-      if (selectedPatientData.phone) message += `Tel: ${selectedPatientData.phone}\n`;
-      if (selectedPatientData.address) message += `Dir: ${selectedPatientData.address}\n`;
-    }
-    
-    message += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
-    message += `*DETALLE:*\n`;
-    message += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    
-    cart.forEach(item => {
-      const subtotal = item.price * item.quantity;
-      message += `• ${item.name}\n`;
-      message += `  ${item.quantity} x ${formatCurrency(item.price)} = ${formatCurrency(subtotal)}\n`;
-    });
-    
-    message += `━━━━━━━━━━━━━━━━━━━━━\n`;
-    message += `*SUBTOTAL:* ${formatCurrency(cartTotal)}\n`;
-    message += `*TOTAL:* ${formatCurrency(cartTotal)}\n`;
-    
-    if (notes) {
-      message += `\n*Observaciones:*\n${notes}\n`;
-    }
-    
-    message += `\n━━━━━━━━━━━━━━━━━━━━━\n`;
-    message += `Gracias por su confianza!\n`;
-    if (settings.companyPhone) message += `Tel: ${settings.companyPhone}\n`;
-    if (settings.companyAddress) message += `${settings.companyAddress}\n`;
-    
-    return message;
-  };
-
-  const sendViaWhatsApp = () => {
-    if (cart.length === 0) {
-      alert('Agregue productos al carrito');
-      return;
-    }
-    
-    let phone = selectedPatientData?.phone || '';
-    if (!phone && !selectedPatient) {
-      alert('Seleccione un paciente o ingrese un teléfono');
-      return;
-    }
-    
-    const message = generateInvoice();
-    
-    if (!phone && selectedPatient) {
-      phone = prompt('Ingrese número de WhatsApp:', '+54');
-    }
-    
-    if (phone) {
-      sendWhatsApp(phone, message);
-    }
-  };
-
-  const saveInvoice = async () => {
-    if (cart.length === 0) {
-      alert('Agregue productos al carrito');
-      return;
-    }
-    
-    if (!selectedPatient) {
-      alert('Seleccione un paciente');
-      return;
-    }
-
-    const invoiceNumber = `FAC-${Date.now().toString(36).toUpperCase()}`;
-    const invoiceData = {
-      id: generateId(),
-      invoiceNumber,
-      date: getToday(),
-      patientId: selectedPatient,
-      clientName: selectedPatientData?.name || 'Cliente',
-      clientPhone: selectedPatientData?.phone || '',
-      clientAddress: selectedPatientData?.address || '',
-      items: cart,
-      total: cartTotal,
-      notes,
-      status: 'generada',
-      createdAt: getToday()
-    };
-
-    try {
-      const doc = await generateInvoicePDF(invoiceData, settings, 'factura');
-
-      const newInvoices = [...(data.invoices || []), invoiceData];
-      updateData({ ...data, invoices: newInvoices });
-
-      downloadInvoicePDF(doc, invoiceNumber, 'factura');
-
-      alert(`Factura ${invoiceNumber} generada y guardada`);
-      clearCart();
-    } catch (error) {
-      console.error('Error generando PDF:', error);
-      alert('Error al generar la factura');
-    }
-  };
-
-  const sendInvoiceEmail = () => {
-    if (cart.length === 0) {
-      alert('Agregue productos al carrito');
-      return;
-    }
-    
-    if (!selectedPatient) {
-      alert('Seleccione un paciente');
-      return;
-    }
-
-    const invoiceNumber = `FAC-${Date.now().toString(36).toUpperCase()}`;
-    const email = selectedPatientData?.email || prompt('Ingrese correo electrónico:', '');
-    
-    if (email) {
-      sendInvoiceByEmail(email, invoiceNumber, selectedPatientData?.name, formatCurrency(cartTotal));
-    }
-  };
-
-  const handleAddNewPatient = () => {
-    if (!newPatient.name) {
-      alert('Ingrese nombre del paciente');
-      return;
-    }
-    const patient = {
-      id: generateId(),
-      ...newPatient,
-      createdAt: getToday()
-    };
-    updateData({ ...data, patients: [...patients, patient] });
-    setSelectedPatient(patient.id);
-    setShowPatientForm(false);
-    setNewPatient({ name: '', phone: '', dni: '', address: '' });
-  };
-
-  return (
-    <div>
-      <div className="page-header">
-        <h1 className="page-title">🛒 Facturación</h1>
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-        <div className="card" style={{ width: '100%' }}>
-          
-          <div style={{ display: 'flex', gap: 10, marginBottom: 15 }}>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="Buscar producto..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{ flex: 1 }}
-            />
-            <select 
-              className="form-input" 
-              value={categoryFilter} 
-              onChange={e => setCategoryFilter(e.target.value)}
-              style={{ width: 'auto' }}
-            >
-              {categories.map(cat => (
-                <option key={cat.value} value={cat.value}>{cat.label}</option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
-            {filteredProducts.map(product => (
-              <div key={product.id} style={styles.productCard}>
-                <div style={{ fontWeight: 'bold', marginBottom: 5 }}>{product.name}</div>
-                <div style={{ fontSize: 12, color: '#5A6978', marginBottom: 5 }}>
-                  {categories.find(c => c.value === product.category)?.label || product.category}
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ color: '#1E5AA8', fontWeight: 'bold' }}>{formatCurrency(product.price)}</span>
-                  <span style={{ fontSize: 12, color: product.stock <= product.minStock ? '#E53935' : '#43A047' }}>
-                    Stock: {product.stock}
-                  </span>
-                </div>
-                <button 
-                  className="btn btn-primary btn-sm" 
-                  style={{ width: '100%', marginTop: 10 }}
-                  onClick={() => addToCart(product)}
-                  disabled={product.stock === 0}
-                >
-                  + Agregar
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="card" style={{ width: '100%' }}>
-          
-          <div style={{ background: '#FFF8E1', border: '1px solid #FFC107', borderRadius: 8, padding: 10, marginBottom: 15 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <span style={{ fontWeight: 'bold' }}>📝 Item Libre</span>
-              <button className="btn btn-sm" onClick={() => setShowLibreForm(!showLibreForm)}>
-                {showLibreForm ? '➖' : '➕'}
-              </button>
-            </div>
-
-            {showLibreForm && (
-              <div>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="Nombre del producto"
-                  value={libreItem.name}
-                  onChange={e => setLibreItem({...libreItem, name: e.target.value})}
-                  style={{ marginBottom: 6 }}
-                />
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
-                  <input 
-                    type="number" 
-                    className="form-input" 
-                    placeholder="Precio $"
-                    value={libreItem.price || ''}
-                    onChange={e => setLibreItem({...libreItem, price: Number(e.target.value)})}
-                  />
-                  <input 
-                    type="number" 
-                    className="form-input" 
-                    placeholder="Cantidad"
-                    value={libreItem.quantity}
-                    onChange={e => setLibreItem({...libreItem, quantity: Number(e.target.value)})}
-                  />
-                </div>
-                <button className="btn btn-primary btn-sm" style={{ width: '100%' }} onClick={addLibreItem}>
-                  Agregar al Carrito
-                </button>
-              </div>
-            )}
-          </div>
-
-          <h3 className="card-title">🛒 Carrito</h3>
-
-            <div className="form-group">
-              <label className="form-label">Paciente</label>
-              <div style={{ display: 'flex', gap: 5 }}>
-                <select 
-                  className="form-input" 
-                  value={selectedPatient} 
-                  onChange={e => setSelectedPatient(e.target.value)}
-                  style={{ flex: 1 }}
-                >
-                  <option value="">Seleccionar paciente...</option>
-                  {patients.map(p => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-                <button className="btn" onClick={() => setShowPatientForm(!showPatientForm)}>➕</button>
-              </div>
-            </div>
-
-            {showPatientForm && (
-              <div style={{ background: '#F5F5F5', padding: 10, borderRadius: 8, marginBottom: 10 }}>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="Nombre"
-                  value={newPatient.name}
-                  onChange={e => setNewPatient({...newPatient, name: e.target.value})}
-                  style={{ marginBottom: 5 }}
-                />
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="Teléfono"
-                  value={newPatient.phone}
-                  onChange={e => setNewPatient({...newPatient, phone: e.target.value})}
-                  style={{ marginBottom: 5 }}
-                />
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="Dirección"
-                  value={newPatient.address}
-                  onChange={e => setNewPatient({...newPatient, address: e.target.value})}
-                  style={{ marginBottom: 5 }}
-                />
-                <button className="btn btn-primary btn-sm" onClick={handleAddNewPatient}>
-                  Agregar Paciente
-                </button>
-              </div>
-            )}
-
-            {selectedPatientData && (
-              <div style={{ background: '#E3F2FD', padding: 10, borderRadius: 8, marginBottom: 10, fontSize: 13 }}>
-                <strong>{selectedPatientData.name}</strong><br/>
-                {selectedPatientData.phone && <span>📞 {selectedPatientData.phone}</span>}
-                {selectedPatientData.address && <><br/><span>📍 {selectedPatientData.address}</span></>}
-              </div>
-            )}
-
-            <div style={{ maxHeight: 300, overflowY: 'auto', marginBottom: 10 }}>
-              {cart.length === 0 ? (
-                <p style={{ textAlign: 'center', color: '#5A6978' }}>Carrito vacío</p>
-              ) : (
-                cart.map(item => (
-                  <div key={item.id} style={styles.cartItem}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <input 
-                        type="text" 
-                        style={{ 
-                          width: '100%', 
-                          fontWeight: 'bold', 
-                          border: '1px solid #E3F2FD',
-                          borderRadius: 4,
-                          padding: '4px 8px',
-                          marginBottom: 4
-                        }}
-                        value={item.name}
-                        onChange={e => updateCartItem(item.id, 'name', e.target.value)}
-                      />
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: 12, color: '#5A6978' }}>$</span>
-                        <input 
-                          type="number" 
-                          style={{ 
-                            width: 70, 
-                            fontSize: 12,
-                            border: '1px solid #E3F2FD',
-                            borderRadius: 4,
-                            padding: '2px 4px'
-                          }}
-                          value={item.price}
-                          onChange={e => updateCartItem(item.id, 'price', Number(e.target.value))}
-                        />
-                        <span style={{ fontSize: 12, color: '#5A6978' }}>x</span>
-                        <input 
-                          type="number" 
-                          style={{ 
-                            width: 50, 
-                            fontSize: 12,
-                            border: '1px solid #E3F2FD',
-                            borderRadius: 4,
-                            padding: '2px 4px'
-                          }}
-                          value={item.quantity}
-                          onChange={e => updateCartItem(item.id, 'quantity', Number(e.target.value))}
-                        />
-                        <span style={{ fontWeight: 'bold', color: '#1E5AA8', fontSize: 13 }}>
-                          = {formatCurrency(item.price * item.quantity)}
-                        </span>
-                      </div>
-                    </div>
-                    <button className="btn btn-sm btn-danger" onClick={() => removeFromCart(item.id)}>🗑️</button>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div style={{ borderTop: '2px solid #E3F2FD', paddingTop: 10, marginBottom: 10 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, fontWeight: 'bold' }}>
-                <span>Total:</span>
-                <span style={{ color: '#1E5AA8' }}>{formatCurrency(cartTotal)}</span>
-              </div>
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Observaciones</label>
-              <textarea 
-                className="form-input" 
-                rows={2}
-                placeholder="Notas adicionales..."
-                value={notes}
-                onChange={e => setNotes(e.target.value)}
-              />
-            </div>
-
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-              <button className="btn btn-success" style={{ flex: 1 }} onClick={saveInvoice}>
-                📄 Generar & Descargar PDF
-              </button>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={sendViaWhatsApp}>
-                📱 WhatsApp
-              </button>
-              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={sendInvoiceEmail}>
-                ✉️ Enviar por Mail
-              </button>
-              <button className="btn btn-danger" onClick={clearCart}>🗑️</button>
-            </div>
-          </div>
-        </div>
-      </div>
-  );
+  return <SalesCartPage data={data} updateData={updateData} pageType="factura" />;
 }
 
 const styles = {

@@ -9,6 +9,7 @@ export const initialData = {
   descartables: [],
   mascaras: [],
   invoices: [],
+  equiposNuevos: [],
   settings: {
     companyName: 'Inser Salud',
     companyPhone: '+54 11 1234-5678',
@@ -34,7 +35,8 @@ function normalizeData(data = {}) {
     quotations: Array.isArray(data.quotations) ? data.quotations : [],
     descartables: Array.isArray(data.descartables) ? data.descartables : [],
     mascaras: Array.isArray(data.mascaras) ? data.mascaras : [],
-    invoices: Array.isArray(data.invoices) ? data.invoices : []
+    invoices: Array.isArray(data.invoices) ? data.invoices : [],
+    equiposNuevos: Array.isArray(data.equiposNuevos) ? data.equiposNuevos : []
   };
 }
 
@@ -51,7 +53,7 @@ function loadLocalData() {
 }
 
 function hasDataEntries(data) {
-  return ['patients', 'equipment', 'rentals', 'quotations', 'descartables', 'mascaras', 'invoices']
+  return ['patients', 'equipment', 'rentals', 'quotations', 'descartables', 'mascaras', 'invoices', 'equiposNuevos']
     .some(key => Array.isArray(data[key]) && data[key].length > 0);
 }
 
