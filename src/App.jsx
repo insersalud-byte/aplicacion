@@ -243,6 +243,8 @@ function HomePage({ data, updateData, setCurrentPage }) {
   ), 0);
   const monthlyPending = monthlyTotal - monthlyCollected;
 
+  const [activeFilter, setActiveFilter] = useState(null);
+
   const handleToggleMonthlyPayment = (rentalId) => {
     updateData(currentData => ({
       ...currentData,
@@ -272,17 +274,17 @@ function HomePage({ data, updateData, setCurrentPage }) {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card">
+        <div className="stat-card" style={{ cursor: 'pointer', outline: activeFilter === 'activos' ? '3px solid #1E5AA8' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'activos' ? null : 'activos')}>
           <div className="stat-icon">📋</div>
           <div className="stat-value">{activeRentals.length}</div>
           <div className="stat-label">Alquileres Activos</div>
         </div>
-        <div className="stat-card warning">
+        <div className="stat-card warning" style={{ cursor: 'pointer', outline: activeFilter === 'porVencer' ? '3px solid #F9A825' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'porVencer' ? null : 'porVencer')}>
           <div className="stat-icon">⚠️</div>
           <div className="stat-value">{expiringRentals.length}</div>
           <div className="stat-label">Por Vencer</div>
         </div>
-        <div className="stat-card error">
+        <div className="stat-card error" style={{ cursor: 'pointer', outline: activeFilter === 'vencidos' ? '3px solid #E53935' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'vencidos' ? null : 'vencidos')}>
           <div className="stat-icon">❌</div>
           <div className="stat-value">{expiredRentals.length}</div>
           <div className="stat-label">Vencidos</div>
@@ -293,6 +295,37 @@ function HomePage({ data, updateData, setCurrentPage }) {
           <div className="stat-label">Equipos Disponibles</div>
         </div>
       </div>
+
+      {activeFilter && (() => {
+        const list = activeFilter === 'activos' ? activeRentals : activeFilter === 'porVencer' ? expiringRentals : expiredRentals;
+        const title = activeFilter === 'activos' ? 'Alquileres Activos' : activeFilter === 'porVencer' ? 'Por Vencer' : 'Vencidos';
+        const color = activeFilter === 'activos' ? '#1E5AA8' : activeFilter === 'porVencer' ? '#F9A825' : '#E53935';
+        return list.length > 0 ? (
+          <div className="card" style={{ borderTop: `3px solid ${color}` }}>
+            <h3 className="card-title" style={{ color }}>{title} ({list.length})</h3>
+            {list.map(r => {
+              const pat = patients.find(p => p.id === r.patientId);
+              const eq = equipment.find(e => e.id === r.equipmentId);
+              return (
+                <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #E3F2FD' }}>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{pat?.name || 'Sin paciente'}</div>
+                    <div style={{ fontSize: 13, color: '#5A6978' }}>{eq?.name || 'Sin equipo'}</div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontWeight: 600, color }}>{formatCurrency(r.price)}/mes</div>
+                    <div style={{ fontSize: 12, color: '#5A6978' }}>Vence: {formatDate(r.endDate)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="card" style={{ borderTop: `3px solid ${color}`, textAlign: 'center', padding: 20, color: '#5A6978' }}>
+            No hay alquileres {title.toLowerCase()}
+          </div>
+        );
+      })()}
 
       <div className="card monthly-summary-card">
         <div className="card-header">
