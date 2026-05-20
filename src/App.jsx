@@ -327,7 +327,15 @@ function HomePage({ data, updateData, setCurrentPage }) {
             ...currentData,
             rentals: currentData.rentals.map(r => {
               if (r.id !== rentalId) return r;
-              return { ...r, paymentStatusByMonth: { ...(r.paymentStatusByMonth || {}), [mk]: { paid: true, updatedAt: new Date().toISOString() } } };
+              const updated = { ...r, paymentStatusByMonth: { ...(r.paymentStatusByMonth || {}), [mk]: { paid: true, updatedAt: new Date().toISOString() } } };
+              const remaining = getUnpaidMonths(updated).filter(m => m !== mk);
+              if (remaining.length === 0 && (r.status === 'vencido' || (r.endDate && new Date(r.endDate) < new Date()))) {
+                const now = new Date();
+                const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, r.endDate ? new Date(r.endDate).getDate() : now.getDate());
+                updated.status = 'activo';
+                updated.endDate = nextMonth.toISOString().split('T')[0];
+              }
+              return updated;
             })
           }));
         };
@@ -613,18 +621,19 @@ function PatientsPage({ data, updateData }) {
   );
 
   const handleSave = (patient) => {
-    const newPatients = editingPatient 
-      ? patients.map(p => p.id === patient.id ? patient : p)
-      : [...patients, { ...patient, id: generateId(), createdAt: getToday() }];
-    updateData({ ...data, patients: newPatients });
+    updateData(cur => ({
+      ...cur,
+      patients: editingPatient
+        ? cur.patients.map(p => p.id === patient.id ? patient : p)
+        : [...cur.patients, { ...patient, id: generateId(), createdAt: getToday() }]
+    }));
     setShowModal(false);
     setEditingPatient(null);
   };
 
   const handleDelete = (id) => {
     if (confirm('¿Eliminar paciente?')) {
-      const newPatients = patients.filter(p => p.id !== id);
-      updateData({ ...data, patients: newPatients });
+      updateData(cur => ({ ...cur, patients: cur.patients.filter(p => p.id !== id) }));
     }
   };
 
@@ -751,24 +760,25 @@ function RentalsPage({ data, updateData }) {
   });
 
   const handleSave = (payload) => {
-    let newRentals;
-    if (editingRental) {
-      newRentals = rentals.map(r => r.id === payload.id ? payload : r);
-    } else if (Array.isArray(payload)) {
-      const createdAt = getToday();
-      newRentals = [...rentals, ...payload.map(r => ({ ...r, id: generateId(), createdAt }))];
-    } else {
-      newRentals = [...rentals, { ...payload, id: generateId(), createdAt: getToday() }];
-    }
-    updateData(currentData => ({ ...currentData, rentals: newRentals }));
+    updateData(cur => {
+      let newRentals;
+      if (editingRental) {
+        newRentals = cur.rentals.map(r => r.id === payload.id ? payload : r);
+      } else if (Array.isArray(payload)) {
+        const createdAt = getToday();
+        newRentals = [...cur.rentals, ...payload.map(r => ({ ...r, id: generateId(), createdAt }))];
+      } else {
+        newRentals = [...cur.rentals, { ...payload, id: generateId(), createdAt: getToday() }];
+      }
+      return { ...cur, rentals: newRentals };
+    });
     setShowModal(false);
     setEditingRental(null);
   };
 
   const handleDelete = (id) => {
     if (confirm('¿Eliminar alquiler?')) {
-      const newRentals = rentals.filter(r => r.id !== id);
-      updateData(currentData => ({ ...currentData, rentals: newRentals }));
+      updateData(cur => ({ ...cur, rentals: cur.rentals.filter(r => r.id !== id) }));
     }
   };
 
@@ -1088,18 +1098,19 @@ function EquipmentPage({ data, updateData }) {
 
   const handleSave = (equip) => {
     const isNew = !equip.id;
-    const newEquipment = isNew
-      ? [...equipment, { ...equip, id: generateId() }]
-      : equipment.map(e => e.id === equip.id ? equip : e);
-    updateData({ ...data, equipment: newEquipment });
+    updateData(cur => ({
+      ...cur,
+      equipment: isNew
+        ? [...cur.equipment, { ...equip, id: generateId() }]
+        : cur.equipment.map(e => e.id === equip.id ? equip : e)
+    }));
     setShowModal(false);
     setEditingEquipment(null);
   };
 
   const handleDelete = (id) => {
     if (confirm('¿Eliminar equipo?')) {
-      const newEquipment = equipment.filter(e => e.id !== id);
-      updateData({ ...data, equipment: newEquipment });
+      updateData(cur => ({ ...cur, equipment: cur.equipment.filter(e => e.id !== id) }));
     }
   };
 
@@ -1280,16 +1291,19 @@ function EquiposNuevosPage({ data, updateData }) {
   const filtered = (equiposNuevos || []).filter(e => !search || (e.name || '').toLowerCase().includes(search.toLowerCase()));
 
   const handleSave = (item) => {
-    const list = equiposNuevos || [];
-    const updated = item.id ? list.map(e => e.id === item.id ? item : e) : [...list, { ...item, id: generateId() }];
-    updateData({ ...data, equiposNuevos: updated });
+    updateData(cur => ({
+      ...cur,
+      equiposNuevos: item.id
+        ? (cur.equiposNuevos || []).map(e => e.id === item.id ? item : e)
+        : [...(cur.equiposNuevos || []), { ...item, id: generateId() }]
+    }));
     setShowModal(false);
     setEditing(null);
   };
 
   const handleDelete = (id) => {
     if (confirm('¿Eliminar equipo?')) {
-      updateData({ ...data, equiposNuevos: (equiposNuevos || []).filter(e => e.id !== id) });
+      updateData(cur => ({ ...cur, equiposNuevos: (cur.equiposNuevos || []).filter(e => e.id !== id) }));
     }
   };
 
@@ -1370,26 +1384,27 @@ function MascarasPage({ data, updateData }) {
 
   const handleSave = (mascara) => {
     const isNew = !mascara.id;
-    const newMascaras = isNew
-      ? [...mascaras, { ...mascara, id: generateId() }]
-      : mascaras.map(m => m.id === mascara.id ? mascara : m);
-    updateData({ ...data, mascaras: newMascaras });
+    updateData(cur => ({
+      ...cur,
+      mascaras: isNew
+        ? [...cur.mascaras, { ...mascara, id: generateId() }]
+        : cur.mascaras.map(m => m.id === mascara.id ? mascara : m)
+    }));
     setShowModal(false);
     setEditingMascara(null);
   };
 
   const handleDelete = (id) => {
     if (confirm('¿Eliminar?')) {
-      const newMascaras = mascaras.filter(m => m.id !== id);
-      updateData({ ...data, mascaras: newMascaras });
+      updateData(cur => ({ ...cur, mascaras: cur.mascaras.filter(m => m.id !== id) }));
     }
   };
 
   const updateStock = (id, delta) => {
-    const newMascaras = mascaras.map(m => 
-      m.id === id ? { ...m, stock: Math.max(0, m.stock + delta) } : m
-    );
-    updateData({ ...data, mascaras: newMascaras });
+    updateData(cur => ({
+      ...cur,
+      mascaras: cur.mascaras.map(m => m.id === id ? { ...m, stock: Math.max(0, m.stock + delta) } : m)
+    }));
   };
 
   const handleDuplicate = (mascara) => {
@@ -1671,7 +1686,7 @@ function SalesCartPage({ data, updateData, pageType }) {
       const doc = await generateInvoicePDF(invoiceData, settings, isCotizacion ? 'cotizacion' : 'factura');
       downloadInvoicePDF(doc, number, isCotizacion ? 'cotizacion' : 'factura');
       const record = { id: generateId(), ...invoiceData, customerName, customerPhone, cartItems: cart, createdAt: getToday() };
-      updateData({ ...data, [collectionKey]: [...savedItems, record] });
+      updateData(cur => ({ ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] }));
       alert(`${isCotizacion ? 'Cotizacion' : 'Factura'} ${number} generada`);
       clearCart();
     } catch (err) {
@@ -1682,7 +1697,7 @@ function SalesCartPage({ data, updateData, pageType }) {
 
   const handleDeleteSaved = (id) => {
     if (confirm('¿Eliminar?')) {
-      updateData({ ...data, [collectionKey]: savedItems.filter(s => s.id !== id) });
+      updateData(cur => ({ ...cur, [collectionKey]: (cur[collectionKey] || []).filter(s => s.id !== id) }));
     }
   };
 
@@ -1910,7 +1925,7 @@ function SettingsPage({ data, updateData }) {
   const [importing, setImporting] = useState(false);
 
   const handleSave = () => {
-    updateData({ ...data, settings: form });
+    updateData(cur => ({ ...cur, settings: form }));
     alert('Configuración guardada');
   };
 
@@ -1976,7 +1991,7 @@ function SettingsPage({ data, updateData }) {
           const allEquipment = [...equipment, ...newEquipment];
           const allRentals = [...rentals, ...newRentals];
           
-          updateData({ ...data, patients: allPatients, equipment: allEquipment, rentals: allRentals });
+          updateData(cur => ({ ...cur, patients: allPatients, equipment: allEquipment, rentals: allRentals }));
           
           alert(`Importados: ${newPatients.length} pacientes, ${newEquipment.length} equipos, ${newRentals.length} alquileres`);
         } catch (err) {
@@ -2318,7 +2333,7 @@ function DescartablesPage({ data, updateData }) {
       newDescartables = [...descartables, newItem];
     }
 
-    updateData({ ...data, descartables: newDescartables });
+    updateData(cur => ({ ...cur, descartables: editing ? cur.descartables.map(d => d.id === editing ? newItem : d) : [...cur.descartables, newItem] }));
     setForm(defaultItem);
     setShowForm(false);
     setEditing(null);
@@ -2332,7 +2347,7 @@ function DescartablesPage({ data, updateData }) {
 
   const handleDelete = (id) => {
     if (confirm('¿Eliminar este producto?')) {
-      updateData({ ...data, descartables: descartables.filter(d => d.id !== id) });
+      updateData(cur => ({ ...cur, descartables: cur.descartables.filter(d => d.id !== id) }));
     }
   };
 
