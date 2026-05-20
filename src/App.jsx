@@ -217,30 +217,52 @@ function HomePage({ data, updateData, setCurrentPage }) {
   const today = getToday();
   const currentMonthKey = getMonthKey(new Date());
 
-  // Actualizar automáticamente status de alquileres vencidos
+  const getUnpaidMonthsForRental = (rental) => {
+    if (!rental.endDate) return [];
+    const end = new Date(rental.endDate);
+    const now = new Date();
+    const months = [];
+    let d = new Date(end.getFullYear(), end.getMonth(), 1);
+    while (d <= now) {
+      const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      if (!isRentalPaidForMonth(rental, mk)) months.push(mk);
+      d.setMonth(d.getMonth() + 1);
+    }
+    return months;
+  };
+
   useEffect(() => {
-    const expiredRentalsToUpdate = rentals.filter(r => 
-      r.status === 'activo' && r.endDate && new Date(r.endDate) < new Date(today)
-    );
-    
-    if (expiredRentalsToUpdate.length > 0) {
-      updateData(currentData => ({
-        ...currentData,
-        rentals: currentData.rentals.map(rental => {
-          const isExpired = rental.status === 'activo' && rental.endDate && new Date(rental.endDate) < new Date(today);
-          return isExpired ? { ...rental, status: 'vencido' } : rental;
-        })
-      }));
+    let needsUpdate = false;
+    const updatedRentals = rentals.map(rental => {
+      const isExpired = rental.status === 'activo' && rental.endDate && new Date(rental.endDate) < new Date(today);
+      if (isExpired) { needsUpdate = true; return { ...rental, status: 'vencido' }; }
+
+      const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && getUnpaidMonthsForRental(rental).length === 0;
+      if (isVencidoFullyPaid) {
+        needsUpdate = true;
+        const now = new Date();
+        const day = new Date(rental.endDate).getDate();
+        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, day);
+        return { ...rental, status: 'activo', endDate: nextMonth.toISOString().split('T')[0] };
+      }
+      return rental;
+    });
+
+    if (needsUpdate) {
+      updateData(cur => ({ ...cur, rentals: updatedRentals }));
     }
   }, [rentals, today, updateData]);
-  
+
   const activeRentals = rentals.filter(r => r.status === 'activo');
   const expiringRentals = rentals.filter(r => {
     if (r.status !== 'activo' || !r.endDate) return false;
     const today = getToday();
     return r.endDate >= today && r.endDate.substring(0, 7) === today.substring(0, 7);
   });
-  const expiredRentals = rentals.filter(r => (r.status === 'activo' || r.status === 'vencido') && r.endDate && new Date(r.endDate) < new Date(today));
+  const expiredRentals = rentals.filter(r => {
+    if (!(r.status === 'activo' || r.status === 'vencido') || !r.endDate || new Date(r.endDate) >= new Date(today)) return false;
+    return getUnpaidMonthsForRental(r).length > 0;
+  });
   const availableEquipment = equipment.filter(e => e.available);
   const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
   const monthlyTotal = monthlyRentals.reduce((sum, rental) => sum + Number(rental.price || 0), 0);
