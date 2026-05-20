@@ -1058,9 +1058,8 @@ function EquipmentPage({ data, updateData }) {
                     <div style={{ width: 48, height: 48, borderRadius: 6, background: '#f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 22 }}>🔧</div>
                   )}
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14, color: isRented ? '#E53935' : '#1a1a1a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{equip.name}</div>
+                    <div title={equip.name} style={{ fontWeight: 700, fontSize: 14, color: isRented ? '#E53935' : '#1a1a1a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'default' }}>{equip.name}</div>
                     <div style={{ fontSize: 12, color: '#666' }}>Serie: {equip.serialNumber}</div>
-                    {equip.type && <div style={{ fontSize: 11, color: '#999' }}>{equip.type} {equip.ownership === 'propio' ? '| Propio' : '| Tercero'}</div>}
                   </div>
                 </div>
                 {isRented ? (
