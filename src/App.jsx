@@ -526,7 +526,7 @@ function PatientsPage({ data, updateData }) {
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState(null);
 
-  const filteredPatients = patients.filter(p => 
+  const filteredPatients = [...patients].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).filter(p =>
     p.name.toLowerCase().includes(search.toLowerCase()) ||
     p.dni.includes(search) ||
     p.phone.includes(search)
@@ -984,7 +984,10 @@ function EquipmentPage({ data, updateData }) {
     return rental ? patients.find(p => p.id === rental.patientId) : null;
   };
 
-  const filteredEquipment = equipment.filter(e => {
+  const filteredEquipment = [...equipment].sort((a, b) => {
+    const idA = a.id || ''; const idB = b.id || '';
+    return idB.localeCompare(idA);
+  }).filter(e => {
     if (filter === 'disponible' && getCurrentRental(e.id)) return false;
     if (filter === 'alquilado' && !getCurrentRental(e.id)) return false;
     if (filter === 'mantenimiento' && e.status !== 'mantenimiento') return false;
