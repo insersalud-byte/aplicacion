@@ -229,7 +229,11 @@ function HomePage({ data, updateData, setCurrentPage }) {
   }, [rentals, today, updateData]);
   
   const activeRentals = rentals.filter(r => r.status === 'activo');
-  const expiringRentals = rentals.filter(r => r.status === 'activo' && r.endDate && getDaysUntilEnd(r.endDate) > 0 && getDaysUntilEnd(r.endDate) <= 2);
+  const expiringRentals = rentals.filter(r => {
+    if (r.status !== 'activo' || !r.endDate) return false;
+    const today = getToday();
+    return r.endDate >= today && r.endDate.substring(0, 7) === today.substring(0, 7);
+  });
   const expiredRentals = rentals.filter(r => (r.status === 'activo' || r.status === 'vencido') && r.endDate && new Date(r.endDate) < new Date(today));
   const availableEquipment = equipment.filter(e => e.available);
   const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
@@ -643,23 +647,36 @@ function PatientModal({ patient, onSave, onClose }) {
 function RentalsPage({ data, updateData }) {
   const { rentals, patients, equipment } = data;
   const [filter, setFilter] = useState('todos');
+  const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingRental, setEditingRental] = useState(null);
-
-  const filteredRentals = rentals.filter(r => {
-    if (filter === 'todos') return true;
-    if (filter === 'activo') return r.status === 'activo';
-    if (filter === 'vencido') return r.status === 'vencido' || (r.endDate && new Date(r.endDate) < new Date());
-    return r.status === filter;
-  });
 
   const getPatientName = (id) => patients.find(p => p.id === id)?.name || '-';
   const getEquipmentName = (id) => equipment.find(e => e.id === id)?.name || '-';
 
-  const handleSave = (rental) => {
-    const newRentals = editingRental
-      ? rentals.map(r => r.id === rental.id ? rental : r)
-      : [...rentals, { ...rental, id: generateId(), createdAt: getToday() }];
+  const filteredRentals = rentals.filter(r => {
+    if (filter === 'activo' && r.status !== 'activo') return false;
+    if (filter === 'vencido' && r.status !== 'vencido' && !(r.endDate && new Date(r.endDate) < new Date())) return false;
+    if (filter === 'finalizado' && r.status !== 'finalizado') return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const pName = getPatientName(r.patientId).toLowerCase();
+      const eName = getEquipmentName(r.equipmentId).toLowerCase();
+      if (!pName.includes(q) && !eName.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const handleSave = (payload) => {
+    let newRentals;
+    if (editingRental) {
+      newRentals = rentals.map(r => r.id === payload.id ? payload : r);
+    } else if (Array.isArray(payload)) {
+      const createdAt = getToday();
+      newRentals = [...rentals, ...payload.map(r => ({ ...r, id: generateId(), createdAt }))];
+    } else {
+      newRentals = [...rentals, { ...payload, id: generateId(), createdAt: getToday() }];
+    }
     updateData(currentData => ({ ...currentData, rentals: newRentals }));
     setShowModal(false);
     setEditingRental(null);
@@ -677,6 +694,10 @@ function RentalsPage({ data, updateData }) {
       <div className="page-header">
         <h1 className="page-title">Alquileres</h1>
         <p className="page-subtitle">{rentals.length} alquileres registrados</p>
+      </div>
+
+      <div className="card" style={{ padding: 12, marginBottom: 15 }}>
+        <input type="text" className="form-input" placeholder="Buscar por paciente o equipo..." value={search} onChange={e => setSearch(e.target.value)} />
       </div>
 
       <div className="filters">
@@ -757,18 +778,81 @@ function RentalsPage({ data, updateData }) {
   );
 }
 
+function nextMonthDate(start) {
+  if (!start || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return '';
+  const [y, m, d] = start.split('-').map(Number);
+  const nm = m === 12 ? 1 : m + 1;
+  const ny = m === 12 ? y + 1 : y;
+  const maxDay = new Date(ny, nm, 0).getDate();
+  return `${ny}-${String(nm).padStart(2, '0')}-${String(Math.min(d, maxDay)).padStart(2, '0')}`;
+}
+
 function RentalModal({ rental, patients, equipment, onSave, onAddPatient, onClose }) {
-  const [form, setForm] = useState(rental || { patientId: '', equipmentId: '', startDate: getToday(), endDate: '', price: '', status: 'activo', notes: '' });
+  const isEditing = Boolean(rental);
+  const [form, setForm] = useState(() => {
+    if (rental) return rental;
+    const start = getToday();
+    return { patientId: '', startDate: start, status: 'activo', notes: '' };
+  });
+  const [items, setItems] = useState(() => {
+    if (rental) return [];
+    return [{ equipmentId: '', endDate: nextMonthDate(getToday()), price: '' }];
+  });
   const [showNewPatient, setShowNewPatient] = useState(false);
   const [newPatient, setNewPatient] = useState({ name: '', phone: '', dni: '', address: '', observations: '' });
 
+  const handleStartDateChange = (start) => {
+    const prevDefault = nextMonthDate(form.startDate);
+    const newDefault = nextMonthDate(start);
+    setForm({ ...form, startDate: start, ...(isEditing ? { endDate: form.endDate === prevDefault ? newDefault : form.endDate } : {}) });
+    if (!isEditing) {
+      setItems(items.map(it => ({ ...it, endDate: it.endDate === prevDefault || !it.endDate ? newDefault : it.endDate })));
+    }
+  };
+
+  const updateItem = (idx, patch) => {
+    setItems(items.map((it, i) => i === idx ? { ...it, ...patch } : it));
+  };
+
+  const addItem = () => {
+    setItems([...items, { equipmentId: '', endDate: nextMonthDate(form.startDate), price: '' }]);
+  };
+
+  const removeItem = (idx) => {
+    if (items.length === 1) return;
+    setItems(items.filter((_, i) => i !== idx));
+  };
+
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!form.patientId || !form.equipmentId) {
-      alert('Selecciona paciente y equipo');
+    if (!form.patientId) {
+      alert('Selecciona un paciente');
       return;
     }
-    onSave({ ...form, price: Number(form.price) });
+    if (isEditing) {
+      if (!form.equipmentId) { alert('Selecciona un equipo'); return; }
+      onSave({ ...form, price: Number(form.price) });
+      return;
+    }
+    if (!items.length || items.some(it => !it.equipmentId)) {
+      alert('Selecciona el equipo en cada fila');
+      return;
+    }
+    const ids = items.map(it => it.equipmentId);
+    if (new Set(ids).size !== ids.length) {
+      alert('Hay equipos repetidos');
+      return;
+    }
+    const rentalsToCreate = items.map(it => ({
+      patientId: form.patientId,
+      equipmentId: it.equipmentId,
+      startDate: form.startDate,
+      endDate: it.endDate,
+      price: Number(it.price),
+      status: form.status || 'activo',
+      notes: form.notes || '',
+    }));
+    onSave(rentalsToCreate);
   };
 
   const handleAddNewPatient = () => {
@@ -814,36 +898,60 @@ function RentalModal({ rental, patients, equipment, onSave, onAddPatient, onClos
           )}
           
           <div className="form-group">
-            <label className="form-label">Equipo *</label>
-            <select className="form-select" value={form.equipmentId} onChange={e => setForm({...form, equipmentId: e.target.value})} required>
-              <option value="">Seleccionar...</option>
-              {equipment.map(e => <option key={e.id} value={e.id}>{e.name} ({e.serialNumber})</option>)}
-            </select>
-          </div>
-          
-          <div className="form-group">
             <label className="form-label">Fecha de inicio</label>
-            <input type="date" className="form-input" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} />
+            <input type="date" className="form-input" value={form.startDate} onChange={e => handleStartDateChange(e.target.value)} />
           </div>
-          
-          <div className="form-group">
-            <label className="form-label">Fecha de fin</label>
-            <input type="date" className="form-input" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} />
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Precio mensual ($)</label>
-            <input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} />
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Estado</label>
-            <select className="form-select" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
-              <option value="activo">Activo</option>
-              <option value="vencido">Vencido</option>
-              <option value="finalizado">Finalizado</option>
-            </select>
-          </div>
+
+          {isEditing ? (
+            <>
+              <div className="form-group">
+                <label className="form-label">Equipo *</label>
+                <select className="form-select" value={form.equipmentId} onChange={e => setForm({...form, equipmentId: e.target.value})} required>
+                  <option value="">Seleccionar...</option>
+                  {equipment.map(e => <option key={e.id} value={e.id}>{e.name} ({e.serialNumber})</option>)}
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Fecha de fin</label>
+                <input type="date" className="form-input" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Precio mensual ($)</label>
+                <input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} />
+              </div>
+            </>
+          ) : (
+            <div className="form-group">
+              <label className="form-label">Equipos *</label>
+              {items.map((it, idx) => {
+                const usedIds = items.filter((_, i) => i !== idx).map(x => x.equipmentId).filter(Boolean);
+                const options = equipment.filter(e => !usedIds.includes(e.id));
+                return (
+                  <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 140px 110px auto', gap: 6, marginBottom: 8, alignItems: 'center' }}>
+                    <select className="form-select" value={it.equipmentId} onChange={e => updateItem(idx, { equipmentId: e.target.value })} required>
+                      <option value="">Equipo...</option>
+                      {options.map(e => <option key={e.id} value={e.id}>{e.name} ({e.serialNumber})</option>)}
+                    </select>
+                    <input type="date" className="form-input" value={it.endDate} onChange={e => updateItem(idx, { endDate: e.target.value })} title="Vencimiento" />
+                    <input type="number" className="form-input" placeholder="Precio" value={it.price} onChange={e => updateItem(idx, { price: e.target.value })} />
+                    <button type="button" className="btn btn-sm btn-danger" onClick={() => removeItem(idx)} disabled={items.length === 1}>×</button>
+                  </div>
+                );
+              })}
+              <button type="button" className="btn btn-sm btn-secondary" onClick={addItem}>+ Agregar equipo</button>
+            </div>
+          )}
+
+          {isEditing && (
+            <div className="form-group">
+              <label className="form-label">Estado</label>
+              <select className="form-select" value={form.status} onChange={e => setForm({...form, status: e.target.value})}>
+                <option value="activo">Activo</option>
+                <option value="vencido">Vencido</option>
+                <option value="finalizado">Finalizado</option>
+              </select>
+            </div>
+          )}
           
           <div className="form-group">
             <label className="form-label">Notas</label>
