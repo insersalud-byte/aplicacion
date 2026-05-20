@@ -579,7 +579,10 @@ function PatientsPage({ data, updateData }) {
               <div className="patient-detail">DNI: {patient.dni} • 📞 {patient.phone}</div>
               <div className="patient-detail">{patient.address}</div>
             </div>
-            <button className="btn btn-sm btn-danger" onClick={(e) => { e.stopPropagation(); handleDelete(patient.id); }}>🗑️</button>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditingPatient(patient); setShowModal(true); }}>✏️</button>
+              <button className="btn btn-sm btn-danger" onClick={(e) => { e.stopPropagation(); handleDelete(patient.id); }}>🗑️</button>
+            </div>
           </div>
         ))
       )}
