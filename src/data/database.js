@@ -294,8 +294,35 @@ export function sendWhatsApp(phone, message) {
   window.open(`https://wa.me/${formattedPhone}?text=${encodedMessage}`, '_blank');
 }
 
+async function toBase64Image(url) {
+  if (!url) return null;
+  if (url.startsWith('data:')) return url;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || img.width || 100;
+        canvas.height = img.naturalHeight || img.height || 100;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      } catch { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = url;
+  });
+}
+
 export async function generateInvoicePDF(invoiceData, settings, type = 'factura') {
   const { jsPDF } = await import('jspdf');
+
+  // Pre-load all item images
+  const itemImages = await Promise.all(
+    invoiceData.items.map(item => toBase64Image(item.imageUrl || ''))
+  );
+  const hasAnyImage = itemImages.some(Boolean);
 
   const doc = new jsPDF('p', 'mm', 'a4');
   const width = doc.internal.pageSize.getWidth();
@@ -359,12 +386,15 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
   y += 8;
 
   // Table header
+  const rowH = hasAnyImage ? 18 : 8;
+  const textX = hasAnyImage ? 42 : 22;
+  const descMaxChars = hasAnyImage ? 38 : 55;
   doc.setFillColor(240, 245, 250);
   doc.rect(20, y - 4, width - 40, 8, 'F');
   doc.setFontSize(9);
   doc.setFont(undefined, 'bold');
   doc.setTextColor(30, 90, 168);
-  doc.text('Descripcion', 22, y);
+  doc.text('Descripcion', textX, y);
   doc.text('Cant.', 120, y, { align: 'center' });
   doc.text('P. Unit.', 150, y, { align: 'center' });
   doc.text('Subtotal', width - 22, y, { align: 'right' });
@@ -377,13 +407,21 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
     const subtotal = item.price * (item.quantity || 1);
     if (i % 2 === 1) {
       doc.setFillColor(248, 250, 252);
-      doc.rect(20, y - 4, width - 40, 7, 'F');
+      doc.rect(20, y - 4, width - 40, rowH, 'F');
     }
-    doc.text(String(item.name || '').substring(0, 55), 22, y);
-    doc.text(String(item.quantity || 1), 120, y, { align: 'center' });
-    doc.text(formatCurrency(item.price), 150, y, { align: 'center' });
-    doc.text(formatCurrency(subtotal), width - 22, y, { align: 'right' });
-    y += 7;
+    const imgData = itemImages[i];
+    if (hasAnyImage) {
+      if (imgData) {
+        try { doc.addImage(imgData, 'JPEG', 22, y - 3, 16, 16); } catch {}
+      }
+    }
+    const nameLines = doc.splitTextToSize(String(item.name || '').substring(0, descMaxChars), 70);
+    doc.text(nameLines, textX, y + (hasAnyImage ? 3 : 0));
+    const rowMid = hasAnyImage ? y + 5 : y;
+    doc.text(String(item.quantity || 1), 120, rowMid, { align: 'center' });
+    doc.text(formatCurrency(item.price), 150, rowMid, { align: 'center' });
+    doc.text(formatCurrency(subtotal), width - 22, rowMid, { align: 'right' });
+    y += rowH;
   });
 
   y += 3;

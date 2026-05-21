@@ -1712,7 +1712,7 @@ function SalesCartPage({ data, updateData, pageType }) {
       date: getToday(),
       clientName: customerName,
       clientPhone: customerPhone,
-      items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity })),
+      items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity, imageUrl: c.imageUrl || '' })),
       total: cartTotal,
       notes,
       ...(isRemito ? { sigFirma, sigAclaracion, sigDni } : {})
