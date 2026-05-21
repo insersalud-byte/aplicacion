@@ -1736,6 +1736,17 @@ function SalesCartPage({ data, updateData, pageType }) {
     }
   };
 
+  const handleEditSaved = (s) => {
+    const items = s.cartItems || s.items?.map(i => ({ ...i, id: i.id || ('item-' + Math.random()), _cat: 'libre', _label: 'Item' })) || [];
+    setCart(items.map(i => ({ ...i, price: Number(i.price) || 0, quantity: Number(i.quantity) || 1 })));
+    setCustomerName(s.customerName || s.clientName || '');
+    setCustomerPhone(s.customerPhone || s.clientPhone || '');
+    setNotes(s.notes || '');
+    if (isRemito) { setSigFirma(s.sigFirma || ''); setSigAclaracion(s.sigAclaracion || ''); setSigDni(s.sigDni || ''); }
+    updateData(cur => ({ ...cur, [collectionKey]: (cur[collectionKey] || []).filter(x => x.id !== s.id) }));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -1856,6 +1867,7 @@ function SalesCartPage({ data, updateData, pageType }) {
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span style={{ fontWeight: 700, color: '#1E5AA8' }}>{formatCurrency(s.total)}</span>
+                <button className="btn btn-sm btn-secondary" onClick={() => handleEditSaved(s)}>✏️ Editar</button>
                 <button className="btn btn-sm btn-danger" onClick={() => handleDeleteSaved(s.id)}>🗑️</button>
               </div>
             </div>
