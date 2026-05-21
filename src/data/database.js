@@ -160,7 +160,17 @@ export async function saveData(data) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
   } catch (e) {
-    console.error('Error saving data:', e);
+    // QuotaExceededError: strip imageUrls and retry
+    try {
+      const slim = {
+        ...normalized,
+        equipment: normalized.equipment.map(eq => ({ ...eq, imageUrl: eq.imageUrl?.startsWith('data:') ? '' : (eq.imageUrl || '') }))
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
+      console.warn('Guardado sin imagenes por limite de almacenamiento local');
+    } catch (e2) {
+      console.error('Error saving data:', e2);
+    }
   }
 
   try {
@@ -318,10 +328,10 @@ async function toBase64Image(url) {
 export async function generateInvoicePDF(invoiceData, settings, type = 'factura') {
   const { jsPDF } = await import('jspdf');
 
-  // Pre-load all item images
-  const itemImages = await Promise.all(
-    invoiceData.items.map(item => toBase64Image(item.imageUrl || ''))
-  );
+  const [logoBase64, ...itemImages] = await Promise.all([
+    toBase64Image(window.location.origin + '/logo.jpg'),
+    ...invoiceData.items.map(item => toBase64Image(item.imageUrl || ''))
+  ]);
   const hasAnyImage = itemImages.some(Boolean);
 
   const doc = new jsPDF('p', 'mm', 'a4');
@@ -331,48 +341,47 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
   const isRemito = type === 'remito';
   const title = isRemito ? 'REMITO' : (isCotizacion ? 'COTIZACION' : 'FACTURA');
 
-  let y = 15;
-
-  // Logo / Company name
+  // ── Header ──────────────────────────────────────────────────────────────
   doc.setFillColor(30, 90, 168);
-  doc.rect(0, 0, width, 45, 'F');
+  doc.rect(0, 0, width, 48, 'F');
 
+  if (logoBase64) {
+    try { doc.addImage(logoBase64, 'JPEG', 6, 4, 38, 38); } catch {}
+  }
+
+  const cx = logoBase64 ? width / 2 + 15 : width / 2;
   doc.setTextColor(255, 255, 255);
-  doc.setFontSize(26);
+  doc.setFontSize(22);
   doc.setFont(undefined, 'bold');
-  doc.text(settings.companyName || 'INSER SALUD', width / 2, y + 5, { align: 'center' });
-  y += 12;
-  doc.setFontSize(10);
+  doc.text(settings.companyName || 'INSER SALUD', cx, 18, { align: 'center' });
+  doc.setFontSize(9);
   doc.setFont(undefined, 'normal');
-  if (settings.companyPhone) doc.text(`Tel: ${settings.companyPhone}`, width / 2, y + 5, { align: 'center' });
-  y += 5;
-  if (settings.companyAddress) doc.text(settings.companyAddress, width / 2, y + 5, { align: 'center' });
-  y += 5;
-  if (settings.companyEmail) doc.text(settings.companyEmail, width / 2, y + 5, { align: 'center' });
+  let hy = 25;
+  if (settings.companyPhone) { doc.text(`Tel: ${settings.companyPhone}`, cx, hy, { align: 'center' }); hy += 5; }
+  if (settings.companyAddress) { doc.text(settings.companyAddress, cx, hy, { align: 'center' }); hy += 5; }
+  if (settings.companyEmail) { doc.text(settings.companyEmail, cx, hy, { align: 'center' }); }
 
-  // Title bar
-  y = 52;
+  // ── Title ────────────────────────────────────────────────────────────────
+  let y = 56;
   doc.setTextColor(30, 90, 168);
   doc.setFontSize(18);
   doc.setFont(undefined, 'bold');
   doc.text(title, width / 2, y, { align: 'center' });
   y += 10;
 
-  // Doc info
+  // ── Doc info ─────────────────────────────────────────────────────────────
   doc.setTextColor(60, 60, 60);
   doc.setFontSize(10);
   doc.setFont(undefined, 'normal');
   doc.text(`Fecha: ${formatDate(invoiceData.date)}`, 20, y);
   if (invoiceData.invoiceNumber) doc.text(`N°: ${invoiceData.invoiceNumber}`, width - 20, y, { align: 'right' });
   y += 10;
-
-  // Separator
   doc.setDrawColor(30, 90, 168);
   doc.setLineWidth(0.5);
   doc.line(20, y, width - 20, y);
   y += 8;
 
-  // Client
+  // ── Client ───────────────────────────────────────────────────────────────
   doc.setFontSize(11);
   doc.setFont(undefined, 'bold');
   doc.text('CLIENTE', 20, y);
@@ -385,55 +394,73 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
   if (invoiceData.clientAddress) { doc.text(`Dir: ${invoiceData.clientAddress}`, 20, y); y += 6; }
   y += 8;
 
-  // Table header
-  const rowH = hasAnyImage ? 18 : 8;
-  const textX = hasAnyImage ? 42 : 22;
-  const descMaxChars = hasAnyImage ? 38 : 55;
-  doc.setFillColor(240, 245, 250);
-  doc.rect(20, y - 4, width - 40, 8, 'F');
-  doc.setFontSize(9);
-  doc.setFont(undefined, 'bold');
-  doc.setTextColor(30, 90, 168);
-  doc.text('Descripcion', textX, y);
-  doc.text('Cant.', 120, y, { align: 'center' });
-  doc.text('P. Unit.', 150, y, { align: 'center' });
-  doc.text('Subtotal', width - 22, y, { align: 'right' });
-  y += 8;
-
-  // Table rows
-  doc.setFont(undefined, 'normal');
-  doc.setTextColor(60, 60, 60);
-  invoiceData.items.forEach((item, i) => {
-    const subtotal = item.price * (item.quantity || 1);
-    if (i % 2 === 1) {
-      doc.setFillColor(248, 250, 252);
-      doc.rect(20, y - 4, width - 40, rowH, 'F');
-    }
-    const imgData = itemImages[i];
-    if (hasAnyImage) {
-      if (imgData) {
-        try { doc.addImage(imgData, 'JPEG', 22, y - 3, 16, 16); } catch {}
+  // ── Items ────────────────────────────────────────────────────────────────
+  if (isRemito) {
+    // REMITO: only photo + description, no prices
+    invoiceData.items.forEach((item, i) => {
+      const imgData = itemImages[i];
+      const rh = imgData ? 20 : 9;
+      if (i % 2 === 0) {
+        doc.setFillColor(248, 250, 252);
+        doc.rect(20, y - 5, width - 40, rh, 'F');
       }
-    }
-    const nameLines = doc.splitTextToSize(String(item.name || '').substring(0, descMaxChars), 70);
-    doc.text(nameLines, textX, y + (hasAnyImage ? 3 : 0));
-    const rowMid = hasAnyImage ? y + 5 : y;
-    doc.text(String(item.quantity || 1), 120, rowMid, { align: 'center' });
-    doc.text(formatCurrency(item.price), 150, rowMid, { align: 'center' });
-    doc.text(formatCurrency(subtotal), width - 22, rowMid, { align: 'right' });
-    y += rowH;
-  });
-
-  y += 3;
-  doc.setDrawColor(30, 90, 168);
-  doc.line(20, y, width - 20, y);
-  y += 8;
-
-  // Total
-  doc.setFont(undefined, 'bold');
-  doc.setFontSize(13);
-  doc.setTextColor(30, 90, 168);
-  doc.text(`TOTAL: ${formatCurrency(invoiceData.total)}`, width - 22, y, { align: 'right' });
+      if (imgData) {
+        try { doc.addImage(imgData, 'JPEG', 22, y - 4, 17, 17); } catch {}
+        doc.setFontSize(10);
+        doc.setFont(undefined, 'normal');
+        doc.setTextColor(60, 60, 60);
+        const lines = doc.splitTextToSize(String(item.name || ''), 140);
+        doc.text(lines, 43, y + 2);
+      } else {
+        doc.setFontSize(10);
+        doc.setFont(undefined, 'normal');
+        doc.setTextColor(60, 60, 60);
+        doc.text(String(item.name || ''), 22, y);
+      }
+      y += rh;
+    });
+  } else {
+    // COTIZACION / FACTURA: full table with prices
+    const rowH = hasAnyImage ? 18 : 8;
+    const textX = hasAnyImage ? 42 : 22;
+    const descW = hasAnyImage ? 70 : 85;
+    doc.setFillColor(240, 245, 250);
+    doc.rect(20, y - 4, width - 40, 8, 'F');
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(30, 90, 168);
+    doc.text('Descripcion', textX, y);
+    doc.text('Cant.', 120, y, { align: 'center' });
+    doc.text('P. Unit.', 150, y, { align: 'center' });
+    doc.text('Subtotal', width - 22, y, { align: 'right' });
+    y += 8;
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(60, 60, 60);
+    invoiceData.items.forEach((item, i) => {
+      const subtotal = item.price * (item.quantity || 1);
+      if (i % 2 === 1) {
+        doc.setFillColor(248, 250, 252);
+        doc.rect(20, y - 4, width - 40, rowH, 'F');
+      }
+      const imgData = itemImages[i];
+      if (imgData) { try { doc.addImage(imgData, 'JPEG', 22, y - 3, 16, 16); } catch {} }
+      const nameLines = doc.splitTextToSize(String(item.name || ''), descW);
+      doc.text(nameLines, textX, y + (hasAnyImage ? 3 : 0));
+      const rowMid = hasAnyImage ? y + 5 : y;
+      doc.text(String(item.quantity || 1), 120, rowMid, { align: 'center' });
+      doc.text(formatCurrency(item.price), 150, rowMid, { align: 'center' });
+      doc.text(formatCurrency(subtotal), width - 22, rowMid, { align: 'right' });
+      y += rowH;
+    });
+    y += 3;
+    doc.setDrawColor(30, 90, 168);
+    doc.line(20, y, width - 20, y);
+    y += 8;
+    doc.setFont(undefined, 'bold');
+    doc.setFontSize(13);
+    doc.setTextColor(30, 90, 168);
+    doc.text(`TOTAL: ${formatCurrency(invoiceData.total)}`, width - 22, y, { align: 'right' });
+  }
 
   if (invoiceData.notes) {
     y += 12;

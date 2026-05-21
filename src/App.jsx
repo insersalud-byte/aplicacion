@@ -1219,13 +1219,22 @@ function EquipmentModal({ equipment, onSave, onClose }) {
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setForm({ ...form, imageUrl: reader.result });
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 600;
+        const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * ratio);
+        canvas.height = Math.round(img.height * ratio);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        setForm(f => ({ ...f, imageUrl: canvas.toDataURL('image/jpeg', 0.75) }));
       };
-      reader.readAsDataURL(file);
-    }
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleSubmit = (e) => {
@@ -1374,7 +1383,22 @@ function EquiposNuevosPage({ data, updateData }) {
           const [form, setForm] = useState(editing || { name: '', description: '', price: '', priceUsd: '', priceVentaUsd: '', imageUrl: '' });
           const handleImg = (e) => {
             const file = e.target.files[0];
-            if (file) { const r = new FileReader(); r.onloadend = () => setForm({ ...form, imageUrl: r.result }); r.readAsDataURL(file); }
+            if (!file) return;
+            const r = new FileReader();
+            r.onloadend = () => {
+              const img = new Image();
+              img.onload = () => {
+                const MAX = 600;
+                const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.round(img.width * ratio);
+                canvas.height = Math.round(img.height * ratio);
+                canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                setForm(f => ({ ...f, imageUrl: canvas.toDataURL('image/jpeg', 0.75) }));
+              };
+              img.src = r.result;
+            };
+            r.readAsDataURL(file);
           };
           return (
             <div className="modal-overlay" onClick={() => { setShowModal(false); setEditing(null); }}>
