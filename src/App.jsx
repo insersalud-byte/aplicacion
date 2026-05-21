@@ -1191,6 +1191,11 @@ function EquipmentPage({ data, updateData }) {
                     <span style={{ color: '#43A047', fontWeight: 600, fontSize: 13 }}>Disponible</span>
                   </div>
                 )}
+                {equip.rentalPrice > 0 && (
+                  <div style={{ fontSize: 12, color: '#1E5AA8', fontWeight: 600, marginBottom: 6 }}>
+                    Alquiler: {formatCurrency(equip.rentalPrice)}/mes
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                   <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment({ ...equip, id: null, serialNumber: equip.serialNumber + '-COPY' }); setShowModal(true); }}>📋</button>
                   <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment(equip); setShowModal(true); }}>✏️</button>
@@ -1210,7 +1215,7 @@ function EquipmentPage({ data, updateData }) {
 }
 
 function EquipmentModal({ equipment, onSave, onClose }) {
-  const [form, setForm] = useState(equipment || { name: '', serialNumber: '', type: 'otro', status: 'disponible', description: '', available: true, imageUrl: '', ownership: 'propio' });
+  const [form, setForm] = useState(equipment || { name: '', serialNumber: '', type: 'otro', status: 'disponible', description: '', available: true, imageUrl: '', ownership: 'propio', rentalPrice: '' });
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
@@ -1229,7 +1234,7 @@ function EquipmentModal({ equipment, onSave, onClose }) {
       alert('Nombre y serie son obligatorios');
       return;
     }
-    onSave(form);
+    onSave({ ...form, rentalPrice: Number(form.rentalPrice) || 0 });
   };
 
   return (
@@ -1269,6 +1274,11 @@ function EquipmentModal({ equipment, onSave, onClose }) {
               <option value="alquilado">Alquilado</option>
               <option value="mantenimiento">Mantenimiento</option>
             </select>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label">Precio de alquiler mensual $</label>
+            <input type="number" className="form-input" placeholder="0" min="0" value={form.rentalPrice || ''} onChange={e => setForm({...form, rentalPrice: e.target.value})} />
           </div>
 
           <div className="form-group">
@@ -1648,7 +1658,7 @@ function SalesCartPage({ data, updateData, pageType }) {
   ];
 
   const allProducts = [
-    ...(equipment || []).map(e => ({ ...e, _cat: 'equipos', _label: 'Equipo' })),
+    ...(equipment || []).map(e => ({ ...e, price: Number(e.rentalPrice) || Number(e.price) || 0, _cat: 'equipos', _label: 'Equipo' })),
     ...(equiposNuevos || []).map(e => ({ ...e, _cat: 'equiposNuevos', _label: 'Equipo Nuevo' })),
     ...(mascaras || []).map(m => ({ ...m, price: m.precio || m.price || 0, _cat: 'mascarillas', _label: 'Mascarilla' })),
     ...(descartables || []).map(d => ({ ...d, _cat: 'descartables', _label: 'Descartable' }))
