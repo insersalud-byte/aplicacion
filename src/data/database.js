@@ -8,6 +8,7 @@ export const initialData = {
   equipment: [],
   rentals: [],
   quotations: [],
+  remitos: [],
   descartables: [],
   mascaras: [],
   invoices: [],
@@ -35,6 +36,7 @@ function normalizeData(data = {}) {
     equipment: Array.isArray(data.equipment) ? data.equipment : [],
     rentals: Array.isArray(data.rentals) ? data.rentals : [],
     quotations: Array.isArray(data.quotations) ? data.quotations : [],
+    remitos: Array.isArray(data.remitos) ? data.remitos : [],
     descartables: Array.isArray(data.descartables) ? data.descartables : [],
     mascaras: Array.isArray(data.mascaras) ? data.mascaras : [],
     invoices: Array.isArray(data.invoices) ? data.invoices : [],
@@ -59,7 +61,7 @@ function loadLocalData() {
 }
 
 function hasDataEntries(data) {
-  return ['patients', 'equipment', 'rentals', 'quotations', 'descartables', 'mascaras', 'invoices', 'equiposNuevos']
+  return ['patients', 'equipment', 'rentals', 'quotations', 'remitos', 'descartables', 'mascaras', 'invoices', 'equiposNuevos']
     .some(key => Array.isArray(data[key]) && data[key].length > 0);
 }
 
@@ -94,6 +96,7 @@ function mergeDataSources(localData, remoteData) {
     equipment: mergeCollection(localData.equipment, remoteData.equipment, ['serialNumber', 'name']),
     rentals: mergeCollection(localData.rentals, remoteData.rentals, ['patientId', 'equipmentId', 'startDate', 'endDate']),
     quotations: mergeCollection(localData.quotations, remoteData.quotations, ['customerName', 'customerPhone', 'equipmentId', 'createdAt']),
+    remitos: mergeCollection(localData.remitos, remoteData.remitos, ['customerName', 'customerPhone', 'createdAt']),
     descartables: mergeCollection(localData.descartables, remoteData.descartables, ['name', 'category', 'supplier']),
     mascaras: mergeCollection(localData.mascaras, remoteData.mascaras, ['name', 'type']),
     invoices: mergeCollection(localData.invoices, remoteData.invoices, ['invoiceNumber', 'date']),
@@ -298,7 +301,8 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
   const width = doc.internal.pageSize.getWidth();
   const height = doc.internal.pageSize.getHeight();
   const isCotizacion = type === 'cotizacion';
-  const title = isCotizacion ? 'COTIZACION' : 'FACTURA';
+  const isRemito = type === 'remito';
+  const title = isRemito ? 'REMITO' : (isCotizacion ? 'COTIZACION' : 'FACTURA');
 
   let y = 15;
 
@@ -404,8 +408,37 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
     doc.text(splitNotes, 20, y);
   }
 
+  // Signature block for remito
+  if (isRemito) {
+    y += 18;
+    doc.setDrawColor(30, 90, 168);
+    doc.setLineWidth(0.4);
+    doc.line(20, y, width - 20, y);
+    y += 8;
+    doc.setFontSize(12);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(30, 90, 168);
+    doc.text('RECIBI CONFORME', width / 2, y, { align: 'center' });
+    y += 12;
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(60, 60, 60);
+    doc.text('FIRMA:', 20, y);
+    const firmaVal = invoiceData.sigFirma ? ` ${invoiceData.sigFirma}` : '';
+    doc.line(45, y, width - 20, y);
+    if (firmaVal) doc.text(firmaVal.trim(), 47, y - 1);
+    y += 10;
+    doc.text('ACLARACION:', 20, y);
+    doc.line(52, y, width - 20, y);
+    if (invoiceData.sigAclaracion) doc.text(invoiceData.sigAclaracion, 54, y - 1);
+    y += 10;
+    doc.text('DNI:', 20, y);
+    doc.line(35, y, width - 20, y);
+    if (invoiceData.sigDni) doc.text(invoiceData.sigDni, 37, y - 1);
+  }
+
   // Footer - "Sin valor fiscal" for facturas
-  if (!isCotizacion) {
+  if (!isCotizacion && !isRemito) {
     doc.setFontSize(8);
     doc.setTextColor(150, 150, 150);
     doc.setFont(undefined, 'italic');
@@ -416,7 +449,7 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
 }
 
 export function downloadInvoicePDF(doc, number, type = 'factura') {
-  const prefix = type === 'cotizacion' ? 'Cotizacion' : 'Factura';
+  const prefix = type === 'remito' ? 'Remito' : (type === 'cotizacion' ? 'Cotizacion' : 'Factura');
   doc.save(`${prefix}_${number}.pdf`);
 }
 

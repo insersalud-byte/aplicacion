@@ -180,7 +180,7 @@ function App() {
 
         <div className={`nav-item ${currentPage === 'quotations' ? 'active' : ''}`} onClick={() => setCurrentPage('quotations')}>
           <span className="nav-icon">💰</span>
-          <span className="nav-label">Cotizaciones</span>
+          <span className="nav-label">Cotiz./Remito</span>
         </div>
         
         <div className={`nav-item ${currentPage === 'calendar' ? 'active' : ''}`} onClick={() => setCurrentPage('calendar')}>
@@ -1620,11 +1620,12 @@ function MascaraModal({ mascara, onSave, onClose }) {
 }
 
 function SalesCartPage({ data, updateData, pageType }) {
-  const { equipment, mascaras, descartables, equiposNuevos, patients, settings, quotations, invoices } = data;
+  const { equipment, mascaras, descartables, equiposNuevos, patients, settings, quotations, invoices, remitos } = data;
   const isCotizacion = pageType === 'cotizacion';
-  const title = isCotizacion ? 'Cotizaciones' : 'Facturacion';
-  const collectionKey = isCotizacion ? 'quotations' : 'invoices';
-  const savedItems = isCotizacion ? (quotations || []) : (invoices || []);
+  const isRemito = pageType === 'remito';
+  const title = isRemito ? 'Remito' : (isCotizacion ? 'Cotizaciones' : 'Facturacion');
+  const collectionKey = isRemito ? 'remitos' : (isCotizacion ? 'quotations' : 'invoices');
+  const savedItems = isRemito ? (remitos || []) : (isCotizacion ? (quotations || []) : (invoices || []));
 
   const [cart, setCart] = useState([]);
   const [customerName, setCustomerName] = useState('');
@@ -1634,6 +1635,9 @@ function SalesCartPage({ data, updateData, pageType }) {
   const [category, setCategory] = useState('todos');
   const [showLibre, setShowLibre] = useState(false);
   const [libreItem, setLibreItem] = useState({ name: '', price: 0, quantity: 1 });
+  const [sigFirma, setSigFirma] = useState('');
+  const [sigAclaracion, setSigAclaracion] = useState('');
+  const [sigDni, setSigDni] = useState('');
 
   const categories = [
     { value: 'todos', label: 'Todos' },
@@ -1674,11 +1678,11 @@ function SalesCartPage({ data, updateData, pageType }) {
 
   const updateCartItem = (id, field, value) => setCart(cart.map(c => c.id === id ? { ...c, [field]: value } : c));
   const removeFromCart = (id) => setCart(cart.filter(c => c.id !== id));
-  const clearCart = () => { setCart([]); setCustomerName(''); setCustomerPhone(''); setNotes(''); };
+  const clearCart = () => { setCart([]); setCustomerName(''); setCustomerPhone(''); setNotes(''); setSigFirma(''); setSigAclaracion(''); setSigDni(''); };
   const cartTotal = cart.reduce((s, c) => s + (c.price * c.quantity), 0);
 
   const buildWhatsAppMsg = () => {
-    const prefix = isCotizacion ? 'COTIZACION' : 'FACTURA';
+    const prefix = isRemito ? 'REMITO' : (isCotizacion ? 'COTIZACION' : 'FACTURA');
     let msg = `*${settings.companyName || 'Inser Salud'}*\n*${prefix}*\n`;
     msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
     if (customerName) msg += `*Cliente:* ${customerName}\n`;
@@ -1688,6 +1692,7 @@ function SalesCartPage({ data, updateData, pageType }) {
     msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
     msg += `*TOTAL: ${formatCurrency(cartTotal)}*\n`;
     if (notes) msg += `\n*Obs:* ${notes}\n`;
+    if (isRemito) msg += `\n*RECIBI CONFORME*\nFirma: ___________\nAclaracion: ___________\nDNI: ___________\n`;
     msg += `\n${settings.companyPhone || ''}\n${settings.companyAddress || ''}`;
     return msg;
   };
@@ -1699,7 +1704,8 @@ function SalesCartPage({ data, updateData, pageType }) {
 
   const handlePDF = async () => {
     if (cart.length === 0) { alert('Agregue productos'); return; }
-    const prefix = isCotizacion ? 'COT' : 'FAC';
+    const prefix = isRemito ? 'REM' : (isCotizacion ? 'COT' : 'FAC');
+    const docType = isRemito ? 'remito' : (isCotizacion ? 'cotizacion' : 'factura');
     const number = `${prefix}-${Date.now().toString(36).toUpperCase()}`;
     const invoiceData = {
       invoiceNumber: number,
@@ -1708,14 +1714,15 @@ function SalesCartPage({ data, updateData, pageType }) {
       clientPhone: customerPhone,
       items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity })),
       total: cartTotal,
-      notes
+      notes,
+      ...(isRemito ? { sigFirma, sigAclaracion, sigDni } : {})
     };
     try {
-      const doc = await generateInvoicePDF(invoiceData, settings, isCotizacion ? 'cotizacion' : 'factura');
-      downloadInvoicePDF(doc, number, isCotizacion ? 'cotizacion' : 'factura');
+      const doc = await generateInvoicePDF(invoiceData, settings, docType);
+      downloadInvoicePDF(doc, number, docType);
       const record = { id: generateId(), ...invoiceData, customerName, customerPhone, cartItems: cart, createdAt: getToday() };
       updateData(cur => ({ ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] }));
-      alert(`${isCotizacion ? 'Cotizacion' : 'Factura'} ${number} generada`);
+      alert(`${isRemito ? 'Remito' : (isCotizacion ? 'Cotizacion' : 'Factura')} ${number} generado`);
       clearCart();
     } catch (err) {
       console.error(err);
@@ -1732,7 +1739,7 @@ function SalesCartPage({ data, updateData, pageType }) {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">{isCotizacion ? '💰' : '🛒'} {title}</h1>
+        <h1 className="page-title">{isRemito ? '📝' : (isCotizacion ? '💰' : '🛒')} {title}</h1>
       </div>
 
       <div className="card">
@@ -1813,8 +1820,26 @@ function SalesCartPage({ data, updateData, pageType }) {
           <textarea className="form-input" rows={2} placeholder="Notas..." value={notes} onChange={e => setNotes(e.target.value)} />
         </div>
 
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <button className="btn btn-success" style={{ flex: 1 }} onClick={handlePDF}>📄 {isCotizacion ? 'Cotizacion' : 'Factura'} PDF</button>
+        {isRemito && (
+          <div style={{ marginTop: 12, padding: 12, background: '#F0F7FF', border: '1px solid #BBD6FF', borderRadius: 8 }}>
+            <div style={{ fontWeight: 700, color: '#1E5AA8', marginBottom: 10, textAlign: 'center', fontSize: 14 }}>RECIBI CONFORME</div>
+            <div className="form-group">
+              <label className="form-label">Firma</label>
+              <input type="text" className="form-input" placeholder="..." value={sigFirma} onChange={e => setSigFirma(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Aclaracion</label>
+              <input type="text" className="form-input" placeholder="Nombre completo" value={sigAclaracion} onChange={e => setSigAclaracion(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">DNI</label>
+              <input type="text" className="form-input" placeholder="DNI" value={sigDni} onChange={e => setSigDni(e.target.value)} />
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
+          <button className="btn btn-success" style={{ flex: 1 }} onClick={handlePDF}>📄 {isRemito ? 'Remito' : (isCotizacion ? 'Cotizacion' : 'Factura')} PDF</button>
           <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleWhatsApp}>📱 WhatsApp</button>
           <button className="btn btn-danger" onClick={clearCart}>🗑️</button>
         </div>
@@ -1842,7 +1867,36 @@ function SalesCartPage({ data, updateData, pageType }) {
 }
 
 function QuotationsPage({ data, updateData }) {
-  return <SalesCartPage data={data} updateData={updateData} pageType="cotizacion" />;
+  const [docType, setDocType] = useState('cotizacion');
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 0, marginBottom: 16, background: '#E3F2FD', borderRadius: 10, padding: 4, width: 'fit-content' }}>
+        <button
+          onClick={() => setDocType('cotizacion')}
+          style={{
+            padding: '7px 22px', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
+            background: docType === 'cotizacion' ? '#1E5AA8' : 'transparent',
+            color: docType === 'cotizacion' ? '#fff' : '#1E5AA8',
+            transition: 'all 0.15s'
+          }}
+        >
+          COTIZACION
+        </button>
+        <button
+          onClick={() => setDocType('remito')}
+          style={{
+            padding: '7px 22px', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13,
+            background: docType === 'remito' ? '#1E5AA8' : 'transparent',
+            color: docType === 'remito' ? '#fff' : '#1E5AA8',
+            transition: 'all 0.15s'
+          }}
+        >
+          REMITO
+        </button>
+      </div>
+      <SalesCartPage key={docType} data={data} updateData={updateData} pageType={docType} />
+    </div>
+  );
 }
 
 function CalendarPage({ data }) {
