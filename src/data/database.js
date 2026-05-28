@@ -34,9 +34,9 @@ export const initialData = {
   equiposNuevos: seedEquiposNuevos,
   settings: {
     companyName: 'Inser Salud',
-    companyPhone: '+54 11 1234-5678',
-    companyAddress: 'Buenos Aires, Argentina',
-    companyEmail: 'info@insersalud.com',
+    companyPhone: '+54 9 351 206-5320',
+    companyAddress: 'Cordoba, Argentina',
+    companyEmail: 'inser.salud@gmail.com',
     monthlyRentalPrice: 15000,
     dailyRentalPrice: 500,
     salePriceMultiplier: 3.5
