@@ -142,20 +142,9 @@ export async function loadData() {
     const remoteData = await loadRemoteData();
     const mergedData = mergeDataSources(localData, remoteData);
 
-    // Sync merged data back to remote to keep it up to date
+    // Sync merged data back to remote if it has more items than remote
     if (JSON.stringify(mergedData) !== JSON.stringify(remoteData)) {
       saveRemoteData(mergedData).catch(() => {});
-    }
-
-    // Only update local storage if the merge actually added items from remote
-    // Never let remote data reduce what the user has locally
-    const localWins =
-      mergedData.rentals.length <= localData.rentals.length &&
-      mergedData.patients.length <= localData.patients.length &&
-      mergedData.equipment.length <= localData.equipment.length;
-
-    if (localWins) {
-      return localData;
     }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedData));
