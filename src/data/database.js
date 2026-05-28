@@ -18,7 +18,8 @@ export function getSyncStatus() {
 
 function setSyncStatus(state, error) {
   _syncStatus = { state, lastSync: state === 'ok' ? new Date() : _syncStatus.lastSync, error: error || null };
-  _syncListeners.forEach(fn => fn(_syncStatus));
+  const status = _syncStatus;
+  queueMicrotask(() => _syncListeners.forEach(fn => fn(status)));
 }
 
 export const initialData = {
@@ -164,12 +165,14 @@ export async function loadData() {
     const remoteData = await loadRemoteData();
     const mergedData = mergeDataSources(localData, remoteData);
 
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedData));
+
     if (JSON.stringify(mergedData) !== JSON.stringify(remoteData)) {
-      await saveRemoteData(mergedData);
+      saveRemoteData(mergedData).then(() => setSyncStatus('ok')).catch(() => setSyncStatus('error', 'Sync write failed'));
+    } else {
+      setSyncStatus('ok');
     }
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedData));
-    setSyncStatus('ok');
     return mergedData;
   } catch (e) {
     console.error('Sync error on load:', e);

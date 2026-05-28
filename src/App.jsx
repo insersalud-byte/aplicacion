@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail, onSyncStatus } from './data/database';
 import './App.css';
 
@@ -137,13 +137,19 @@ function App() {
     };
   }, []);
 
-  const updateData = (updater) => {
-    setData(currentData => {
-      const nextData = typeof updater === 'function' ? updater(currentData) : updater;
-      void saveData(nextData);
+  const dataRef = useRef(data);
+  dataRef.current = data;
+
+  const updateData = useCallback((updater) => {
+    setData(prev => {
+      const nextData = typeof updater === 'function' ? updater(prev) : updater;
+      dataRef.current = nextData;
       return nextData;
     });
-  };
+    queueMicrotask(() => {
+      saveData(dataRef.current);
+    });
+  }, []);
 
   if (loading || !data) {
     return <div className="app-container"><div className="main-content">Cargando...</div></div>;
