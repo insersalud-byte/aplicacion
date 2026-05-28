@@ -121,8 +121,8 @@ function mergeDataSources(localData, remoteData) {
     invoices: mergeCollection(localData.invoices, remoteData.invoices, ['invoiceNumber', 'date']),
     equiposNuevos: mergeCollection(localData.equiposNuevos, remoteData.equiposNuevos, ['name', 'price']),
     settings: {
-      ...remoteData.settings,
-      ...localData.settings
+      ...localData.settings,
+      ...remoteData.settings
     }
   });
 }
