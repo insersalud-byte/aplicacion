@@ -1,7 +1,8 @@
 import { seedEquiposNuevos } from './seedEquiposNuevos';
 
 const STORAGE_KEY = 'insersalud_db';
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const SUPABASE_URL = 'https://gvharyztavhugqiaihjq.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_wTO5X4JfeoHP0zg7qq4azQ_OJ3jxfwL';
 
 export const initialData = {
   patients: [],
@@ -108,42 +109,53 @@ function mergeDataSources(localData, remoteData) {
   });
 }
 
-async function requestJson(path, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+async function loadRemoteData() {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1`, {
     headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    },
-    ...options
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+    }
   });
+  if (!response.ok) throw new Error(`Supabase GET ${response.status}`);
+  const rows = await response.json();
+  if (!rows || rows.length === 0) return normalizeData({});
+  return normalizeData(rows[0].data || {});
+}
 
-  if (!response.ok) {
-    throw new Error(`API ${response.status}`);
-  }
-
-  return response.status === 204 ? null : response.json();
+async function saveRemoteData(data) {
+  await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1`, {
+    method: 'PATCH',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=minimal',
+    },
+    body: JSON.stringify({ data, updated_at: new Date().toISOString() }),
+  });
 }
 
 export async function loadData() {
   const localData = loadLocalData();
 
   try {
-    const remoteData = normalizeData(await requestJson('/db'));
+    const remoteData = await loadRemoteData();
     const mergedData = mergeDataSources(localData, remoteData);
 
-    if (!hasDataEntries(remoteData) && hasDataEntries(localData)) {
-      await requestJson('/db', {
-        method: 'PUT',
-        body: JSON.stringify(localData)
-      });
-      return localData;
+    // Sync merged data back to remote to keep it up to date
+    if (JSON.stringify(mergedData) !== JSON.stringify(remoteData)) {
+      saveRemoteData(mergedData).catch(() => {});
     }
 
-    if (JSON.stringify(mergedData) !== JSON.stringify(remoteData)) {
-      await requestJson('/db', {
-        method: 'PUT',
-        body: JSON.stringify(mergedData)
-      });
+    // Only update local storage if the merge actually added items from remote
+    // Never let remote data reduce what the user has locally
+    const localWins =
+      mergedData.rentals.length <= localData.rentals.length &&
+      mergedData.patients.length <= localData.patients.length &&
+      mergedData.equipment.length <= localData.equipment.length;
+
+    if (localWins) {
+      return localData;
     }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedData));
@@ -174,10 +186,7 @@ export async function saveData(data) {
   }
 
   try {
-    await requestJson('/db', {
-      method: 'PUT',
-      body: JSON.stringify(normalized)
-    });
+    await saveRemoteData(normalized);
   } catch (e) {
     console.error('Error saving remote data:', e);
   }
