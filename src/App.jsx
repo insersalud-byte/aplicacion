@@ -232,32 +232,50 @@ function HomePage({ data, updateData, setCurrentPage }) {
   };
 
   useEffect(() => {
-    let needsUpdate = false;
-    const updatedRentals = rentals.map(rental => {
-      const isExpired = rental.status === 'activo' && rental.endDate && new Date(rental.endDate) < new Date(today);
-      if (isExpired) { needsUpdate = true; return { ...rental, status: 'vencido' }; }
+    const now = new Date();
+    const todayStr = getToday();
+    const needsUpdate = rentals.some(r =>
+      (r.status === 'activo' && r.endDate && r.endDate < todayStr) ||
+      (r.status === 'vencido' && r.endDate && getUnpaidMonthsForRental(r).length === 0)
+    );
+    if (!needsUpdate) return;
 
-      const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && getUnpaidMonthsForRental(rental).length === 0;
-      if (isVencidoFullyPaid) {
-        needsUpdate = true;
-        const now = new Date();
-        const day = new Date(rental.endDate).getDate();
-        const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, day);
-        return { ...rental, status: 'activo', endDate: nextMonth.toISOString().split('T')[0] };
-      }
-      return rental;
+    updateData(cur => {
+      const updated = cur.rentals.map(rental => {
+        const isExpired = rental.status === 'activo' && rental.endDate && rental.endDate < todayStr;
+        if (isExpired) return { ...rental, status: 'vencido' };
+        const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && getUnpaidMonthsForRental(rental).length === 0;
+        if (isVencidoFullyPaid) {
+          const [ey, em, ed] = rental.endDate.split('-').map(Number);
+          const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, ed);
+          const nextMonthStr = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth()+1).padStart(2,'0')}-${String(nextMonth.getDate()).padStart(2,'0')}`;
+          return { ...rental, status: 'activo', endDate: nextMonthStr };
+        }
+        return rental;
+      });
+      return { ...cur, rentals: updated };
     });
-
-    if (needsUpdate) {
-      updateData(cur => ({ ...cur, rentals: updatedRentals }));
-    }
-  }, [rentals, today, updateData]);
+  }, [rentals, today]);
 
   const activeRentals = rentals.filter(r => r.status === 'activo');
   const expiringRentals = rentals.filter(r => {
     if (r.status !== 'activo' || !r.endDate) return false;
     const today = getToday();
     return r.endDate >= today && r.endDate.substring(0, 7) === today.substring(0, 7);
+  });
+
+  const homeTodayStr = getToday();
+  const homeTodayParts = homeTodayStr.split('-').map(Number);
+  const homeIn2DaysDate = new Date(homeTodayParts[0], homeTodayParts[1] - 1, homeTodayParts[2] + 2);
+  const homeIn2DaysStr = `${homeIn2DaysDate.getFullYear()}-${String(homeIn2DaysDate.getMonth()+1).padStart(2,'0')}-${String(homeIn2DaysDate.getDate()).padStart(2,'0')}`;
+  const homeExpiringToday = rentals.filter(r => r.endDate === homeTodayStr && r.status !== 'finalizado');
+  const homeExpiringSoon = rentals.filter(r => r.endDate && r.endDate > homeTodayStr && r.endDate <= homeIn2DaysStr && r.status !== 'finalizado');
+  const getPatientNameHome = (id) => patients.find(p => p.id === id)?.name || '-';
+  const getEquipmentNameHome = (id) => equipment.find(e => e.id === id)?.name || '-';
+  const homeAlreadyExpired = rentals.filter(r => {
+    if (r.status === 'finalizado') return false;
+    if (r.status === 'vencido') return true;
+    return r.endDate && r.endDate < homeTodayStr;
   });
   const expiredRentals = rentals.filter(r => {
     if (!(r.status === 'activo' || r.status === 'vencido') || !r.endDate || new Date(r.endDate) >= new Date(today)) return false;
@@ -300,6 +318,39 @@ function HomePage({ data, updateData, setCurrentPage }) {
         <h1 className="page-title">Inser Salud</h1>
         <p className="page-subtitle">Gestión de Equipos Respiratorios</p>
       </div>
+
+      {homeExpiringToday.length > 0 && (
+        <div style={{ background: '#FFEBEE', border: '2px solid #EF5350', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, color: '#C62828', marginBottom: 4 }}>🔴 Vencen HOY ({homeExpiringToday.length})</div>
+          {homeExpiringToday.map(r => (
+            <div key={r.id} style={{ fontSize: 13, color: '#B71C1C', marginTop: 2 }}>
+              • {getPatientNameHome(r.patientId)} — {getEquipmentNameHome(r.equipmentId)} — vence {formatDate(r.endDate)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {homeExpiringSoon.length > 0 && (
+        <div style={{ background: '#FFF3E0', border: '2px solid #FFA726', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}>🟠 Por vencer en 2 dias ({homeExpiringSoon.length})</div>
+          {homeExpiringSoon.map(r => (
+            <div key={r.id} style={{ fontSize: 13, color: '#BF360C', marginTop: 2 }}>
+              • {getPatientNameHome(r.patientId)} — {getEquipmentNameHome(r.equipmentId)} — vence {formatDate(r.endDate)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {homeAlreadyExpired.length > 0 && (
+        <div style={{ background: '#F3E5F5', border: '2px solid #AB47BC', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, color: '#6A1B9A', marginBottom: 4 }}>⚠️ Vencidos ({homeAlreadyExpired.length})</div>
+          {homeAlreadyExpired.map(r => (
+            <div key={r.id} style={{ fontSize: 13, color: '#4A148C', marginTop: 2 }}>
+              • {getPatientNameHome(r.patientId)} — {getEquipmentNameHome(r.equipmentId)} — vencio {formatDate(r.endDate)}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="stats-grid">
         <div className="stat-card" style={{ cursor: 'pointer', outline: activeFilter === 'activos' ? '3px solid #1E5AA8' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'activos' ? null : 'activos')}>
@@ -768,6 +819,13 @@ function RentalsPage({ data, updateData }) {
   const getPatientName = (id) => patients.find(p => p.id === id)?.name || '-';
   const getEquipmentName = (id) => equipment.find(e => e.id === id)?.name || '-';
 
+  const rentTodayStr = getToday();
+  const rentTodayParts = rentTodayStr.split('-').map(Number);
+  const rentIn2Date = new Date(rentTodayParts[0], rentTodayParts[1] - 1, rentTodayParts[2] + 2);
+  const rentIn2Str = `${rentIn2Date.getFullYear()}-${String(rentIn2Date.getMonth()+1).padStart(2,'0')}-${String(rentIn2Date.getDate()).padStart(2,'0')}`;
+  const expiringToday = rentals.filter(r => r.endDate === rentTodayStr && r.status !== 'finalizado');
+  const expiringSoon = rentals.filter(r => r.endDate && r.endDate > rentTodayStr && r.endDate <= rentIn2Str && r.status !== 'finalizado');
+
   const filteredRentals = rentals.filter(r => {
     if (filter === 'activo' && r.status !== 'activo') return false;
     if (filter === 'vencido' && r.status !== 'vencido' && !(r.endDate && new Date(r.endDate) < new Date())) return false;
@@ -783,14 +841,20 @@ function RentalsPage({ data, updateData }) {
 
   const handleSave = (payload) => {
     updateData(cur => {
-      let newRentals;
-      if (editingRental) {
-        newRentals = cur.rentals.map(r => r.id === payload.id ? payload : r);
+      let newRentals = [...cur.rentals];
+      if (editingRental && payload.update) {
+        newRentals = newRentals.map(r => r.id === payload.update.id ? payload.update : r);
+        if (payload.create?.length) {
+          const createdAt = getToday();
+          newRentals = [...newRentals, ...payload.create.map(r => ({ ...r, id: generateId(), createdAt }))];
+        }
+      } else if (editingRental) {
+        newRentals = newRentals.map(r => r.id === payload.id ? payload : r);
       } else if (Array.isArray(payload)) {
         const createdAt = getToday();
-        newRentals = [...cur.rentals, ...payload.map(r => ({ ...r, id: generateId(), createdAt }))];
+        newRentals = [...newRentals, ...payload.map(r => ({ ...r, id: generateId(), createdAt }))];
       } else {
-        newRentals = [...cur.rentals, { ...payload, id: generateId(), createdAt: getToday() }];
+        newRentals = [...newRentals, { ...payload, id: generateId(), createdAt: getToday() }];
       }
       return { ...cur, rentals: newRentals };
     });
@@ -804,12 +868,53 @@ function RentalsPage({ data, updateData }) {
     }
   };
 
+  const handleUnificarVencimientos = () => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = today.getMonth() + 1;
+    const count = rentals.filter(r => r.status !== 'finalizado' && r.startDate).length;
+    if (!confirm(`¿Unificar vencimientos de ${count} alquileres activos al mes en curso?`)) return;
+    updateData(cur => ({
+      ...cur,
+      rentals: cur.rentals.map(r => {
+        if (r.status === 'finalizado' || !r.startDate) return r;
+        const day = Number(r.startDate.split('-')[2]);
+        const maxDay = new Date(year, month, 0).getDate();
+        const endDay = Math.min(day, maxDay);
+        const newEndDate = `${year}-${String(month).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+        return { ...r, endDate: newEndDate };
+      })
+    }));
+  };
+
   return (
     <div>
       <div className="page-header">
         <h1 className="page-title">Alquileres</h1>
         <p className="page-subtitle">{rentals.length} alquileres registrados</p>
       </div>
+
+      {expiringToday.length > 0 && (
+        <div style={{ background: '#FFEBEE', border: '2px solid #EF5350', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, color: '#C62828', marginBottom: 4 }}>🔴 Vencen HOY ({expiringToday.length})</div>
+          {expiringToday.map(r => (
+            <div key={r.id} style={{ fontSize: 13, color: '#B71C1C', marginTop: 2 }}>
+              • {getPatientName(r.patientId)} — {getEquipmentName(r.equipmentId)} — vence {formatDate(r.endDate)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {expiringSoon.length > 0 && (
+        <div style={{ background: '#FFF3E0', border: '2px solid #FFA726', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}>🟠 Por vencer en 2 dias ({expiringSoon.length})</div>
+          {expiringSoon.map(r => (
+            <div key={r.id} style={{ fontSize: 13, color: '#BF360C', marginTop: 2 }}>
+              • {getPatientName(r.patientId)} — {getEquipmentName(r.equipmentId)} — vence {formatDate(r.endDate)}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="card" style={{ padding: 12, marginBottom: 15 }}>
         <input type="text" className="form-input" placeholder="Buscar por paciente o equipo..." value={search} onChange={e => setSearch(e.target.value)} />
@@ -823,9 +928,14 @@ function RentalsPage({ data, updateData }) {
         ))}
       </div>
 
-      <button className="btn btn-primary btn-block" onClick={() => { setEditingRental(null); setShowModal(true); }} style={{ marginBottom: 20 }}>
-        + Agregar Alquiler
-      </button>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+        <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => { setEditingRental(null); setShowModal(true); }}>
+          + Agregar Alquiler
+        </button>
+        <button className="btn btn-secondary" onClick={handleUnificarVencimientos} title="Establece la fecha de vencimiento de cada alquiler al mismo día del mes en curso">
+          📅 Unificar Vencimientos
+        </button>
+      </div>
 
       {filteredRentals.length === 0 ? (
         <div className="empty-state">
@@ -833,8 +943,8 @@ function RentalsPage({ data, updateData }) {
           <div className="empty-title">Sin Alquileres</div>
         </div>
       ) : (
-        <div className="card">
-          <div className="table-container">
+        <div className="card" style={{ overflowX: 'auto', padding: 0 }}>
+          <div style={{ overflowX: 'auto', width: '100%' }}>
             <table className="table">
               <thead>
                 <tr>
@@ -947,7 +1057,21 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
     }
     if (isEditing) {
       if (!form.equipmentId) { alert('Selecciona un equipo'); return; }
-      onSave({ ...form, price: Number(form.price) });
+      const validExtra = items.filter(it => it.equipmentId);
+      if (validExtra.length > 0) {
+        const extraRentals = validExtra.map(it => ({
+          patientId: form.patientId,
+          equipmentId: it.equipmentId,
+          startDate: form.startDate,
+          endDate: it.endDate,
+          price: Number(it.price),
+          status: form.status || 'activo',
+          notes: form.notes || '',
+        }));
+        onSave({ update: { ...form, price: Number(form.price) }, create: extraRentals });
+      } else {
+        onSave({ ...form, price: Number(form.price) });
+      }
       return;
     }
     if (!items.length || items.some(it => !it.equipmentId)) {
@@ -1071,7 +1195,29 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
               </select>
             </div>
           )}
-          
+
+          {isEditing && (
+            <div className="form-group" style={{ marginTop: 12, paddingTop: 12, borderTop: '2px dashed #90CAF9' }}>
+              <label className="form-label" style={{ color: '#1E5AA8', fontWeight: 700 }}>Agregar otro equipo al mismo paciente</label>
+              {items.map((it, idx) => {
+                const usedIds = items.filter((_, i) => i !== idx).map(x => x.equipmentId).filter(Boolean);
+                const options = equipment.filter(e => !rentedEquipIds.has(e.id) && !usedIds.includes(e.id) && e.id !== form.equipmentId);
+                return (
+                  <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 140px 110px auto', gap: 6, marginBottom: 8, alignItems: 'center' }}>
+                    <select className="form-select" value={it.equipmentId} onChange={e => updateItem(idx, { equipmentId: e.target.value })}>
+                      <option value="">Equipo...</option>
+                      {options.map(e => <option key={e.id} value={e.id}>{e.name} ({e.serialNumber})</option>)}
+                    </select>
+                    <input type="date" className="form-input" value={it.endDate} onChange={e => updateItem(idx, { endDate: e.target.value })} title="Vencimiento" />
+                    <input type="number" className="form-input" placeholder="Precio" value={it.price} onChange={e => updateItem(idx, { price: e.target.value })} />
+                    <button type="button" className="btn btn-sm btn-danger" onClick={() => removeItem(idx)}>×</button>
+                  </div>
+                );
+              })}
+              <button type="button" className="btn btn-sm btn-secondary" onClick={addItem}>+ Agregar equipo</button>
+            </div>
+          )}
+
           <div className="form-group">
             <label className="form-label">Notas</label>
             <textarea className="form-textarea" value={form.notes} onChange={e => setForm({...form, notes: e.target.value})} />
@@ -1682,7 +1828,7 @@ function SalesCartPage({ data, updateData, pageType }) {
   ];
 
   const allProducts = [
-    ...(equipment || []).map(e => ({ ...e, price: Number(e.rentalPrice) || Number(e.price) || 0, _cat: 'equipos', _label: 'Equipo' })),
+    ...(equipment || []).filter(e => Number(e.rentalPrice) > 0).map(e => ({ ...e, price: Number(e.rentalPrice), _cat: 'equipos', _label: 'Equipo' })),
     ...(equiposNuevos || []).map(e => ({ ...e, _cat: 'equiposNuevos', _label: 'Equipo Nuevo' })),
     ...(mascaras || []).map(m => ({ ...m, price: m.precio || m.price || 0, _cat: 'mascarillas', _label: 'Mascarilla' })),
     ...(descartables || []).map(d => ({ ...d, _cat: 'descartables', _label: 'Descartable' }))
@@ -1843,9 +1989,9 @@ function SalesCartPage({ data, updateData, pageType }) {
               <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
               <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12 }}>
                 <span>$</span>
-                <input type="number" style={{ width: 70, border: '1px solid #E3F2FD', borderRadius: 4, padding: '2px 4px', fontSize: 12 }} value={c.price} onChange={e => updateCartItem(c.id, 'price', Number(e.target.value))} />
+                <input type="number" style={{ width: 80, border: '2px solid #90CAF9', borderRadius: 6, padding: '3px 6px', fontSize: 13, fontWeight: 700, color: '#1E5AA8', background: '#F0F7FF' }} value={c.price} onChange={e => updateCartItem(c.id, 'price', Number(e.target.value))} />
                 <span>x</span>
-                <input type="number" style={{ width: 45, border: '1px solid #E3F2FD', borderRadius: 4, padding: '2px 4px', fontSize: 12 }} value={c.quantity} onChange={e => updateCartItem(c.id, 'quantity', Number(e.target.value))} />
+                <input type="number" style={{ width: 50, border: '2px solid #90CAF9', borderRadius: 6, padding: '3px 6px', fontSize: 13, fontWeight: 700, color: '#1E5AA8', background: '#F0F7FF' }} value={c.quantity} onChange={e => updateCartItem(c.id, 'quantity', Number(e.target.value))} />
                 <span style={{ fontWeight: 700, color: '#1E5AA8' }}>= {formatCurrency(c.price * c.quantity)}</span>
               </div>
             </div>
