@@ -1862,7 +1862,7 @@ function SalesCartPage({ data, updateData, pageType }) {
   ];
 
   const allProducts = [
-    ...(equipment || []).filter(e => Number(e.rentalPrice) > 0).map(e => ({ ...e, price: Number(e.rentalPrice), _cat: 'equipos', _label: 'Equipo' })),
+    ...(equipment || []).map(e => ({ ...e, price: Number(e.rentalPrice) || 0, _cat: 'equipos', _label: 'Equipo' })),
     ...(equiposNuevos || []).map(e => ({ ...e, _cat: 'equiposNuevos', _label: 'Equipo Nuevo' })),
     ...(mascaras || []).map(m => ({ ...m, price: m.precio || m.price || 0, _cat: 'mascarillas', _label: 'Mascarilla' })),
     ...(descartables || []).map(d => ({ ...d, _cat: 'descartables', _label: 'Descartable' }))
