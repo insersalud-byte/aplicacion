@@ -1834,7 +1834,7 @@ function MascaraModal({ mascara, onSave, onClose }) {
 }
 
 function SalesCartPage({ data, updateData, pageType }) {
-  const { equipment, mascaras, descartables, equiposNuevos, patients, settings, quotations, invoices, remitos } = data;
+  const { equipment, mascaras, descartables, equiposNuevos, patients, settings, quotations, invoices, remitos, rentals } = data;
   const isCotizacion = pageType === 'cotizacion';
   const isRemito = pageType === 'remito';
   const title = isRemito ? 'Remito' : (isCotizacion ? 'Cotizaciones' : 'Facturacion');
@@ -1853,6 +1853,22 @@ function SalesCartPage({ data, updateData, pageType }) {
   const [sigAclaracion, setSigAclaracion] = useState('');
   const [sigDni, setSigDni] = useState('');
 
+  const getEquipPrice = (equip) => {
+    if (Number(equip.rentalPrice) > 0) return Number(equip.rentalPrice);
+    const rental = (rentals || []).find(r => r.equipmentId === equip.id);
+    if (rental && Number(rental.price) > 0) return Number(rental.price);
+    if (equip.name) {
+      const sameNameEquip = (equipment || []).find(e => e.id !== equip.id && e.name === equip.name && Number(e.rentalPrice) > 0);
+      if (sameNameEquip) return Number(sameNameEquip.rentalPrice);
+      const sameNameRental = (rentals || []).find(r => {
+        const re = (equipment || []).find(e => e.id === r.equipmentId);
+        return re && re.name === equip.name && Number(r.price) > 0;
+      });
+      if (sameNameRental) return Number(sameNameRental.price);
+    }
+    return 0;
+  };
+
   const categories = [
     { value: 'todos', label: 'Todos' },
     { value: 'equipos', label: '🔧 Equipos' },
@@ -1862,7 +1878,7 @@ function SalesCartPage({ data, updateData, pageType }) {
   ];
 
   const allProducts = [
-    ...(equipment || []).map(e => ({ ...e, price: Number(e.rentalPrice) || 0, _cat: 'equipos', _label: 'Equipo' })),
+    ...(equipment || []).map(e => ({ ...e, price: getEquipPrice(e), _cat: 'equipos', _label: 'Equipo' })),
     ...(equiposNuevos || []).map(e => ({ ...e, _cat: 'equiposNuevos', _label: 'Equipo Nuevo' })),
     ...(mascaras || []).map(m => ({ ...m, price: m.precio || m.price || 0, _cat: 'mascarillas', _label: 'Mascarilla' })),
     ...(descartables || []).map(d => ({ ...d, _cat: 'descartables', _label: 'Descartable' }))
