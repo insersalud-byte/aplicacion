@@ -4,6 +4,23 @@ const STORAGE_KEY = 'insersalud_db';
 const SUPABASE_URL = 'https://gvharyztavhugqiaihjq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_wTO5X4JfeoHP0zg7qq4azQ_OJ3jxfwL';
 
+let _syncStatus = { state: 'idle', lastSync: null, error: null };
+const _syncListeners = new Set();
+
+export function onSyncStatus(fn) {
+  _syncListeners.add(fn);
+  return () => _syncListeners.delete(fn);
+}
+
+export function getSyncStatus() {
+  return _syncStatus;
+}
+
+function setSyncStatus(state, error) {
+  _syncStatus = { state, lastSync: state === 'ok' ? new Date() : _syncStatus.lastSync, error: error || null };
+  _syncListeners.forEach(fn => fn(_syncStatus));
+}
+
 export const initialData = {
   patients: [],
   equipment: [],
@@ -123,7 +140,7 @@ async function loadRemoteData() {
 }
 
 async function saveRemoteData(data) {
-  await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1`, {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1`, {
     method: 'PATCH',
     headers: {
       'apikey': SUPABASE_KEY,
@@ -133,24 +150,30 @@ async function saveRemoteData(data) {
     },
     body: JSON.stringify({ data, updated_at: new Date().toISOString() }),
   });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Supabase PATCH ${response.status}: ${text}`);
+  }
 }
 
 export async function loadData() {
   const localData = loadLocalData();
 
   try {
+    setSyncStatus('loading');
     const remoteData = await loadRemoteData();
     const mergedData = mergeDataSources(localData, remoteData);
 
-    // Sync merged data back to remote if it has more items than remote
     if (JSON.stringify(mergedData) !== JSON.stringify(remoteData)) {
-      saveRemoteData(mergedData).catch(() => {});
+      await saveRemoteData(mergedData);
     }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedData));
+    setSyncStatus('ok');
     return mergedData;
   } catch (e) {
-    console.error('Error loading remote data, using local storage:', e);
+    console.error('Sync error on load:', e);
+    setSyncStatus('error', e.message);
     return localData;
   }
 }
@@ -161,23 +184,24 @@ export async function saveData(data) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
   } catch (e) {
-    // QuotaExceededError: strip imageUrls and retry
     try {
       const slim = {
         ...normalized,
         equipment: normalized.equipment.map(eq => ({ ...eq, imageUrl: eq.imageUrl?.startsWith('data:') ? '' : (eq.imageUrl || '') }))
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
-      console.warn('Guardado sin imagenes por limite de almacenamiento local');
     } catch (e2) {
-      console.error('Error saving data:', e2);
+      console.error('Error saving local data:', e2);
     }
   }
 
   try {
+    setSyncStatus('saving');
     await saveRemoteData(normalized);
+    setSyncStatus('ok');
   } catch (e) {
-    console.error('Error saving remote data:', e);
+    console.error('Sync error on save:', e);
+    setSyncStatus('error', e.message);
   }
 }
 

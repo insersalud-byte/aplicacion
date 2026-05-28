@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail } from './data/database';
+import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail, onSyncStatus } from './data/database';
 import './App.css';
 
 function getMonthKey(date = new Date()) {
@@ -88,6 +88,31 @@ function getRentalCollectedMonths(rental, referenceMonthKey) {
 
 function getRentalCollectedAmount(rental, referenceMonthKey) {
   return getRentalCollectedMonths(rental, referenceMonthKey) * Number(rental.price || 0);
+}
+
+function SyncIndicator() {
+  const [status, setStatus] = useState({ state: 'idle', lastSync: null, error: null });
+
+  useEffect(() => {
+    return onSyncStatus(setStatus);
+  }, []);
+
+  const label = status.state === 'ok' ? 'Sincronizado'
+    : status.state === 'saving' || status.state === 'loading' ? 'Sincronizando...'
+    : status.state === 'error' ? 'Sin conexion'
+    : '';
+  const color = status.state === 'ok' ? '#4ade80'
+    : status.state === 'error' ? '#f87171'
+    : status.state === 'saving' || status.state === 'loading' ? '#facc15'
+    : '#94a3b8';
+
+  return (
+    <div style={{ padding: '8px 16px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 6, opacity: 0.85 }}
+      title={status.error || ''}>
+      <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />
+      <span style={{ color: '#cbd5e1' }}>{label}</span>
+    </div>
+  );
 }
 
 function App() {
@@ -203,6 +228,9 @@ function App() {
           <span className="nav-label">Configuración</span>
         </div>
 
+        <div style={{ marginTop: 'auto' }}>
+          <SyncIndicator />
+        </div>
       </nav>
       
       <main className="main-content">
