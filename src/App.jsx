@@ -270,7 +270,8 @@ function HomePage({ data, updateData, setCurrentPage }) {
     const todayStr = getToday();
     const needsUpdate = rentals.some(r =>
       (r.status === 'activo' && r.endDate && r.endDate < todayStr) ||
-      (r.status === 'vencido' && r.endDate && getUnpaidMonthsForRental(r).length === 0)
+      (r.status === 'vencido' && r.endDate && r.endDate >= todayStr) ||
+      (r.status === 'vencido' && r.endDate && r.endDate < todayStr && getUnpaidMonthsForRental(r).length === 0)
     );
     if (!needsUpdate) return;
 
@@ -278,7 +279,11 @@ function HomePage({ data, updateData, setCurrentPage }) {
       const updated = cur.rentals.map(rental => {
         const isExpired = rental.status === 'activo' && rental.endDate && rental.endDate < todayStr;
         if (isExpired) return { ...rental, status: 'vencido' };
-        const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && getUnpaidMonthsForRental(rental).length === 0;
+        // Vencido con fecha futura (ej: tras editar la fecha): vuelve a activo conservando la fecha elegida.
+        if (rental.status === 'vencido' && rental.endDate && rental.endDate >= todayStr) {
+          return { ...rental, status: 'activo' };
+        }
+        const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && rental.endDate < todayStr && getUnpaidMonthsForRental(rental).length === 0;
         if (isVencidoFullyPaid) {
           const [ey, em, ed] = rental.endDate.split('-').map(Number);
           const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, ed);
@@ -903,19 +908,14 @@ function RentalsPage({ data, updateData }) {
   };
 
   const handleUnificarVencimientos = () => {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = today.getMonth() + 1;
     const count = rentals.filter(r => r.status !== 'finalizado' && r.startDate).length;
-    if (!confirm(`¿Unificar vencimientos de ${count} alquileres activos al mes en curso?`)) return;
+    if (!confirm(`¿Normalizar vencimientos de ${count} alquileres a 1 mes despues de la fecha de inicio?`)) return;
     updateData(cur => ({
       ...cur,
       rentals: cur.rentals.map(r => {
         if (r.status === 'finalizado' || !r.startDate) return r;
-        const day = Number(r.startDate.split('-')[2]);
-        const maxDay = new Date(year, month, 0).getDate();
-        const endDay = Math.min(day, maxDay);
-        const newEndDate = `${year}-${String(month).padStart(2, '0')}-${String(endDay).padStart(2, '0')}`;
+        const newEndDate = nextMonthDate(r.startDate);
+        if (!newEndDate) return r;
         return { ...r, endDate: newEndDate };
       })
     }));
@@ -966,8 +966,8 @@ function RentalsPage({ data, updateData }) {
         <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => { setEditingRental(null); setShowModal(true); }}>
           + Agregar Alquiler
         </button>
-        <button className="btn btn-secondary" onClick={handleUnificarVencimientos} title="Establece la fecha de vencimiento de cada alquiler al mismo día del mes en curso">
-          📅 Unificar Vencimientos
+        <button className="btn btn-secondary" onClick={handleUnificarVencimientos} title="Establece el vencimiento de cada alquiler a 1 mes despues de su fecha de inicio">
+          📅 Normalizar Vencimientos
         </button>
       </div>
 
@@ -1064,7 +1064,8 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
   const handleStartDateChange = (start) => {
     const prevDefault = nextMonthDate(form.startDate);
     const newDefault = nextMonthDate(start);
-    setForm({ ...form, startDate: start, ...(isEditing ? { endDate: form.endDate === prevDefault ? newDefault : form.endDate } : {}) });
+    // El vencimiento sigue a la fecha de inicio (1 mes despues). Editable luego a mano.
+    setForm({ ...form, startDate: start, ...(isEditing ? { endDate: newDefault } : {}) });
     if (!isEditing) {
       setItems(items.map(it => ({ ...it, endDate: it.endDate === prevDefault || !it.endDate ? newDefault : it.endDate })));
     }
