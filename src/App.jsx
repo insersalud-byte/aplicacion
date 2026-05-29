@@ -141,14 +141,10 @@ function App() {
   dataRef.current = data;
 
   const updateData = useCallback((updater) => {
-    setData(prev => {
-      const nextData = typeof updater === 'function' ? updater(prev) : updater;
-      dataRef.current = nextData;
-      return nextData;
-    });
-    queueMicrotask(() => {
-      saveData(dataRef.current);
-    });
+    const nextData = typeof updater === 'function' ? updater(dataRef.current) : updater;
+    dataRef.current = nextData;
+    setData(nextData);
+    saveData(nextData);
   }, []);
 
   if (loading || !data) {
