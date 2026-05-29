@@ -1,6 +1,7 @@
 import { seedEquiposNuevos } from './seedEquiposNuevos';
 
 const STORAGE_KEY = 'insersalud_db';
+const STORAGE_TS_KEY = 'insersalud_db_ts';
 const SUPABASE_URL = 'https://gvharyztavhugqiaihjq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_wTO5X4JfeoHP0zg7qq4azQ_OJ3jxfwL';
 
@@ -84,24 +85,39 @@ function hasDataEntries(data) {
     .some(key => Array.isArray(data[key]) && data[key].length > 0);
 }
 
-function mergeCollection(localItems = [], remoteItems = [], identityKeys = []) {
+/**
+ * Merge two collections. REMOTE WINS for items that exist in both (keyed by id).
+ * Items only in local (new, not yet synced) are added.
+ * Items only in remote (created by another browser) are kept.
+ */
+function mergeCollection(localItems = [], remoteItems = []) {
+  const remoteById = new Map();
+  for (const item of remoteItems) {
+    if (item && item.id) remoteById.set(String(item.id), item);
+  }
+
+  const localById = new Map();
+  for (const item of localItems) {
+    if (item && item.id) localById.set(String(item.id), item);
+  }
+
   const merged = [];
   const seen = new Set();
 
-  const buildKey = (item) => {
-    if (!item) return null;
-    if (item.id) return `id:${item.id}`;
+  // Start with ALL remote items (remote is truth for shared items)
+  for (const item of remoteItems) {
+    if (!item || !item.id) continue;
+    const key = String(item.id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
 
-    const identity = identityKeys
-      .map(key => `${key}:${String(item[key] ?? '').trim().toLowerCase()}`)
-      .join('|');
-
-    return identity ? `identity:${identity}` : null;
-  };
-
-  for (const item of [...localItems, ...remoteItems]) {
-    const key = buildKey(item);
-    if (!key || seen.has(key)) continue;
+  // Add local-only items (new items not yet in remote)
+  for (const item of localItems) {
+    if (!item || !item.id) continue;
+    const key = String(item.id);
+    if (seen.has(key)) continue;
     seen.add(key);
     merged.push(item);
   }
@@ -109,26 +125,60 @@ function mergeCollection(localItems = [], remoteItems = [], identityKeys = []) {
   return merged;
 }
 
-function mergeDataSources(localData, remoteData) {
-  return normalizeData({
-    patients: mergeCollection(localData.patients, remoteData.patients, ['name', 'phone', 'dni']),
-    equipment: mergeCollection(localData.equipment, remoteData.equipment, ['serialNumber', 'name']),
-    rentals: mergeCollection(localData.rentals, remoteData.rentals, ['patientId', 'equipmentId', 'startDate', 'endDate']),
-    quotations: mergeCollection(localData.quotations, remoteData.quotations, ['customerName', 'customerPhone', 'equipmentId', 'createdAt']),
-    remitos: mergeCollection(localData.remitos, remoteData.remitos, ['customerName', 'customerPhone', 'createdAt']),
-    descartables: mergeCollection(localData.descartables, remoteData.descartables, ['name', 'category', 'supplier']),
-    mascaras: mergeCollection(localData.mascaras, remoteData.mascaras, ['name', 'type']),
-    invoices: mergeCollection(localData.invoices, remoteData.invoices, ['invoiceNumber', 'date']),
-    equiposNuevos: mergeCollection(localData.equiposNuevos, remoteData.equiposNuevos, ['name', 'price']),
-    settings: {
-      ...localData.settings,
-      ...remoteData.settings
+/**
+ * Merge local and remote data. Remote wins for existing records.
+ * Local-only records (new, unsynced) are preserved.
+ * remoteIsNewer: if true, remote timestamp is more recent, so remote is full authority.
+ */
+function mergeDataSources(localData, remoteData, remoteIsNewer = false) {
+  if (remoteIsNewer) {
+    // Remote was saved more recently by another browser. Use remote as base,
+    // but add any local-only items that haven't been synced yet.
+    const collections = ['patients', 'equipment', 'rentals', 'quotations', 'remitos',
+      'descartables', 'mascaras', 'invoices', 'equiposNuevos'];
+    const result = { ...remoteData };
+    for (const col of collections) {
+      result[col] = mergeCollection(localData[col], remoteData[col]);
     }
-  });
+    result.settings = { ...remoteData.settings };
+    return normalizeData(result);
+  }
+
+  // Local is newer or same timestamp -- local wins for shared items,
+  // but still bring in remote-only items.
+  const collections = ['patients', 'equipment', 'rentals', 'quotations', 'remitos',
+    'descartables', 'mascaras', 'invoices', 'equiposNuevos'];
+  const result = { ...localData };
+  for (const col of collections) {
+    // Swap order: local items first, then remote-only
+    const remoteById = new Map();
+    for (const item of (remoteData[col] || [])) {
+      if (item && item.id) remoteById.set(String(item.id), item);
+    }
+    const seen = new Set();
+    const merged = [];
+    for (const item of (localData[col] || [])) {
+      if (!item || !item.id) continue;
+      const key = String(item.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(item);
+    }
+    for (const item of (remoteData[col] || [])) {
+      if (!item || !item.id) continue;
+      const key = String(item.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(item);
+    }
+    result[col] = merged;
+  }
+  result.settings = { ...localData.settings };
+  return normalizeData(result);
 }
 
 async function loadRemoteData() {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1`, {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1&select=data,updated_at`, {
     headers: {
       'apikey': SUPABASE_KEY,
       'Authorization': `Bearer ${SUPABASE_KEY}`,
@@ -136,8 +186,11 @@ async function loadRemoteData() {
   });
   if (!response.ok) throw new Error(`Supabase GET ${response.status}`);
   const rows = await response.json();
-  if (!rows || rows.length === 0) return normalizeData({});
-  return normalizeData(rows[0].data || {});
+  if (!rows || rows.length === 0) return { data: normalizeData({}), updatedAt: null };
+  return {
+    data: normalizeData(rows[0].data || {}),
+    updatedAt: rows[0].updated_at || null
+  };
 }
 
 async function saveRemoteData(data) {
@@ -162,11 +215,21 @@ export async function loadData() {
 
   try {
     setSyncStatus('loading');
-    const remoteData = await loadRemoteData();
-    const mergedData = mergeDataSources(localData, remoteData);
+    const remote = await loadRemoteData();
+    const remoteData = remote.data;
+    const remoteTs = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
+    const localTs = Number(localStorage.getItem(STORAGE_TS_KEY) || '0');
 
+    // Determine which source is newer
+    const remoteIsNewer = remoteTs > localTs;
+    const mergedData = mergeDataSources(localData, remoteData, remoteIsNewer);
+
+    // Save merged result locally with the latest timestamp
+    const nowTs = Date.now();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedData));
+    localStorage.setItem(STORAGE_TS_KEY, String(Math.max(remoteTs, localTs, nowTs)));
 
+    // Write back to remote so both sides converge
     if (JSON.stringify(mergedData) !== JSON.stringify(remoteData)) {
       saveRemoteData(mergedData).then(() => setSyncStatus('ok')).catch(() => setSyncStatus('error', 'Sync write failed'));
     } else {
@@ -183,9 +246,11 @@ export async function loadData() {
 
 export async function saveData(data) {
   const normalized = normalizeData(data);
+  const nowTs = String(Date.now());
 
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    localStorage.setItem(STORAGE_TS_KEY, nowTs);
   } catch (e) {
     try {
       const slim = {
@@ -193,6 +258,7 @@ export async function saveData(data) {
         equipment: normalized.equipment.map(eq => ({ ...eq, imageUrl: eq.imageUrl?.startsWith('data:') ? '' : (eq.imageUrl || '') }))
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
+      localStorage.setItem(STORAGE_TS_KEY, nowTs);
     } catch (e2) {
       console.error('Error saving local data:', e2);
     }
