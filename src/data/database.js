@@ -85,97 +85,12 @@ function hasDataEntries(data) {
     .some(key => Array.isArray(data[key]) && data[key].length > 0);
 }
 
-/**
- * Merge two collections. REMOTE WINS for items that exist in both (keyed by id).
- * Items only in local (new, not yet synced) are added.
- * Items only in remote (created by another browser) are kept.
- */
-function mergeCollection(localItems = [], remoteItems = []) {
-  const remoteById = new Map();
-  for (const item of remoteItems) {
-    if (item && item.id) remoteById.set(String(item.id), item);
-  }
-
-  const localById = new Map();
-  for (const item of localItems) {
-    if (item && item.id) localById.set(String(item.id), item);
-  }
-
-  const merged = [];
-  const seen = new Set();
-
-  // Start with ALL remote items (remote is truth for shared items)
-  for (const item of remoteItems) {
-    if (!item || !item.id) continue;
-    const key = String(item.id);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(item);
-  }
-
-  // Add local-only items (new items not yet in remote)
-  for (const item of localItems) {
-    if (!item || !item.id) continue;
-    const key = String(item.id);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(item);
-  }
-
-  return merged;
-}
-
-/**
- * Merge local and remote data. Remote wins for existing records.
- * Local-only records (new, unsynced) are preserved.
- * remoteIsNewer: if true, remote timestamp is more recent, so remote is full authority.
- */
-function mergeDataSources(localData, remoteData, remoteIsNewer = false) {
-  if (remoteIsNewer) {
-    // Remote was saved more recently by another browser. Use remote as base,
-    // but add any local-only items that haven't been synced yet.
-    const collections = ['patients', 'equipment', 'rentals', 'quotations', 'remitos',
-      'descartables', 'mascaras', 'invoices', 'equiposNuevos'];
-    const result = { ...remoteData };
-    for (const col of collections) {
-      result[col] = mergeCollection(localData[col], remoteData[col]);
-    }
-    result.settings = { ...remoteData.settings };
-    return normalizeData(result);
-  }
-
-  // Local is newer or same timestamp -- local wins for shared items,
-  // but still bring in remote-only items.
-  const collections = ['patients', 'equipment', 'rentals', 'quotations', 'remitos',
-    'descartables', 'mascaras', 'invoices', 'equiposNuevos'];
-  const result = { ...localData };
-  for (const col of collections) {
-    // Swap order: local items first, then remote-only
-    const remoteById = new Map();
-    for (const item of (remoteData[col] || [])) {
-      if (item && item.id) remoteById.set(String(item.id), item);
-    }
-    const seen = new Set();
-    const merged = [];
-    for (const item of (localData[col] || [])) {
-      if (!item || !item.id) continue;
-      const key = String(item.id);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push(item);
-    }
-    for (const item of (remoteData[col] || [])) {
-      if (!item || !item.id) continue;
-      const key = String(item.id);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push(item);
-    }
-    result[col] = merged;
-  }
-  result.settings = { ...localData.settings };
-  return normalizeData(result);
-}
+// ============================================================================
+// SUPABASE = UNICA FUENTE DE VERDAD (single source of truth)
+// localStorage solo se usa como cache para modo offline.
+// La base de datos SIEMPRE gana: al cargar se lee de Supabase, al guardar
+// se escribe a Supabase. Esto evita que cada navegador tenga datos distintos.
+// ============================================================================
 
 async function loadRemoteData() {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1&select=data,updated_at`, {
@@ -186,8 +101,9 @@ async function loadRemoteData() {
   });
   if (!response.ok) throw new Error(`Supabase GET ${response.status}`);
   const rows = await response.json();
-  if (!rows || rows.length === 0) return { data: normalizeData({}), updatedAt: null };
+  if (!rows || rows.length === 0) return { exists: false, data: normalizeData({}), updatedAt: null };
   return {
+    exists: true,
     data: normalizeData(rows[0].data || {}),
     updatedAt: rows[0].updated_at || null
   };
@@ -210,66 +126,72 @@ async function saveRemoteData(data) {
   }
 }
 
-export async function loadData() {
-  const localData = loadLocalData();
+function cacheLocal(data) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    localStorage.setItem(STORAGE_TS_KEY, String(Date.now()));
+  } catch (e) {
+    // localStorage lleno: guardar version sin imagenes base64 pesadas
+    try {
+      const slim = {
+        ...data,
+        equipment: data.equipment.map(eq => ({ ...eq, imageUrl: eq.imageUrl?.startsWith('data:') ? '' : (eq.imageUrl || '') }))
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
+      localStorage.setItem(STORAGE_TS_KEY, String(Date.now()));
+    } catch (e2) {
+      console.error('Error caching local data:', e2);
+    }
+  }
+}
 
+export async function loadData() {
   try {
     setSyncStatus('loading');
     const remote = await loadRemoteData();
-    const remoteData = remote.data;
-    const remoteTs = remote.updatedAt ? new Date(remote.updatedAt).getTime() : 0;
-    const localTs = Number(localStorage.getItem(STORAGE_TS_KEY) || '0');
 
-    // Determine which source is newer
-    const remoteIsNewer = remoteTs > localTs;
-    const mergedData = mergeDataSources(localData, remoteData, remoteIsNewer);
+    if (remote.exists) {
+      // La base de datos manda. Usar SIEMPRE los datos de Supabase.
+      let data = remote.data;
 
-    // Save merged result locally with the latest timestamp
-    const nowTs = Date.now();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedData));
-    localStorage.setItem(STORAGE_TS_KEY, String(Math.max(remoteTs, localTs, nowTs)));
+      // Sembrar equiposNuevos solo si la base no tiene ninguno cargado.
+      if (!data.equiposNuevos || data.equiposNuevos.length === 0) {
+        data = { ...data, equiposNuevos: seedEquiposNuevos };
+        saveRemoteData(data).catch(() => {});
+      }
 
-    // Write back to remote so both sides converge
-    if (JSON.stringify(mergedData) !== JSON.stringify(remoteData)) {
-      saveRemoteData(mergedData).then(() => setSyncStatus('ok')).catch(() => setSyncStatus('error', 'Sync write failed'));
-    } else {
+      cacheLocal(data);
       setSyncStatus('ok');
+      return data;
     }
 
-    return mergedData;
-  } catch (e) {
-    console.error('Sync error on load:', e);
-    setSyncStatus('error', e.message);
+    // La base esta vacia (primera vez): subir lo que haya en local como base inicial.
+    const localData = loadLocalData();
+    await saveRemoteData(localData);
+    cacheLocal(localData);
+    setSyncStatus('ok');
     return localData;
+  } catch (e) {
+    // Sin conexion a Supabase: usar cache local para no quedar sin datos.
+    console.error('Sync error on load (usando cache local):', e);
+    setSyncStatus('error', e.message);
+    return loadLocalData();
   }
 }
 
 export async function saveData(data) {
   const normalized = normalizeData(data);
-  const nowTs = String(Date.now());
 
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-    localStorage.setItem(STORAGE_TS_KEY, nowTs);
-  } catch (e) {
-    try {
-      const slim = {
-        ...normalized,
-        equipment: normalized.equipment.map(eq => ({ ...eq, imageUrl: eq.imageUrl?.startsWith('data:') ? '' : (eq.imageUrl || '') }))
-      };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(slim));
-      localStorage.setItem(STORAGE_TS_KEY, nowTs);
-    } catch (e2) {
-      console.error('Error saving local data:', e2);
-    }
-  }
-
+  // Escribir a la base de datos (fuente de verdad).
   try {
     setSyncStatus('saving');
     await saveRemoteData(normalized);
+    cacheLocal(normalized);
     setSyncStatus('ok');
   } catch (e) {
+    // Si falla la base, al menos cachear local para reintentar al recargar.
     console.error('Sync error on save:', e);
+    cacheLocal(normalized);
     setSyncStatus('error', e.message);
   }
 }
