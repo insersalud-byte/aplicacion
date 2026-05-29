@@ -905,12 +905,12 @@ function RentalsPage({ data, updateData }) {
 
   const handleUnificarVencimientos = () => {
     const count = rentals.filter(r => r.status !== 'finalizado' && r.startDate).length;
-    if (!confirm(`¿Normalizar vencimientos de ${count} alquileres a 1 mes despues de la fecha de inicio?`)) return;
+    if (!confirm(`¿Normalizar vencimientos de ${count} alquileres? Cada uno quedara a 1 mes de su fecha de inicio, avanzando mes a mes hasta el proximo vencimiento.`)) return;
     updateData(cur => ({
       ...cur,
       rentals: cur.rentals.map(r => {
         if (r.status === 'finalizado' || !r.startDate) return r;
-        const newEndDate = nextMonthDate(r.startDate);
+        const newEndDate = rollingDueDate(r.startDate);
         if (!newEndDate) return r;
         return { ...r, endDate: newEndDate };
       })
@@ -962,7 +962,7 @@ function RentalsPage({ data, updateData }) {
         <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => { setEditingRental(null); setShowModal(true); }}>
           + Agregar Alquiler
         </button>
-        <button className="btn btn-secondary" onClick={handleUnificarVencimientos} title="Establece el vencimiento de cada alquiler a 1 mes despues de su fecha de inicio">
+        <button className="btn btn-secondary" onClick={handleUnificarVencimientos} title="Establece el vencimiento a 1 mes de la fecha de inicio, avanzando mes a mes hasta el proximo vencimiento">
           📅 Normalizar Vencimientos
         </button>
       </div>
@@ -1041,6 +1041,25 @@ function nextMonthDate(start) {
   const ny = m === 12 ? y + 1 : y;
   const maxDay = new Date(ny, nm, 0).getDate();
   return `${ny}-${String(nm).padStart(2, '0')}-${String(Math.min(d, maxDay)).padStart(2, '0')}`;
+}
+
+// Vencimiento = un mes despues del inicio, avanzando mes a mes sucesivamente
+// hasta el primer vencimiento que sea hoy o futuro. Asi los alquileres viejos
+// quedan con el proximo vencimiento real (no uno pasado que marque todo vencido).
+function rollingDueDate(start) {
+  if (!start || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return '';
+  const [y, m, d] = start.split('-').map(Number);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let year = y, month = m;
+  let due;
+  do {
+    month += 1;
+    if (month > 12) { month = 1; year += 1; }
+    const maxDay = new Date(year, month, 0).getDate();
+    due = new Date(year, month - 1, Math.min(d, maxDay));
+  } while (due < today);
+  return `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`;
 }
 
 function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatient, onClose }) {
