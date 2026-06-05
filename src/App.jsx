@@ -33,6 +33,20 @@ function isRentalPaidForMonth(rental, monthKey) {
   return Boolean(rental.paymentStatusByMonth?.[monthKey]?.paid);
 }
 
+// ---- Fuente de verdad unica para estado de alquileres y ocupacion de equipos ----
+// Un alquiler ocupa fisicamente el equipo mientras no este finalizado (activo o vencido).
+// equipment.available / equipment.status NO son confiables (solo los toca el form de edicion).
+function getOccupyingRental(rentals, equipId) {
+  return (rentals || []).find(r => r.equipmentId === equipId && r.status !== 'finalizado');
+}
+
+// Vencido = no finalizado, con fecha de fin, y esa fecha es hoy o anterior (hoy inclusive).
+// Comparacion por string YYYY-MM-DD para evitar el desfase de zona horaria de new Date('YYYY-MM-DD').
+function isRentalExpired(rental, todayStr = getToday()) {
+  if (!rental || rental.status === 'finalizado' || !rental.endDate) return false;
+  return rental.endDate <= todayStr;
+}
+
 function getMonthDateFromKey(monthKey) {
   const [year, month] = monthKey.split('-').map(Number);
   return new Date(year, month - 1, 1);
@@ -265,21 +279,21 @@ function HomePage({ data, updateData, setCurrentPage }) {
     const now = new Date();
     const todayStr = getToday();
     const needsUpdate = rentals.some(r =>
-      (r.status === 'activo' && r.endDate && r.endDate < todayStr) ||
-      (r.status === 'vencido' && r.endDate && r.endDate >= todayStr) ||
-      (r.status === 'vencido' && r.endDate && r.endDate < todayStr && getUnpaidMonthsForRental(r).length === 0)
+      (r.status === 'activo' && r.endDate && r.endDate <= todayStr) ||
+      (r.status === 'vencido' && r.endDate && r.endDate > todayStr) ||
+      (r.status === 'vencido' && r.endDate && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0)
     );
     if (!needsUpdate) return;
 
     updateData(cur => {
       const updated = cur.rentals.map(rental => {
-        const isExpired = rental.status === 'activo' && rental.endDate && rental.endDate < todayStr;
+        const isExpired = rental.status === 'activo' && rental.endDate && rental.endDate <= todayStr;
         if (isExpired) return { ...rental, status: 'vencido' };
         // Vencido con fecha futura (ej: tras editar la fecha): vuelve a activo conservando la fecha elegida.
-        if (rental.status === 'vencido' && rental.endDate && rental.endDate >= todayStr) {
+        if (rental.status === 'vencido' && rental.endDate && rental.endDate > todayStr) {
           return { ...rental, status: 'activo' };
         }
-        const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && rental.endDate < todayStr && getUnpaidMonthsForRental(rental).length === 0;
+        const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && rental.endDate <= todayStr && getUnpaidMonthsForRental(rental).length === 0;
         if (isVencidoFullyPaid) {
           const [ey, em, ed] = rental.endDate.split('-').map(Number);
           const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, ed);
@@ -307,16 +321,18 @@ function HomePage({ data, updateData, setCurrentPage }) {
   const homeExpiringSoon = rentals.filter(r => r.endDate && r.endDate > homeTodayStr && r.endDate <= homeIn2DaysStr && r.status !== 'finalizado');
   const getPatientNameHome = (id) => patients.find(p => p.id === id)?.name || '-';
   const getEquipmentNameHome = (id) => equipment.find(e => e.id === id)?.name || '-';
+  // Vencidos de dias anteriores (los que vencen HOY van en el bloque "Vencen HOY" de arriba).
   const homeAlreadyExpired = rentals.filter(r => {
-    if (r.status === 'finalizado') return false;
-    if (r.status === 'vencido') return true;
-    return r.endDate && r.endDate < homeTodayStr;
+    if (r.status === 'finalizado' || !r.endDate) return false;
+    return r.endDate < homeTodayStr;
   });
+  // Tarjeta "Vencidos": vencidos (hoy inclusive) con meses sin pagar.
   const expiredRentals = rentals.filter(r => {
-    if (!(r.status === 'activo' || r.status === 'vencido') || !r.endDate || new Date(r.endDate) >= new Date(today)) return false;
+    if (r.status === 'finalizado' || !r.endDate || r.endDate > today) return false;
     return getUnpaidMonthsForRental(r).length > 0;
   });
-  const availableEquipment = equipment.filter(e => e.available);
+  // Disponibilidad derivada de los alquileres reales, no del campo equipment.available (que esta desactualizado).
+  const availableEquipment = equipment.filter(e => e.status !== 'mantenimiento' && !getOccupyingRental(rentals, e.id));
   const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
   const monthlyTotal = monthlyRentals.reduce((sum, rental) => sum + Number(rental.price || 0), 0);
   const monthlyCollected = monthlyRentals.reduce((sum, rental) => (
@@ -437,7 +453,7 @@ function HomePage({ data, updateData, setCurrentPage }) {
               if (r.id !== rentalId) return r;
               const updated = { ...r, paymentStatusByMonth: { ...(r.paymentStatusByMonth || {}), [mk]: { paid: true, updatedAt: new Date().toISOString() } } };
               const remaining = getUnpaidMonths(updated).filter(m => m !== mk);
-              if (remaining.length === 0 && (r.status === 'vencido' || (r.endDate && new Date(r.endDate) < new Date()))) {
+              if (remaining.length === 0 && (r.status === 'vencido' || isRentalExpired(r))) {
                 const now = new Date();
                 const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, r.endDate ? new Date(r.endDate).getDate() : now.getDate());
                 updated.status = 'activo';
@@ -863,7 +879,7 @@ function RentalsPage({ data, updateData }) {
 
   const filteredRentals = rentals.filter(r => {
     if (filter === 'activo' && r.status !== 'activo') return false;
-    if (filter === 'vencido' && r.status !== 'vencido' && !(r.endDate && new Date(r.endDate) < new Date())) return false;
+    if (filter === 'vencido' && r.status !== 'vencido' && !isRentalExpired(r)) return false;
     if (filter === 'finalizado' && r.status !== 'finalizado') return false;
     if (search) {
       const q = search.toLowerCase();
@@ -989,8 +1005,7 @@ function RentalsPage({ data, updateData }) {
               </thead>
               <tbody>
                 {filteredRentals.map(rental => {
-                  const isVencido = rental.endDate && new Date(rental.endDate) < new Date();
-                  const status = isVencido ? 'vencido' : rental.status;
+                  const status = isRentalExpired(rental) ? 'vencido' : rental.status;
                   return (
                     <tr key={rental.id}>
                       <td>{getPatientName(rental.patientId)}</td>
@@ -1145,7 +1160,8 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
     onSave(rentalsToCreate);
   };
 
-  const rentedEquipIds = new Set((rentals || []).filter(r => r.status === 'activo' || (r.endDate && new Date(r.endDate) >= new Date())).map(r => r.equipmentId));
+  // Equipo ocupado = tiene un alquiler no finalizado (activo o vencido). Evita reasignar un equipo que sigue afuera.
+  const rentedEquipIds = new Set((rentals || []).filter(r => r.status !== 'finalizado').map(r => r.equipmentId));
   const availableEquipment = isEditing ? equipment : equipment.filter(e => !rentedEquipIds.has(e.id));
 
   const handleAddNewPatient = () => {
@@ -1287,9 +1303,8 @@ function EquipmentPage({ data, updateData }) {
   const [showModal, setShowModal] = useState(false);
   const [editingEquipment, setEditingEquipment] = useState(null);
 
-  const getCurrentRental = (equipId) => {
-    return rentals.find(r => r.equipmentId === equipId && (r.status === 'activo' || new Date(r.endDate) >= new Date()));
-  };
+  // Un equipo esta ocupado mientras tenga un alquiler no finalizado (activo o vencido).
+  const getCurrentRental = (equipId) => getOccupyingRental(rentals, equipId);
 
   const getCurrentPatient = (equipId) => {
     const rental = getCurrentRental(equipId);
