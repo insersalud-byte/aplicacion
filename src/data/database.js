@@ -145,21 +145,93 @@ function cacheLocal(data) {
   }
 }
 
+// ============================================================================
+// MERGE 3-VIAS POR REGISTRO (anti-clobber multi-dispositivo)
+// El estado es un unico blob, pero al guardar NO se pisa entero: se fusiona
+// base (ultimo estado sincronizado) + mine (mi estado local) + remote (lo que
+// hay ahora en la base). Asi dos dispositivos editando registros distintos al
+// mismo tiempo conservan AMBOS cambios, y un borrado real no reaparece.
+// ============================================================================
+
+const COLLECTIONS = ['patients', 'equipment', 'rentals', 'quotations', 'remitos', 'descartables', 'mascaras', 'invoices', 'equiposNuevos'];
+
+let _baseState = null;                 // ultimo estado confirmado en la base (base del merge)
+let _pendingLocal = null;              // cambios locales aun no confirmados (para reintentar)
+let _writeChain = Promise.resolve();   // serializa escrituras: nunca se pisan ni reordenan
+
+const _dataListeners = new Set();
+// Permite que la app reaccione cuando un merge trae cambios de otros dispositivos.
+export function onDataChange(fn) {
+  _dataListeners.add(fn);
+  return () => _dataListeners.delete(fn);
+}
+function emitData(data) {
+  queueMicrotask(() => _dataListeners.forEach(fn => fn(data)));
+}
+
+function indexById(arr) {
+  const m = new Map();
+  (Array.isArray(arr) ? arr : []).forEach(x => { if (x && x.id != null) m.set(x.id, x); });
+  return m;
+}
+
+// Merge 3-vias de una coleccion por id.
+function mergeCollection(base, mine, remote) {
+  const baseM = indexById(base);
+  const mineM = indexById(mine);
+  const result = indexById(remote); // partir de la base remota (incluye cambios de otros dispositivos)
+
+  // 1. Borrados que hice yo: estaban en base y ya no estan en mine -> borrar de verdad.
+  for (const id of baseM.keys()) {
+    if (!mineM.has(id)) result.delete(id);
+  }
+  // 2. Altas/ediciones mias: gana mi version SOLO en los registros que toque.
+  for (const [id, rec] of mineM) {
+    const baseRec = baseM.get(id);
+    const changedByMe = !baseRec || JSON.stringify(baseRec) !== JSON.stringify(rec);
+    if (changedByMe) {
+      result.set(id, rec);        // yo lo cree o edite -> mi version manda
+    } else if (!result.has(id)) {
+      result.set(id, rec);        // no lo toque pero falta en remoto -> conservarlo
+    }
+    // no lo toque y existe en remoto -> queda la version remota (toma ediciones ajenas)
+  }
+  return Array.from(result.values());
+}
+
+// Settings a nivel campo: gana mi valor solo en los campos que cambie.
+function mergeSettings(base = {}, mine = {}, remote = {}) {
+  const out = { ...remote };
+  for (const k of Object.keys(mine || {})) {
+    const changedByMe = JSON.stringify((base || {})[k]) !== JSON.stringify(mine[k]);
+    if (changedByMe || !(k in out)) out[k] = mine[k];
+  }
+  return out;
+}
+
+function mergeStates(base, mine, remote) {
+  const out = { ...remote };
+  for (const c of COLLECTIONS) {
+    out[c] = mergeCollection(base?.[c], mine?.[c], remote?.[c]);
+  }
+  out.settings = mergeSettings(base?.settings, mine?.settings, remote?.settings);
+  return normalizeData(out);
+}
+
 export async function loadData() {
   try {
     setSyncStatus('loading');
     const remote = await loadRemoteData();
 
     if (remote.exists) {
-      // La base de datos manda. Usar SIEMPRE los datos de Supabase.
       let data = remote.data;
 
       // Sembrar equiposNuevos solo si la base no tiene ninguno cargado.
       if (!data.equiposNuevos || data.equiposNuevos.length === 0) {
         data = { ...data, equiposNuevos: seedEquiposNuevos };
-        saveRemoteData(data).catch(() => {});
       }
 
+      _baseState = data;
       cacheLocal(data);
       setSyncStatus('ok');
       return data;
@@ -168,6 +240,7 @@ export async function loadData() {
     // La base esta vacia (primera vez): subir lo que haya en local como base inicial.
     const localData = loadLocalData();
     await saveRemoteData(localData);
+    _baseState = localData;
     cacheLocal(localData);
     setSyncStatus('ok');
     return localData;
@@ -175,23 +248,61 @@ export async function loadData() {
     // Sin conexion a Supabase: usar cache local para no quedar sin datos.
     console.error('Sync error on load (usando cache local):', e);
     setSyncStatus('error', e.message);
-    return loadLocalData();
+    const local = loadLocalData();
+    if (!_baseState) _baseState = local;
+    return local;
   }
 }
 
-export async function saveData(data) {
-  const normalized = normalizeData(data);
+export async function saveData(nextState) {
+  const mine = normalizeData(nextState);
+  _pendingLocal = mine;
+  cacheLocal(mine);                    // nunca perder el cambio localmente
+  // Encadenar para serializar escrituras (evita reordenamiento de PATCH).
+  _writeChain = _writeChain.then(() => _commit(mine));
+  return _writeChain;
+}
 
-  // Escribir a la base de datos (fuente de verdad).
+async function _commit(mine) {
   try {
     setSyncStatus('saving');
-    await saveRemoteData(normalized);
-    cacheLocal(normalized);
+    // Leer lo ultimo de la base y fusionar antes de escribir (anti-clobber).
+    const remote = await loadRemoteData();
+    const base = _baseState || remote.data;
+    const merged = mergeStates(base, mine, remote.data);
+
+    await saveRemoteData(merged);
+    _baseState = merged;
+    if (_pendingLocal === mine) _pendingLocal = null;
+    cacheLocal(merged);
     setSyncStatus('ok');
+
+    // Si el merge trajo cambios de otros dispositivos, refrescar la UI.
+    if (JSON.stringify(merged) !== JSON.stringify(mine)) {
+      emitData(merged);
+    }
   } catch (e) {
-    // Si falla la base, al menos cachear local para reintentar al recargar.
+    // Falla de red/base: queda _pendingLocal para reintentar en el proximo refresh.
     console.error('Sync error on save:', e);
-    cacheLocal(normalized);
+    setSyncStatus('error', e.message);
+  }
+}
+
+// Re-sincronizar desde la base (focus / intervalo / reconexion).
+// Primero empuja cambios pendientes para no perderlos, luego trae lo remoto.
+export async function refreshFromRemote() {
+  try {
+    if (_pendingLocal) {
+      await saveData(_pendingLocal); // saveData ya hace merge + emitData
+      return;
+    }
+    const remote = await loadRemoteData();
+    if (!remote.exists) return;
+    _baseState = remote.data;
+    cacheLocal(remote.data);
+    setSyncStatus('ok');
+    emitData(remote.data);
+  } catch (e) {
     setSyncStatus('error', e.message);
   }
 }

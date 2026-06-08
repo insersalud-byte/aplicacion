@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail, onSyncStatus } from './data/database';
+import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail, onSyncStatus, onDataChange, refreshFromRemote } from './data/database';
 import './App.css';
 
 function getMonthKey(date = new Date()) {
@@ -159,6 +159,29 @@ function App() {
     dataRef.current = nextData;
     setData(nextData);
     saveData(nextData);
+  }, []);
+
+  // Mantener la app sincronizada con la base entre dispositivos:
+  // - onDataChange: cuando un merge trae cambios de otro dispositivo, refrescar la UI.
+  // - focus / visibilidad / reconexion / intervalo: volver a leer la base.
+  useEffect(() => {
+    const unsub = onDataChange((incoming) => {
+      dataRef.current = incoming;
+      setData(incoming);
+    });
+    const doRefresh = () => { refreshFromRemote(); };
+    const onVis = () => { if (document.visibilityState === 'visible') doRefresh(); };
+    window.addEventListener('focus', doRefresh);
+    window.addEventListener('online', doRefresh);
+    document.addEventListener('visibilitychange', onVis);
+    const iv = setInterval(doRefresh, 30000);
+    return () => {
+      unsub();
+      window.removeEventListener('focus', doRefresh);
+      window.removeEventListener('online', doRefresh);
+      document.removeEventListener('visibilitychange', onVis);
+      clearInterval(iv);
+    };
   }, []);
 
   if (loading || !data) {
