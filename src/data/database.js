@@ -2,6 +2,8 @@ import { seedEquiposNuevos } from './seedEquiposNuevos';
 
 const STORAGE_KEY = 'insersalud_db';
 const STORAGE_TS_KEY = 'insersalud_db_ts';
+const DIRTY_KEY = 'insersalud_dirty';   // hay cambios locales que todavia no llegaron a la base
+const BASE_KEY = 'insersalud_base';     // ultimo estado sincronizado (base del merge si se cierra offline)
 const SUPABASE_URL = 'https://gvharyztavhugqiaihjq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_wTO5X4JfeoHP0zg7qq4azQ_OJ3jxfwL';
 
@@ -231,6 +233,30 @@ function mergeStates(base, mine, remote) {
   return normalizeData(out);
 }
 
+// Si quedaron cambios locales sin subir (la app se cerro sin internet), los
+// fusiona contra lo que hay ahora en la base y los sube. Devuelve el estado
+// final, o null si no habia nada pendiente.
+async function flushDirtyLocal(remoteData) {
+  let dirty = false;
+  try { dirty = localStorage.getItem(DIRTY_KEY) === '1'; } catch (e) { /* noop */ }
+  if (!dirty) return null;
+
+  const mine = loadLocalData(); // estado local con los cambios sin subir
+  let base = remoteData;         // fallback conservador si no tenemos base guardada
+  try {
+    const baseRaw = localStorage.getItem(BASE_KEY);
+    if (baseRaw) base = normalizeData(JSON.parse(baseRaw));
+  } catch (e) { /* noop */ }
+
+  const merged = mergeStates(base, mine, remoteData);
+  _lastRemoteTs = await saveRemoteData(merged); // si falla, lanza y se mantiene dirty
+  _baseState = merged;
+  try { localStorage.removeItem(DIRTY_KEY); localStorage.removeItem(BASE_KEY); } catch (e) { /* noop */ }
+  cacheLocal(merged);
+  setSyncStatus('ok');
+  return merged;
+}
+
 export async function loadData() {
   try {
     setSyncStatus('loading');
@@ -243,6 +269,10 @@ export async function loadData() {
       if (!data.equiposNuevos || data.equiposNuevos.length === 0) {
         data = { ...data, equiposNuevos: seedEquiposNuevos };
       }
+
+      // Antes de confiar en lo remoto, subir cambios locales pendientes.
+      const recovered = await flushDirtyLocal(data);
+      if (recovered) return recovered;
 
       _baseState = data;
       _lastRemoteTs = remote.updatedAt;
@@ -271,6 +301,16 @@ export async function loadData() {
 export async function saveData(nextState) {
   const mine = normalizeData(nextState);
   _pendingLocal = mine;
+  // Marcar "sucio" y, la primera vez del ciclo, guardar el estado base (ultimo
+  // sincronizado) ANTES de pisar el cache. Asi, si la app se cierra sin internet,
+  // el proximo arranque sabe fusionar y subir el cambio: nunca queda solo en local.
+  try {
+    if (localStorage.getItem(DIRTY_KEY) !== '1') {
+      const lastSynced = localStorage.getItem(STORAGE_KEY);
+      if (lastSynced) localStorage.setItem(BASE_KEY, lastSynced);
+      localStorage.setItem(DIRTY_KEY, '1');
+    }
+  } catch (e) { /* sin espacio: igual se reintenta online */ }
   cacheLocal(mine);                    // nunca perder el cambio localmente
   // Encadenar para serializar escrituras (evita reordenamiento de PATCH).
   _writeChain = _writeChain.then(() => _commit(mine));
@@ -287,7 +327,11 @@ async function _commit(mine) {
 
     _lastRemoteTs = await saveRemoteData(merged);
     _baseState = merged;
-    if (_pendingLocal === mine) _pendingLocal = null;
+    if (_pendingLocal === mine) {
+      _pendingLocal = null;
+      // Confirmado en la base: ya no hay cambios pendientes.
+      try { localStorage.removeItem(DIRTY_KEY); localStorage.removeItem(BASE_KEY); } catch (e) { /* noop */ }
+    }
     cacheLocal(merged);
     setSyncStatus('ok');
 
