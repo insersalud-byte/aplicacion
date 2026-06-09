@@ -82,11 +82,6 @@ function loadLocalData() {
   return normalizeData(initialData);
 }
 
-function hasDataEntries(data) {
-  return ['patients', 'equipment', 'rentals', 'quotations', 'remitos', 'descartables', 'mascaras', 'invoices', 'equiposNuevos']
-    .some(key => Array.isArray(data[key]) && data[key].length > 0);
-}
-
 // ============================================================================
 // SUPABASE = UNICA FUENTE DE VERDAD (single source of truth)
 // localStorage solo se usa como cache para modo offline.
@@ -391,20 +386,38 @@ export function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
+// Numero de documento (COT-/REM-/FAC-) basado en timestamp.
+export function generateDocNumber(prefix) {
+  return `${prefix}-${Date.now().toString(36).toUpperCase()}`;
+}
+
+// Fecha local YYYY-MM-DD. NUNCA usar toISOString() para fechas de negocio:
+// devuelve UTC, y en Argentina (UTC-3) desde las 21:00 ya es "manana" en UTC,
+// lo que marcaba vencimientos un dia antes.
+export function toLocalDateStr(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 export function getToday() {
-  return new Date().toISOString().split('T')[0];
+  return toLocalDateStr(new Date());
+}
+
+// new Date('YYYY-MM-DD') parsea como medianoche UTC (= dia anterior 21:00 en
+// Argentina). Parsear como medianoche LOCAL para que no se corra un dia.
+export function parseLocalDate(dateString) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) return new Date(`${dateString}T00:00:00`);
+  return new Date(dateString);
 }
 
 export function formatDate(dateString) {
   if (!dateString) return '-';
-  const date = new Date(dateString);
-  return date.toLocaleDateString('es-AR');
+  return parseLocalDate(dateString).toLocaleDateString('es-AR');
 }
 
 export function getDaysUntilEnd(endDate) {
   if (!endDate) return 0;
-  const end = new Date(endDate);
-  const today = new Date();
+  const end = parseLocalDate(endDate);
+  const today = parseLocalDate(getToday());
   return Math.ceil((end.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 }
 
@@ -419,7 +432,6 @@ export function parseExcelData(data, existingPatients = [], existingEquipment = 
   if (!data || data.length === 0) return { patients: [], equipment: [], rentals: [] };
   
   const firstRow = data[0];
-  const hasPatientData = firstRow['NOMBRE'] || firstRow['paciente'] || firstRow['NOMBRE Y APELLIDO'];
   const hasRentalData = firstRow['FECHA ALTA'] || firstRow['INICIO'];
   
   const patients = [];

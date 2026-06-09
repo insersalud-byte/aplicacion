@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail, onSyncStatus, onDataChange, refreshFromRemote, syncIfRemoteChanged } from './data/database';
+import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, onSyncStatus, onDataChange, refreshFromRemote, syncIfRemoteChanged } from './data/database';
 import './App.css';
 
 function getMonthKey(date = new Date()) {
@@ -134,12 +134,17 @@ function App() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // dataRef refleja siempre el ultimo estado. Se actualiza en cada camino que
+  // hace setData (init, updateData, onDataChange), nunca durante el render.
+  const dataRef = useRef(null);
+
   useEffect(() => {
     let active = true;
 
     const initializeData = async () => {
       const loaded = await loadData();
       if (!active) return;
+      dataRef.current = loaded;
       setData(loaded);
       setLoading(false);
     };
@@ -150,9 +155,6 @@ function App() {
       active = false;
     };
   }, []);
-
-  const dataRef = useRef(data);
-  dataRef.current = data;
 
   const updateData = useCallback((updater) => {
     const nextData = typeof updater === 'function' ? updater(dataRef.current) : updater;
@@ -320,7 +322,7 @@ function HomePage({ data, updateData, setCurrentPage }) {
         }
         const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && rental.endDate <= todayStr && getUnpaidMonthsForRental(rental).length === 0;
         if (isVencidoFullyPaid) {
-          const [ey, em, ed] = rental.endDate.split('-').map(Number);
+          const ed = Number(rental.endDate.split('-')[2]);
           const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, ed);
           const nextMonthStr = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth()+1).padStart(2,'0')}-${String(nextMonth.getDate()).padStart(2,'0')}`;
           return { ...rental, status: 'activo', endDate: nextMonthStr };
@@ -329,7 +331,7 @@ function HomePage({ data, updateData, setCurrentPage }) {
       });
       return { ...cur, rentals: updated };
     });
-  }, [rentals, today]);
+  }, [rentals, today, updateData]);
 
   const activeRentals = rentals.filter(r => r.status === 'activo');
   const expiringRentals = rentals.filter(r => {
@@ -366,27 +368,6 @@ function HomePage({ data, updateData, setCurrentPage }) {
   const monthlyPending = monthlyTotal - monthlyCollected;
 
   const [activeFilter, setActiveFilter] = useState(null);
-
-  const handleToggleMonthlyPayment = (rentalId) => {
-    updateData(currentData => ({
-      ...currentData,
-      rentals: currentData.rentals.map(rental => {
-        if (rental.id !== rentalId) return rental;
-
-        const paid = !isRentalPaidForMonth(rental, currentMonthKey);
-        return {
-          ...rental,
-          paymentStatusByMonth: {
-            ...(rental.paymentStatusByMonth || {}),
-            [currentMonthKey]: {
-              paid,
-              updatedAt: new Date().toISOString()
-            }
-          }
-        };
-      })
-    }));
-  };
 
   return (
     <div>
@@ -480,9 +461,11 @@ function HomePage({ data, updateData, setCurrentPage }) {
               const remaining = getUnpaidMonths(updated).filter(m => m !== mk);
               if (remaining.length === 0 && (r.status === 'vencido' || isRentalExpired(r))) {
                 const now = new Date();
-                const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, r.endDate ? new Date(r.endDate).getDate() : now.getDate());
+                // Dia del vencimiento tomado del string (no de new Date(endDate), que en UTC-3 da el dia anterior).
+                const dueDay = r.endDate ? Number(r.endDate.split('-')[2]) : now.getDate();
+                const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, dueDay);
                 updated.status = 'activo';
-                updated.endDate = nextMonth.toISOString().split('T')[0];
+                updated.endDate = toLocalDateStr(nextMonth);
               }
               return updated;
             })
@@ -758,7 +741,7 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
 }
 
 function PatientsPage({ data, updateData }) {
-  const { patients, equipment, rentals } = data;
+  const { patients } = data;
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState(null);
@@ -1890,7 +1873,7 @@ function MascaraModal({ mascara, onSave, onClose }) {
 }
 
 function SalesCartPage({ data, updateData, pageType }) {
-  const { equipment, mascaras, descartables, equiposNuevos, patients, settings, quotations, invoices, remitos, rentals } = data;
+  const { equipment, mascaras, descartables, equiposNuevos, settings, quotations, invoices, remitos, rentals } = data;
   const isCotizacion = pageType === 'cotizacion';
   const isRemito = pageType === 'remito';
   const title = isRemito ? 'Remito' : (isCotizacion ? 'Cotizaciones' : 'Facturacion');
@@ -1992,7 +1975,7 @@ function SalesCartPage({ data, updateData, pageType }) {
     if (cart.length === 0) { alert('Agregue productos'); return; }
     const prefix = isRemito ? 'REM' : (isCotizacion ? 'COT' : 'FAC');
     const docType = isRemito ? 'remito' : (isCotizacion ? 'cotizacion' : 'factura');
-    const number = `${prefix}-${Date.now().toString(36).toUpperCase()}`;
+    const number = generateDocNumber(prefix);
     const invoiceData = {
       invoiceNumber: number,
       date: getToday(),
@@ -2222,7 +2205,7 @@ function CalendarPage({ data }) {
 
   const getRentalsForDay = (date) => {
     if (!date) return [];
-    const dateStr = date.toISOString().split('T')[0];
+    const dateStr = toLocalDateStr(date);
     return rentals.filter(r => {
       const start = r.startDate?.split('T')[0];
       const end = r.endDate?.split('T')[0];
@@ -2706,13 +2689,6 @@ function DescartablesPage({ data, updateData }) {
       updatedAt: getToday()
     };
 
-    let newDescartables;
-    if (editing) {
-      newDescartables = descartables.map(d => d.id === editing ? newItem : d);
-    } else {
-      newDescartables = [...descartables, newItem];
-    }
-
     updateData(cur => ({ ...cur, descartables: editing ? cur.descartables.map(d => d.id === editing ? newItem : d) : [...cur.descartables, newItem] }));
     setForm(defaultItem);
     setShowForm(false);
@@ -2877,21 +2853,5 @@ function DescartablesPage({ data, updateData }) {
 function FacturacionPage({ data, updateData }) {
   return <SalesCartPage data={data} updateData={updateData} pageType="factura" />;
 }
-
-const styles = {
-  productCard: {
-    border: '1px solid #E3F2FD',
-    borderRadius: 8,
-    padding: 12,
-    background: '#FAFDFF'
-  },
-  cartItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '8px 0',
-    borderBottom: '1px solid #E3F2FD'
-  }
-};
 
 export default App;
