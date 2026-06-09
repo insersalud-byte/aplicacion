@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail, onSyncStatus, onDataChange, refreshFromRemote } from './data/database';
+import { loadData, saveData, generateId, getToday, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, sendInvoiceByEmail, onSyncStatus, onDataChange, refreshFromRemote, syncIfRemoteChanged } from './data/database';
 import './App.css';
 
 function getMonthKey(date = new Date()) {
@@ -162,23 +162,25 @@ function App() {
   }, []);
 
   // Mantener la app sincronizada con la base entre dispositivos:
-  // - onDataChange: cuando un merge trae cambios de otro dispositivo, refrescar la UI.
-  // - focus / visibilidad / reconexion / intervalo: volver a leer la base.
+  // - onDataChange: cuando llega un cambio de otro dispositivo, refresca la UI.
+  // - heartbeat cada 5s (solo el timestamp, liviano): si la base cambio, baja todo.
+  // - focus / volver a la pestania / reconexion: refresco completo inmediato.
   useEffect(() => {
     const unsub = onDataChange((incoming) => {
       dataRef.current = incoming;
       setData(incoming);
     });
-    const doRefresh = () => { refreshFromRemote(); };
-    const onVis = () => { if (document.visibilityState === 'visible') doRefresh(); };
-    window.addEventListener('focus', doRefresh);
-    window.addEventListener('online', doRefresh);
+    const fullRefresh = () => { refreshFromRemote(); };
+    const heartbeat = () => { if (document.visibilityState === 'visible') syncIfRemoteChanged(); };
+    const onVis = () => { if (document.visibilityState === 'visible') fullRefresh(); };
+    window.addEventListener('focus', fullRefresh);
+    window.addEventListener('online', fullRefresh);
     document.addEventListener('visibilitychange', onVis);
-    const iv = setInterval(doRefresh, 30000);
+    const iv = setInterval(heartbeat, 5000);
     return () => {
       unsub();
-      window.removeEventListener('focus', doRefresh);
-      window.removeEventListener('online', doRefresh);
+      window.removeEventListener('focus', fullRefresh);
+      window.removeEventListener('online', fullRefresh);
       document.removeEventListener('visibilitychange', onVis);
       clearInterval(iv);
     };

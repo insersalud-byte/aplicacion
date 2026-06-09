@@ -110,6 +110,7 @@ async function loadRemoteData() {
 }
 
 async function saveRemoteData(data) {
+  const ts = new Date().toISOString();
   const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1`, {
     method: 'PATCH',
     headers: {
@@ -118,12 +119,23 @@ async function saveRemoteData(data) {
       'Content-Type': 'application/json',
       'Prefer': 'return=minimal',
     },
-    body: JSON.stringify({ data, updated_at: new Date().toISOString() }),
+    body: JSON.stringify({ data, updated_at: ts }),
   });
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     throw new Error(`Supabase PATCH ${response.status}: ${text}`);
   }
+  return ts;
+}
+
+// GET liviano: solo el timestamp. Sirve para detectar cambios sin bajar todo el blob.
+async function fetchRemoteTs() {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1&select=updated_at`, {
+    headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+  });
+  if (!response.ok) throw new Error(`Supabase TS ${response.status}`);
+  const rows = await response.json();
+  return rows && rows[0] ? rows[0].updated_at : null;
 }
 
 function cacheLocal(data) {
@@ -158,6 +170,7 @@ const COLLECTIONS = ['patients', 'equipment', 'rentals', 'quotations', 'remitos'
 let _baseState = null;                 // ultimo estado confirmado en la base (base del merge)
 let _pendingLocal = null;              // cambios locales aun no confirmados (para reintentar)
 let _writeChain = Promise.resolve();   // serializa escrituras: nunca se pisan ni reordenan
+let _lastRemoteTs = null;              // updated_at que ya aplicamos (para detectar cambios ajenos)
 
 const _dataListeners = new Set();
 // Permite que la app reaccione cuando un merge trae cambios de otros dispositivos.
@@ -232,6 +245,7 @@ export async function loadData() {
       }
 
       _baseState = data;
+      _lastRemoteTs = remote.updatedAt;
       cacheLocal(data);
       setSyncStatus('ok');
       return data;
@@ -239,7 +253,7 @@ export async function loadData() {
 
     // La base esta vacia (primera vez): subir lo que haya en local como base inicial.
     const localData = loadLocalData();
-    await saveRemoteData(localData);
+    _lastRemoteTs = await saveRemoteData(localData);
     _baseState = localData;
     cacheLocal(localData);
     setSyncStatus('ok');
@@ -271,7 +285,7 @@ async function _commit(mine) {
     const base = _baseState || remote.data;
     const merged = mergeStates(base, mine, remote.data);
 
-    await saveRemoteData(merged);
+    _lastRemoteTs = await saveRemoteData(merged);
     _baseState = merged;
     if (_pendingLocal === mine) _pendingLocal = null;
     cacheLocal(merged);
@@ -299,9 +313,31 @@ export async function refreshFromRemote() {
     const remote = await loadRemoteData();
     if (!remote.exists) return;
     _baseState = remote.data;
+    _lastRemoteTs = remote.updatedAt;
     cacheLocal(remote.data);
     setSyncStatus('ok');
     emitData(remote.data);
+  } catch (e) {
+    setSyncStatus('error', e.message);
+  }
+}
+
+// Heartbeat barato: cada pocos segundos chequea SOLO el timestamp.
+// Si la base cambio (otro dispositivo guardo), baja el estado completo.
+// Asi lo que se carga en cualquier dispositivo se refleja en los demas en segundos.
+export async function syncIfRemoteChanged() {
+  try {
+    // Si tengo cambios locales sin confirmar, primero los empujo (no perderlos).
+    if (_pendingLocal) {
+      await saveData(_pendingLocal);
+      return;
+    }
+    const ts = await fetchRemoteTs();
+    if (ts && ts !== _lastRemoteTs) {
+      await refreshFromRemote();
+    } else if (_syncStatus.state === 'error') {
+      setSyncStatus('ok');
+    }
   } catch (e) {
     setSyncStatus('error', e.message);
   }
