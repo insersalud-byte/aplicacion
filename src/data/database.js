@@ -604,7 +604,10 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
   let hy = 25;
   if (settings.companyPhone) { doc.text(`Tel: ${settings.companyPhone}`, cx, hy, { align: 'center' }); hy += 5; }
   if (settings.companyAddress) { doc.text(settings.companyAddress, cx, hy, { align: 'center' }); hy += 5; }
-  if (settings.companyEmail) { doc.text(settings.companyEmail, cx, hy, { align: 'center' }); }
+  if (settings.companyEmail) { doc.text(settings.companyEmail, cx, hy, { align: 'center' }); hy += 5; }
+  doc.setFont(undefined, 'bold');
+  doc.text(settings.companyWebsite || 'inser.ar', cx, hy, { align: 'center' });
+  doc.setFont(undefined, 'normal');
 
   // ── Title ────────────────────────────────────────────────────────────────
   let y = 56;

@@ -2226,6 +2226,13 @@ function CalendarPage({ data }) {
     });
   };
 
+  // Alquileres que VENCEN exactamente ese dia (lo que importa en el calendario).
+  const getExpiringForDay = (date) => {
+    if (!date) return [];
+    const dateStr = toLocalDateStr(date);
+    return rentals.filter(r => r.status !== 'finalizado' && r.endDate?.split('T')[0] === dateStr);
+  };
+
   const days = getDaysInMonth(currentDate);
   const monthNames = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Setiembre', 'Octubre', 'Noviembre', 'Diciembre'];
   const dayNames = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
@@ -2233,7 +2240,9 @@ function CalendarPage({ data }) {
   const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1));
   const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1));
 
-  const selectedDayRentals = selectedDate ? getRentalsForDay(selectedDate) : [];
+  const selectedDayExpiring = selectedDate ? getExpiringForDay(selectedDate) : [];
+  const expiringIds = new Set(selectedDayExpiring.map(r => r.id));
+  const selectedDayRentals = selectedDate ? getRentalsForDay(selectedDate).filter(r => !expiringIds.has(r.id)) : [];
 
   return (
     <div>
@@ -2251,17 +2260,23 @@ function CalendarPage({ data }) {
         <div className="calendar-grid">
           {dayNames.map(d => <div key={d} className="calendar-header">{d}</div>)}
           {days.map((date, i) => {
-            const rentalsForDay = getRentalsForDay(date);
+            const expiringForDay = getExpiringForDay(date);
             const isToday = date && date.toDateString() === new Date().toDateString();
             const isSelected = date && selectedDate && date.toDateString() === selectedDate.toDateString();
-            
+
             return (
-              <div 
-                key={i} 
-                className={`calendar-day ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${rentalsForDay.length > 0 ? 'has-event' : ''}`}
+              <div
+                key={i}
+                className={`calendar-day ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${expiringForDay.length > 0 ? 'has-event' : ''}`}
                 onClick={() => date && setSelectedDate(date)}
+                style={{ position: 'relative' }}
               >
                 {date?.getDate()}
+                {expiringForDay.length > 0 && (
+                  <span style={{ position: 'absolute', top: 2, right: 4, fontSize: 10, fontWeight: 700, color: '#fff', background: '#E53935', borderRadius: 8, padding: '0 4px', lineHeight: '14px' }}>
+                    {expiringForDay.length}
+                  </span>
+                )}
               </div>
             );
           })}
@@ -2271,23 +2286,45 @@ function CalendarPage({ data }) {
       {selectedDate && (
         <div className="card">
           <h3 className="card-title">{selectedDate.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
-          
-          {selectedDayRentals.length === 0 ? (
-            <p style={{ color: '#5A6978' }}>No hay alquileres en esta fecha</p>
+
+          <h4 style={{ color: '#E53935', margin: '8px 0 4px' }}>🔴 Vencen este día ({selectedDayExpiring.length})</h4>
+          {selectedDayExpiring.length === 0 ? (
+            <p style={{ color: '#5A6978' }}>Sin vencimientos este día</p>
           ) : (
-            selectedDayRentals.map(rental => {
+            selectedDayExpiring.map(rental => {
               const patient = patients.find(p => p.id === rental.patientId);
               const equip = equipment.find(e => e.id === rental.equipmentId);
               return (
-                <div key={rental.id} className="patient-card" style={{ marginTop: 12 }}>
+                <div key={rental.id} className="patient-card" style={{ marginTop: 12, borderLeft: '3px solid #E53935' }}>
                   <div className="patient-info">
                     <div className="patient-name">{patient?.name}</div>
                     <div className="patient-detail">{equip?.name}</div>
+                    {Number(rental.price) > 0 && <div className="patient-detail" style={{ fontWeight: 600 }}>{formatCurrency(rental.price)}/mes</div>}
                   </div>
                   <span className={`badge badge-${rental.status}`}>{rental.status}</span>
                 </div>
               );
             })
+          )}
+
+          {selectedDayRentals.length > 0 && (
+            <>
+              <h4 style={{ color: '#1E5AA8', margin: '16px 0 4px' }}>En curso ese día ({selectedDayRentals.length})</h4>
+              {selectedDayRentals.map(rental => {
+                const patient = patients.find(p => p.id === rental.patientId);
+                const equip = equipment.find(e => e.id === rental.equipmentId);
+                return (
+                  <div key={rental.id} className="patient-card" style={{ marginTop: 12 }}>
+                    <div className="patient-info">
+                      <div className="patient-name">{patient?.name}</div>
+                      <div className="patient-detail">{equip?.name}</div>
+                      <div className="patient-detail">Vence: {formatDate(rental.endDate)}</div>
+                    </div>
+                    <span className={`badge badge-${rental.status}`}>{rental.status}</span>
+                  </div>
+                );
+              })}
+            </>
           )}
         </div>
       )}
