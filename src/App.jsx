@@ -1654,13 +1654,21 @@ function EquiposNuevosPage({ data, updateData }) {
 function MascarasPage({ data, updateData }) {
   const { mascaras } = data;
   const [filter, setFilter] = useState('todos');
+  const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingMascara, setEditingMascara] = useState(null);
 
   const filteredMascaras = mascaras.filter(m => {
-    if (filter === 'todos') return true;
-    if (filter === 'stock') return m.stock > 0;
-    return m.stock <= m.minStock;
+    if (filter === 'stock' && !(m.stock > 0)) return false;
+    if (filter === 'bajo' && !(m.stock <= m.minStock)) return false;
+    if (search) {
+      const q = search.toLowerCase();
+      const hayMatch = (m.name || '').toLowerCase().includes(q)
+        || (m.type || '').toLowerCase().includes(q)
+        || (m.description || '').toLowerCase().includes(q);
+      if (!hayMatch) return false;
+    }
+    return true;
   });
 
   const handleSave = (mascara) => {
@@ -1704,6 +1712,11 @@ function MascarasPage({ data, updateData }) {
       <div className="page-header">
         <h1 className="page-title">😷 Mascarillas y Consumibles</h1>
         <p className="page-subtitle">{mascaras.length} productos</p>
+      </div>
+
+      <div className="search-box">
+        <span>🔍</span>
+        <input type="text" className="search-input" placeholder="Buscar por nombre, tipo o descripción..." value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
 
       <div className="filters">

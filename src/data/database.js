@@ -520,9 +520,7 @@ export function sendWhatsApp(phone, message) {
   window.open(`https://wa.me/${formattedPhone}?text=${encodedMessage}`, '_blank');
 }
 
-async function toBase64Image(url) {
-  if (!url) return null;
-  if (url.startsWith('data:')) return url;
+function loadImageAsBase64(src) {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -537,8 +535,27 @@ async function toBase64Image(url) {
       } catch { resolve(null); }
     };
     img.onerror = () => resolve(null);
-    img.src = url;
+    img.src = src;
   });
+}
+
+async function toBase64Image(url) {
+  if (!url) return null;
+  if (url.startsWith('data:')) return url;
+  // 1) Carga directa (sirve para same-origin o CDNs que permiten CORS).
+  let result = await loadImageAsBase64(url);
+  if (result) return result;
+  if (/^https?:\/\//.test(url)) {
+    // 2) Proxy propio (funcion de Vercel, same-origin: sin problema de CORS).
+    //    Necesario porque cdn.zyrosite.com no manda Access-Control-Allow-Origin
+    //    y el canvas queda "tainted": la foto no llegaba al PDF.
+    result = await loadImageAsBase64(`/api/server?img=${encodeURIComponent(url)}`);
+    if (result) return result;
+    // 3) Fallback universal: proxy publico de imagenes con CORS.
+    result = await loadImageAsBase64(`https://wsrv.nl/?url=${encodeURIComponent(url)}`);
+    if (result) return result;
+  }
+  return null;
 }
 
 export async function generateInvoicePDF(invoiceData, settings, type = 'factura') {
@@ -616,6 +633,7 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
     invoiceData.items.forEach((item, i) => {
       const imgData = itemImages[i];
       const rh = imgData ? 20 : 9;
+      if (y + rh > height - 25) { doc.addPage(); y = 20; }
       if (i % 2 === 0) {
         doc.setFillColor(248, 250, 252);
         doc.rect(20, y - 5, width - 40, rh, 'F');
@@ -654,6 +672,7 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
     doc.setTextColor(60, 60, 60);
     invoiceData.items.forEach((item, i) => {
       const subtotal = item.price * (item.quantity || 1);
+      if (y + rowH > height - 25) { doc.addPage(); y = 20; }
       if (i % 2 === 1) {
         doc.setFillColor(248, 250, 252);
         doc.rect(20, y - 4, width - 40, rowH, 'F');
@@ -691,6 +710,7 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
 
   // Signature block for remito
   if (isRemito) {
+    if (y > height - 70) { doc.addPage(); y = 20; }
     y += 18;
     doc.setDrawColor(30, 90, 168);
     doc.setLineWidth(0.4);
