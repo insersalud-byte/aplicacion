@@ -1988,7 +1988,7 @@ function SalesCartPage({ data, updateData, pageType }) {
     if (cart.length === 0) { alert('Agregue productos'); return; }
     const prefix = isRemito ? 'REM' : (isCotizacion ? 'COT' : 'FAC');
     const docType = isRemito ? 'remito' : (isCotizacion ? 'cotizacion' : 'factura');
-    const number = generateDocNumber(prefix);
+    const number = generateDocNumber(prefix, customerName);
     const invoiceData = {
       invoiceNumber: number,
       date: getToday(),

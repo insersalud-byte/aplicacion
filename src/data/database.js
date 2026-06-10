@@ -386,9 +386,21 @@ export function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
-// Numero de documento (COT-/REM-/FAC-) basado en timestamp.
-export function generateDocNumber(prefix) {
-  return `${prefix}-${Date.now().toString(36).toUpperCase()}`;
+// Numero de documento (COT-/REM-/FAC-) con apellido del cliente para que el
+// PDF descargado y el historial se encuentren facil. Ej: COT-PEREZ-MQ874DYD.
+// Apellido: lo que esta antes de la coma ("PEREZ, JOSE") o la ultima palabra
+// ("Jose Perez"). Sin nombre de cliente, queda solo prefijo + timestamp.
+export function generateDocNumber(prefix, clientName = '') {
+  const ts = Date.now().toString(36).toUpperCase();
+  const raw = String(clientName || '').trim();
+  if (!raw) return `${prefix}-${ts}`;
+  const base = raw.includes(',') ? raw.split(',')[0] : raw.split(/\s+/).pop();
+  const slug = base
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')   // sin acentos
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .toUpperCase()
+    .slice(0, 12);
+  return slug ? `${prefix}-${slug}-${ts}` : `${prefix}-${ts}`;
 }
 
 // Fecha local YYYY-MM-DD. NUNCA usar toISOString() para fechas de negocio:
