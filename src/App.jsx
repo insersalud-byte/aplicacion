@@ -453,6 +453,9 @@ function HomePage({ data, updateData, setCurrentPage }) {
         };
 
         const handlePayMonth = (rentalId, mk) => {
+          const rentalPay = rentals.find(r => r.id === rentalId);
+          const patientPay = patients.find(p => p.id === rentalPay?.patientId);
+          if (!confirm(`¿Registrar el pago de ${formatMonthLabel(mk)} de ${patientPay?.name || 'este alquiler'}?`)) return;
           updateData(currentData => ({
             ...currentData,
             rentals: currentData.rentals.map(r => {
@@ -753,6 +756,7 @@ function PatientsPage({ data, updateData }) {
   );
 
   const handleSave = (patient) => {
+    if (!confirm(editingPatient ? `¿Guardar los cambios del paciente "${patient.name}"?` : `¿Agregar el paciente "${patient.name}"?`)) return;
     updateData(cur => ({
       ...cur,
       patients: editingPatient
@@ -899,6 +903,12 @@ function RentalsPage({ data, updateData }) {
   });
 
   const handleSave = (payload) => {
+    const confirmMsg = editingRental
+      ? `¿Guardar los cambios del alquiler de ${getPatientName(payload.update?.patientId || payload.patientId)}?`
+      : Array.isArray(payload)
+        ? (payload.length === 1 ? `¿Crear el alquiler de ${getPatientName(payload[0].patientId)}?` : `¿Crear ${payload.length} alquileres?`)
+        : `¿Crear el alquiler de ${getPatientName(payload.patientId)}?`;
+    if (!confirm(confirmMsg)) return;
     updateData(cur => {
       let newRentals = [...cur.rentals];
       if (editingRental && payload.update) {
@@ -1043,6 +1053,7 @@ function RentalsPage({ data, updateData }) {
           rentals={rentals}
           onSave={handleSave} 
           onAddPatient={(patient) => {
+            if (!confirm(`¿Agregar el paciente "${patient.name}"?`)) return null;
             const newPatient = { ...patient, id: generateId(), createdAt: getToday() };
             updateData(currentData => ({
               ...currentData,
@@ -1178,6 +1189,7 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
       return;
     }
     const patient = onAddPatient(newPatient);
+    if (!patient) return; // el usuario cancelo la confirmacion
     setForm({ ...form, patientId: patient.id });
     setShowNewPatient(false);
     setNewPatient({ name: '', phone: '', dni: '', address: '', observations: '' });
@@ -1339,6 +1351,7 @@ function EquipmentPage({ data, updateData }) {
 
   const handleSave = (equip) => {
     const isNew = !equip.id;
+    if (!confirm(isNew ? `¿Agregar el equipo "${equip.name}"?` : `¿Guardar los cambios del equipo "${equip.name}"?`)) return;
     updateData(cur => ({
       ...cur,
       equipment: isNew
@@ -1551,6 +1564,7 @@ function EquiposNuevosPage({ data, updateData }) {
   const filtered = (equiposNuevos || []).filter(e => !search || (e.name || '').toLowerCase().includes(search.toLowerCase()));
 
   const handleSave = (item) => {
+    if (!confirm(item.id ? `¿Guardar los cambios de "${item.name}"?` : `¿Agregar "${item.name}" al catalogo?`)) return;
     updateData(cur => ({
       ...cur,
       equiposNuevos: item.id
@@ -1673,6 +1687,7 @@ function MascarasPage({ data, updateData }) {
 
   const handleSave = (mascara) => {
     const isNew = !mascara.id;
+    if (!confirm(isNew ? `¿Agregar el producto "${mascara.name}"?` : `¿Guardar los cambios de "${mascara.name}"?`)) return;
     updateData(cur => ({
       ...cur,
       mascaras: isNew
@@ -1690,9 +1705,14 @@ function MascarasPage({ data, updateData }) {
   };
 
   const updateStock = (id, delta) => {
+    const m = mascaras.find(x => x.id === id);
+    if (!m) return;
+    const nuevo = Math.max(0, m.stock + delta);
+    if (nuevo === m.stock) return;
+    if (!confirm(`¿Cambiar el stock de "${m.name}" de ${m.stock} a ${nuevo}?`)) return;
     updateData(cur => ({
       ...cur,
-      mascaras: cur.mascaras.map(m => m.id === id ? { ...m, stock: Math.max(0, m.stock + delta) } : m)
+      mascaras: cur.mascaras.map(x => x.id === id ? { ...x, stock: nuevo } : x)
     }));
   };
 
@@ -1988,6 +2008,7 @@ function SalesCartPage({ data, updateData, pageType }) {
     if (cart.length === 0) { alert('Agregue productos'); return; }
     const prefix = isRemito ? 'REM' : (isCotizacion ? 'COT' : 'FAC');
     const docType = isRemito ? 'remito' : (isCotizacion ? 'cotizacion' : 'factura');
+    if (!confirm(`¿Generar ${docType} para "${customerName || 'sin nombre'}" por ${formatCurrency(cartTotal)}?`)) return;
     const number = generateDocNumber(prefix, customerName);
     const invoiceData = {
       invoiceNumber: number,
@@ -2019,6 +2040,7 @@ function SalesCartPage({ data, updateData, pageType }) {
   };
 
   const handleEditSaved = (s) => {
+    if (!confirm(`¿Editar "${s.customerName || s.clientName || s.invoiceNumber || 'este documento'}"? Se carga al carrito y se quita del historial hasta que lo vuelvas a generar.`)) return;
     const items = s.cartItems || s.items?.map(i => ({ ...i, id: i.id || ('item-' + Math.random()), _cat: 'libre', _label: 'Item' })) || [];
     setCart(items.map(i => ({ ...i, price: Number(i.price) || 0, quantity: Number(i.quantity) || 1 })));
     setCustomerName(s.customerName || s.clientName || '');
@@ -2354,6 +2376,7 @@ function SettingsPage({ data, updateData }) {
   const [importing, setImporting] = useState(false);
 
   const handleSave = () => {
+    if (!confirm('¿Guardar los cambios de configuración?')) return;
     updateData(cur => ({ ...cur, settings: form }));
     alert('Configuración guardada');
   };
@@ -2415,13 +2438,18 @@ function SettingsPage({ data, updateData }) {
           const excelData = XLSX.utils.sheet_to_json(worksheet);
           
           const { patients: newPatients, equipment: newEquipment, rentals: newRentals } = parseExcelData(excelData, patients, equipment);
-          
+
+          if (!confirm(`¿Importar ${newPatients.length} pacientes, ${newEquipment.length} equipos y ${newRentals.length} alquileres del Excel?`)) {
+            setImporting(false);
+            return;
+          }
+
           const allPatients = [...patients, ...newPatients];
           const allEquipment = [...equipment, ...newEquipment];
           const allRentals = [...rentals, ...newRentals];
-          
+
           updateData(cur => ({ ...cur, patients: allPatients, equipment: allEquipment, rentals: allRentals }));
-          
+
           alert(`Importados: ${newPatients.length} pacientes, ${newEquipment.length} equipos, ${newRentals.length} alquileres`);
         } catch (err) {
           console.error(err);
@@ -2754,7 +2782,7 @@ function DescartablesPage({ data, updateData }) {
       id: form.id || generateId(),
       updatedAt: getToday()
     };
-
+    if (!confirm(editing ? `¿Guardar los cambios de "${newItem.name}"?` : `¿Agregar el producto "${newItem.name}"?`)) return;
     updateData(cur => ({ ...cur, descartables: editing ? cur.descartables.map(d => d.id === editing ? newItem : d) : [...cur.descartables, newItem] }));
     setForm(defaultItem);
     setShowForm(false);
