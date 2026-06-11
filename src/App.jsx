@@ -1886,7 +1886,7 @@ function MascaraModal({ mascara, onSave, onClose }) {
 }
 
 function SalesCartPage({ data, updateData, pageType }) {
-  const { equipment, mascaras, descartables, equiposNuevos, settings, quotations, invoices, remitos, rentals } = data;
+  const { equipment, mascaras, descartables, equiposNuevos, patients, settings, quotations, invoices, remitos, rentals } = data;
   const isCotizacion = pageType === 'cotizacion';
   const isRemito = pageType === 'remito';
   const title = isRemito ? 'Remito' : (isCotizacion ? 'Cotizaciones' : 'Facturacion');
@@ -2076,7 +2076,23 @@ function SalesCartPage({ data, updateData, pageType }) {
 
         <div className="form-group">
           <label className="form-label">Cliente</label>
-          <input type="text" className="form-input" placeholder="Nombre del cliente" value={customerName} onChange={e => setCustomerName(e.target.value)} />
+          <input
+            type="text"
+            className="form-input"
+            placeholder="Nombre del cliente"
+            list="pacientes-sugeridos"
+            value={customerName}
+            onChange={e => {
+              const value = e.target.value;
+              setCustomerName(value);
+              // Si coincide con un paciente cargado, autocompletar el telefono.
+              const match = (patients || []).find(p => (p.name || '').trim().toLowerCase() === value.trim().toLowerCase());
+              if (match && match.phone) setCustomerPhone(match.phone);
+            }}
+          />
+          <datalist id="pacientes-sugeridos">
+            {(patients || []).map(p => <option key={p.id} value={p.name} />)}
+          </datalist>
         </div>
         <div className="form-group">
           <label className="form-label">WhatsApp</label>
