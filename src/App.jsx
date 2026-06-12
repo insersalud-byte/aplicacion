@@ -2377,8 +2377,31 @@ function SettingsPage({ data, updateData }) {
 
   const handleSave = () => {
     if (!confirm('¿Guardar los cambios de configuración?')) return;
-    updateData(cur => ({ ...cur, settings: form }));
+    // Merge sobre settings actuales para no pisar campos que el form no maneja (ej: apiKey).
+    updateData(cur => ({ ...cur, settings: { ...cur.settings, ...form } }));
     alert('Configuración guardada');
+  };
+
+  const apiUrl = settings.apiKey ? `${window.location.origin}/api/server?vencimientos=1&key=${settings.apiKey}` : '';
+
+  const handleGenerateApiKey = () => {
+    const msg = settings.apiKey
+      ? 'Regenerar la clave deja de funcionar el enlace anterior que tenga Hermes. ¿Continuar?'
+      : '¿Generar la clave API para compartir los vencimientos con Hermes?';
+    if (!confirm(msg)) return;
+    const bytes = new Uint8Array(20);
+    crypto.getRandomValues(bytes);
+    const key = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+    updateData(cur => ({ ...cur, settings: { ...cur.settings, apiKey: key } }));
+  };
+
+  const handleCopyApiUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(apiUrl);
+      alert('Enlace copiado');
+    } catch {
+      prompt('Copia el enlace:', apiUrl);
+    }
   };
 
   const handleBackup = () => {
@@ -2505,6 +2528,30 @@ function SettingsPage({ data, updateData }) {
         <p style={{ color: '#5A6978', marginBottom: 16 }}>Importa pacientes, equipos y alquileres desde un archivo Excel (.xlsx)</p>
         <input type="file" accept=".xlsx,.xls" onChange={handleImport} disabled={importing} />
         {importing && <p>Importando...</p>}
+      </div>
+
+      <div className="card">
+        <h3 className="card-title">🔌 API de Vencimientos (Hermes)</h3>
+        <p style={{ color: '#5A6978', marginBottom: 12 }}>
+          Generá un enlace seguro para que Hermes (u otro sistema) consulte los vencimientos de alquileres en tiempo real: vencidos, vencen hoy y próximos 7 días.
+        </p>
+        {settings.apiKey ? (
+          <>
+            <div className="form-group">
+              <label className="form-label">Enlace para Hermes</label>
+              <input type="text" className="form-input" readOnly value={apiUrl} onFocus={e => e.target.select()} style={{ fontSize: 12 }} />
+            </div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <button className="btn btn-primary" onClick={handleCopyApiUrl}>📋 Copiar enlace</button>
+              <button className="btn btn-secondary" onClick={handleGenerateApiKey}>♻️ Regenerar clave</button>
+            </div>
+            <p style={{ color: '#9AA5B4', fontSize: 12, marginTop: 10 }}>
+              Cualquiera con este enlace puede ver los vencimientos. Si se filtró, regenerá la clave y el enlace viejo deja de funcionar.
+            </p>
+          </>
+        ) : (
+          <button className="btn btn-primary" onClick={handleGenerateApiKey}>🔑 Generar clave API</button>
+        )}
       </div>
 
       <div className="card">
