@@ -2402,7 +2402,11 @@ function SettingsPage({ data, updateData }) {
     alert('Configuración guardada');
   };
 
-  const apiUrl = settings.apiKey ? `${window.location.origin}/api/server?vencimientos=1&key=${settings.apiKey}` : '';
+  // Dominio PUBLICO fijo: las otras URLs del proyecto en Vercel piden login y
+  // Hermes recibiria un 401. Este enlace siempre apunta al dominio que se puede
+  // leer desde afuera, sin importar desde donde se abra la app.
+  const API_PUBLIC_BASE = 'https://aplicacion-beta.vercel.app';
+  const apiUrl = settings.apiKey ? `${API_PUBLIC_BASE}/api/server?vencimientos=1&key=${settings.apiKey}` : '';
 
   const handleGenerateApiKey = () => {
     const msg = settings.apiKey
