@@ -303,31 +303,32 @@ function HomePage({ data, updateData, setCurrentPage }) {
   };
 
   useEffect(() => {
-    const now = new Date();
     const todayStr = getToday();
-    const needsUpdate = rentals.some(r =>
-      (r.status === 'activo' && r.endDate && r.endDate <= todayStr) ||
-      (r.status === 'vencido' && r.endDate && r.endDate > todayStr) ||
-      (r.status === 'vencido' && r.endDate && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0)
-    );
+    const needsUpdate = rentals.some(r => {
+      if (r.status === 'finalizado' || !r.startDate || !r.endDate) return false;
+      if (alignDueDay(r.endDate, r.startDate) !== r.endDate) return true; // vencimiento no cae el dia de inicio
+      if (r.status === 'activo' && r.endDate <= todayStr) return true;
+      if (r.status === 'vencido' && r.endDate > todayStr) return true;
+      if (r.status === 'vencido' && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0) return true;
+      return false;
+    });
     if (!needsUpdate) return;
 
     updateData(cur => {
       const updated = cur.rentals.map(rental => {
-        const isExpired = rental.status === 'activo' && rental.endDate && rental.endDate <= todayStr;
-        if (isExpired) return { ...rental, status: 'vencido' };
-        // Vencido con fecha futura (ej: tras editar la fecha): vuelve a activo conservando la fecha elegida.
-        if (rental.status === 'vencido' && rental.endDate && rental.endDate > todayStr) {
-          return { ...rental, status: 'activo' };
+        if (rental.status === 'finalizado' || !rental.startDate || !rental.endDate) return rental;
+        // 1) El vencimiento SIEMPRE cae el dia de inicio (corrige desfases automaticamente).
+        let r = rental;
+        const aligned = alignDueDay(r.endDate, r.startDate);
+        if (aligned !== r.endDate) r = { ...r, endDate: aligned };
+        // 2) Estado segun la fecha ya alineada.
+        if (r.status === 'activo' && r.endDate <= todayStr) return { ...r, status: 'vencido' };
+        if (r.status === 'vencido' && r.endDate > todayStr) return { ...r, status: 'activo' };
+        if (r.status === 'vencido' && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0) {
+          // Pago al dia: el proximo vencimiento es el dia de inicio del mes siguiente.
+          return { ...r, status: 'activo', endDate: nextDueAfter(r.endDate, r.startDate) };
         }
-        const isVencidoFullyPaid = rental.status === 'vencido' && rental.endDate && rental.endDate <= todayStr && getUnpaidMonthsForRental(rental).length === 0;
-        if (isVencidoFullyPaid) {
-          const ed = Number(rental.endDate.split('-')[2]);
-          const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, ed);
-          const nextMonthStr = `${nextMonth.getFullYear()}-${String(nextMonth.getMonth()+1).padStart(2,'0')}-${String(nextMonth.getDate()).padStart(2,'0')}`;
-          return { ...rental, status: 'activo', endDate: nextMonthStr };
-        }
-        return rental;
+        return r;
       });
       return { ...cur, rentals: updated };
     });
@@ -463,12 +464,9 @@ function HomePage({ data, updateData, setCurrentPage }) {
               const updated = { ...r, paymentStatusByMonth: { ...(r.paymentStatusByMonth || {}), [mk]: { paid: true, updatedAt: new Date().toISOString() } } };
               const remaining = getUnpaidMonths(updated).filter(m => m !== mk);
               if (remaining.length === 0 && (r.status === 'vencido' || isRentalExpired(r))) {
-                const now = new Date();
-                // Dia del vencimiento tomado del string (no de new Date(endDate), que en UTC-3 da el dia anterior).
-                const dueDay = r.endDate ? Number(r.endDate.split('-')[2]) : now.getDate();
-                const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, dueDay);
+                // El proximo vencimiento es el dia de INICIO del mes siguiente al vencimiento actual.
                 updated.status = 'activo';
-                updated.endDate = toLocalDateStr(nextMonth);
+                updated.endDate = nextDueAfter(r.endDate, r.startDate);
               }
               return updated;
             })
@@ -1075,6 +1073,28 @@ function nextMonthDate(start) {
   const ny = m === 12 ? y + 1 : y;
   const maxDay = new Date(ny, nm, 0).getDate();
   return `${ny}-${String(nm).padStart(2, '0')}-${String(Math.min(d, maxDay)).padStart(2, '0')}`;
+}
+
+// El vencimiento SIEMPRE cae el dia de inicio. Esta funcion ajusta solo el dia
+// de una fecha (manteniendo mes/anio) al dia de inicio, corrigiendo el desfase
+// de +/-1 que arrastraban datos viejos. Si el dia no existe (ej: 31 en feb),
+// usa el ultimo dia del mes.
+function alignDueDay(refDate, startDate) {
+  if (!refDate || !startDate || !/^\d{4}-\d{2}-\d{2}$/.test(refDate) || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return refDate;
+  const [y, m] = refDate.split('-').map(Number);
+  const startDay = Number(startDate.split('-')[2]);
+  const maxDay = new Date(y, m, 0).getDate();
+  const day = Math.min(startDay, maxDay);
+  return `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+// Proximo vencimiento: el dia de INICIO, en el mes siguiente al vencimiento actual.
+function nextDueAfter(refDate, startDate) {
+  if (!refDate || !/^\d{4}-\d{2}-\d{2}$/.test(refDate)) return nextMonthDate(startDate);
+  const [y, m] = refDate.split('-').map(Number);
+  let ny = y, nm = m + 1;
+  if (nm > 12) { nm = 1; ny += 1; }
+  return alignDueDay(`${ny}-${String(nm).padStart(2, '0')}-01`, startDate || refDate);
 }
 
 // Vencimiento = un mes despues del inicio, avanzando mes a mes sucesivamente
