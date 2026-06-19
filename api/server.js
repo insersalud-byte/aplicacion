@@ -30,28 +30,34 @@ function diasEntre(desde, hasta) {
   return Math.round((b.getTime() - a.getTime()) / 86400000);
 }
 
-async function handleVencimientos(req, res) {
+// Lee la base validando la clave API. Devuelve el objeto data o null (y ya
+// respondio el error en res).
+async function getAuthorizedData(req, res) {
   const key = req.query?.key;
   if (!key) {
     res.status(401).json({ error: 'Falta la clave API (parametro key)' });
-    return;
+    return null;
   }
-
   const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1&select=data`, {
     headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
   });
   if (!dbRes.ok) {
     res.status(502).json({ error: 'No se pudo leer la base de datos' });
-    return;
+    return null;
   }
   const rows = await dbRes.json();
   const data = rows?.[0]?.data || {};
-
   const apiKey = data.settings?.apiKey;
   if (!apiKey || key !== apiKey) {
     res.status(403).json({ error: 'Clave API invalida' });
-    return;
+    return null;
   }
+  return data;
+}
+
+async function handleVencimientos(req, res) {
+  const data = await getAuthorizedData(req, res);
+  if (!data) return;
 
   const hoy = hoyArgentina();
   const patients = data.patients || [];
@@ -102,6 +108,58 @@ async function handleVencimientos(req, res) {
   });
 }
 
+async function handlePrecios(req, res) {
+  const data = await getAuthorizedData(req, res);
+  if (!data) return;
+
+  const equipment = data.equipment || [];
+  const equiposNuevos = data.equiposNuevos || [];
+  const mascaras = data.mascaras || [];
+  const rentals = data.rentals || [];
+
+  // Precio de alquiler de un equipo: campo propio -> alquiler activo del mismo
+  // equipo -> alquiler de otro equipo con el mismo nombre (mismo criterio que la app).
+  const precioAlquiler = (e) => {
+    if (Number(e.rentalPrice) > 0) return Number(e.rentalPrice);
+    const r = rentals.find((x) => x.equipmentId === e.id && x.status !== 'finalizado' && Number(x.price) > 0);
+    if (r) return Number(r.price);
+    const r2 = rentals.find((x) => {
+      const re = equipment.find((q) => q.id === x.equipmentId);
+      return re && re.name === e.name && Number(x.price) > 0;
+    });
+    return r2 ? Number(r2.price) : 0;
+  };
+
+  const equipos_alquiler = equipment
+    .map((e) => ({ nombre: e.name, precio_mensual: precioAlquiler(e) }))
+    .filter((x) => x.precio_mensual > 0)
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+  const equipos_venta = equiposNuevos
+    .map((e) => ({ nombre: e.name, precio: Number(e.price) || 0 }))
+    .filter((x) => x.precio > 0)
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+  const mascaras_venta = mascaras
+    .map((m) => ({ nombre: m.name, precio: Number(m.precio) || 0, talle: m.talle || '', stock: Number(m.stock) || 0 }))
+    .filter((x) => x.precio > 0)
+    .sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).json({
+    generado: new Date().toISOString(),
+    resumen: {
+      equipos_alquiler: equipos_alquiler.length,
+      equipos_venta: equipos_venta.length,
+      mascaras_venta: mascaras_venta.length,
+    },
+    equipos_alquiler,
+    equipos_venta,
+    mascaras_venta,
+  });
+}
+
 async function handleImageProxy(req, res) {
   const img = req.query?.img;
   let target;
@@ -147,9 +205,17 @@ export default async function handler(req, res) {
     }
     return;
   }
+  if (req.query?.precios) {
+    try {
+      await handlePrecios(req, res);
+    } catch (e) {
+      res.status(500).json({ error: 'Error interno', detail: String(e?.message || e) });
+    }
+    return;
+  }
   if (req.query?.img) {
     await handleImageProxy(req, res);
     return;
   }
-  res.status(400).json({ error: 'Parametro requerido: img o vencimientos' });
+  res.status(400).json({ error: 'Parametro requerido: img, vencimientos o precios' });
 }

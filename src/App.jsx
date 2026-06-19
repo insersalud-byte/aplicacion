@@ -2407,6 +2407,7 @@ function SettingsPage({ data, updateData }) {
   // leer desde afuera, sin importar desde donde se abra la app.
   const API_PUBLIC_BASE = 'https://aplicacion-beta.vercel.app';
   const apiUrl = settings.apiKey ? `${API_PUBLIC_BASE}/api/server?vencimientos=1&key=${settings.apiKey}` : '';
+  const apiUrlPrecios = settings.apiKey ? `${API_PUBLIC_BASE}/api/server?precios=1&key=${settings.apiKey}` : '';
 
   const handleGenerateApiKey = () => {
     const msg = settings.apiKey
@@ -2419,12 +2420,12 @@ function SettingsPage({ data, updateData }) {
     updateData(cur => ({ ...cur, settings: { ...cur.settings, apiKey: key } }));
   };
 
-  const handleCopyApiUrl = async () => {
+  const handleCopyApiUrl = async (url) => {
     try {
-      await navigator.clipboard.writeText(apiUrl);
+      await navigator.clipboard.writeText(url);
       alert('Enlace copiado');
     } catch {
-      prompt('Copia el enlace:', apiUrl);
+      prompt('Copia el enlace:', url);
     }
   };
 
@@ -2562,11 +2563,16 @@ function SettingsPage({ data, updateData }) {
         {settings.apiKey ? (
           <>
             <div className="form-group">
-              <label className="form-label">Enlace para Hermes</label>
+              <label className="form-label">Enlace de vencimientos</label>
               <input type="text" className="form-input" readOnly value={apiUrl} onFocus={e => e.target.select()} style={{ fontSize: 12 }} />
             </div>
+            <div className="form-group">
+              <label className="form-label">Enlace de precios (equipos y mascaras)</label>
+              <input type="text" className="form-input" readOnly value={apiUrlPrecios} onFocus={e => e.target.select()} style={{ fontSize: 12 }} />
+            </div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" onClick={handleCopyApiUrl}>📋 Copiar enlace</button>
+              <button className="btn btn-primary" onClick={() => handleCopyApiUrl(apiUrl)}>📋 Copiar vencimientos</button>
+              <button className="btn btn-primary" onClick={() => handleCopyApiUrl(apiUrlPrecios)}>📋 Copiar precios</button>
               <button className="btn btn-secondary" onClick={handleGenerateApiKey}>♻️ Regenerar clave</button>
             </div>
             <p style={{ color: '#9AA5B4', fontSize: 12, marginTop: 10 }}>
