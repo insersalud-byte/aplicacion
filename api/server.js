@@ -145,19 +145,22 @@ async function handlePrecios(req, res) {
     .filter((x) => x.precio > 0)
     .sort((a, b) => a.nombre.localeCompare(b.nombre));
 
+  // Filtro opcional por categoria para respuestas mas chicas: ?cat=alquiler|venta|mascaras
+  const cat = (req.query?.cat || '').toString().toLowerCase();
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'no-store');
-  res.status(200).json({
+  const out = {
     generado: new Date().toISOString(),
     resumen: {
       equipos_alquiler: equipos_alquiler.length,
       equipos_venta: equipos_venta.length,
       mascaras_venta: mascaras_venta.length,
     },
-    equipos_alquiler,
-    equipos_venta,
-    mascaras_venta,
-  });
+  };
+  if (!cat || cat === 'alquiler') out.equipos_alquiler = equipos_alquiler;
+  if (!cat || cat === 'venta') out.equipos_venta = equipos_venta;
+  if (!cat || cat === 'mascaras') out.mascaras_venta = mascaras_venta;
+  res.status(200).json(out);
 }
 
 async function handleImageProxy(req, res) {
