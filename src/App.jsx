@@ -307,6 +307,7 @@ function HomePage({ data, updateData, setCurrentPage }) {
     const needsUpdate = rentals.some(r => {
       if (r.status === 'finalizado' || !r.startDate || !r.endDate) return false;
       if (alignDueDay(r.endDate, r.startDate) !== r.endDate) return true; // vencimiento no cae el dia de inicio
+      if (cappedDueDate(r) !== r.endDate) return true; // vencimiento a mas de un mes del que corresponde
       if (r.status === 'activo' && r.endDate <= todayStr) return true;
       if (r.status === 'vencido' && r.endDate > todayStr) return true;
       if (r.status === 'vencido' && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0) return true;
@@ -321,7 +322,10 @@ function HomePage({ data, updateData, setCurrentPage }) {
         let r = rental;
         const aligned = alignDueDay(r.endDate, r.startDate);
         if (aligned !== r.endDate) r = { ...r, endDate: aligned };
-        // 2) Estado segun la fecha ya alineada.
+        // 2) Tope: el vencimiento nunca a mas de un mes del que corresponde por inicio.
+        const capped = cappedDueDate(r);
+        if (capped !== r.endDate) r = { ...r, endDate: capped };
+        // 3) Estado segun la fecha ya normalizada.
         if (r.status === 'activo' && r.endDate <= todayStr) return { ...r, status: 'vencido' };
         if (r.status === 'vencido' && r.endDate > todayStr) return { ...r, status: 'activo' };
         if (r.status === 'vencido' && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0) {
@@ -367,6 +371,10 @@ function HomePage({ data, updateData, setCurrentPage }) {
     isRentalPaidForMonth(rental, currentMonthKey) ? sum + Number(rental.price || 0) : sum
   ), 0);
   const monthlyPending = monthlyTotal - monthlyCollected;
+
+  // Cobrados del mes: alquileres marcados como pagados (tildados como cobrados) en el mes en curso.
+  const collectedRentals = rentals.filter(r => isRentalPaidForMonth(r, currentMonthKey));
+  const collectedTotal = collectedRentals.reduce((s, r) => s + Number(r.price || 0), 0);
 
   const [activeFilter, setActiveFilter] = useState(null);
 
@@ -426,6 +434,11 @@ function HomePage({ data, updateData, setCurrentPage }) {
           <div className="stat-value">{expiredRentals.length}</div>
           <div className="stat-label">Vencidos</div>
         </div>
+        <div className="stat-card success" style={{ cursor: 'pointer', outline: activeFilter === 'cobrados' ? '3px solid #2E7D32' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'cobrados' ? null : 'cobrados')}>
+          <div className="stat-icon">💵</div>
+          <div className="stat-value">{collectedRentals.length}</div>
+          <div className="stat-label">Alquileres Cobrados</div>
+        </div>
         <div className="stat-card success">
           <div className="stat-icon">✓</div>
           <div className="stat-value">{availableEquipment.length}</div>
@@ -434,9 +447,10 @@ function HomePage({ data, updateData, setCurrentPage }) {
       </div>
 
       {activeFilter && (() => {
-        const list = activeFilter === 'activos' ? activeRentals : activeFilter === 'porVencer' ? expiringRentals : expiredRentals;
-        const title = activeFilter === 'activos' ? 'Alquileres Activos' : activeFilter === 'porVencer' ? 'Por Vencer' : 'Vencidos';
-        const color = activeFilter === 'activos' ? '#1E5AA8' : activeFilter === 'porVencer' ? '#F9A825' : '#E53935';
+        const isCobrados = activeFilter === 'cobrados';
+        const list = activeFilter === 'activos' ? activeRentals : activeFilter === 'porVencer' ? expiringRentals : isCobrados ? collectedRentals : expiredRentals;
+        const title = activeFilter === 'activos' ? 'Alquileres Activos' : activeFilter === 'porVencer' ? 'Por Vencer' : isCobrados ? `Alquileres Cobrados de ${formatMonthLabel(currentMonthKey)}` : 'Vencidos';
+        const color = activeFilter === 'activos' ? '#1E5AA8' : activeFilter === 'porVencer' ? '#F9A825' : isCobrados ? '#2E7D32' : '#E53935';
         const isVencidos = activeFilter === 'vencidos';
 
         const getUnpaidMonths = (rental) => {
@@ -476,6 +490,12 @@ function HomePage({ data, updateData, setCurrentPage }) {
         return list.length > 0 ? (
           <div className="card" style={{ borderTop: `3px solid ${color}` }}>
             <h3 className="card-title" style={{ color }}>{title} ({list.length})</h3>
+            {isCobrados && (
+              <div style={{ background: '#E8F5E9', border: '1px solid #A5D6A7', borderRadius: 8, padding: '10px 14px', marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontWeight: 600, color: '#2E7D32' }}>Total cobrado</span>
+                <strong style={{ fontSize: 18, color: '#2E7D32' }}>{formatCurrency(collectedTotal)}</strong>
+              </div>
+            )}
             {list.map(r => {
               const pat = patients.find(p => p.id === r.patientId);
               const eq = equipment.find(e => e.id === r.equipmentId);
@@ -510,7 +530,7 @@ function HomePage({ data, updateData, setCurrentPage }) {
           </div>
         ) : (
           <div className="card" style={{ borderTop: `3px solid ${color}`, textAlign: 'center', padding: 20, color: '#5A6978' }}>
-            No hay alquileres {title.toLowerCase()}
+            {isCobrados ? `No hay alquileres cobrados en ${formatMonthLabel(currentMonthKey)}` : `No hay alquileres ${title.toLowerCase()}`}
           </div>
         );
       })()}
@@ -1114,6 +1134,19 @@ function rollingDueDate(start) {
     due = new Date(year, month - 1, Math.min(d, maxDay));
   } while (due < today);
   return `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`;
+}
+
+// El vencimiento de un alquiler nunca puede estar a mas de un mes (un periodo)
+// del que corresponde por fecha de inicio. D = primer vencimiento (dia de inicio)
+// que cae hoy o despues. Si ese mes ya esta pagado, el tope es el mes siguiente;
+// si no, es D. Si la fecha cargada quedo mas adelante, se la trae al tope.
+function cappedDueDate(rental) {
+  if (!rental.startDate || !rental.endDate) return rental.endDate;
+  const D = rollingDueDate(rental.startDate);
+  if (!D) return rental.endDate;
+  const paidActual = isRentalPaidForMonth(rental, D.slice(0, 7));
+  const tope = paidActual ? nextDueAfter(D, rental.startDate) : D;
+  return rental.endDate > tope ? tope : rental.endDate;
 }
 
 function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatient, onClose }) {
