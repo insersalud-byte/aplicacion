@@ -305,7 +305,8 @@ function HomePage({ data, updateData, setCurrentPage }) {
   useEffect(() => {
     const todayStr = getToday();
     const needsUpdate = rentals.some(r => {
-      if (r.status === 'finalizado' || !r.startDate || !r.endDate) return false;
+      if (r.status === 'finalizado' || !r.startDate) return false;
+      if (!r.endDate) return true; // sin vencimiento -> hay que ponerlo automaticamente
       if (alignDueDay(r.endDate, r.startDate) !== r.endDate) return true; // vencimiento no cae el dia de inicio
       if (cappedDueDate(r) !== r.endDate) return true; // vencimiento a mas de un mes del que corresponde
       if (r.status === 'activo' && r.endDate <= todayStr) return true;
@@ -317,9 +318,12 @@ function HomePage({ data, updateData, setCurrentPage }) {
 
     updateData(cur => {
       const updated = cur.rentals.map(rental => {
-        if (rental.status === 'finalizado' || !rental.startDate || !rental.endDate) return rental;
-        // 1) El vencimiento SIEMPRE cae el dia de inicio (corrige desfases automaticamente).
+        if (rental.status === 'finalizado' || !rental.startDate) return rental;
         let r = rental;
+        // 0) Si no tiene vencimiento, ponerlo automaticamente: dia de inicio, proximo vencimiento desde hoy.
+        if (!r.endDate) r = { ...r, endDate: rollingDueDate(r.startDate) };
+        if (!r.endDate) return r; // startDate invalido: no se pudo calcular
+        // 1) El vencimiento SIEMPRE cae el dia de inicio (corrige desfases automaticamente).
         const aligned = alignDueDay(r.endDate, r.startDate);
         if (aligned !== r.endDate) r = { ...r, endDate: aligned };
         // 2) Tope: el vencimiento nunca a mas de un mes del que corresponde por inicio.
