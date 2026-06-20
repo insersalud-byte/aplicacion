@@ -369,15 +369,20 @@ function HomePage({ data, updateData, setCurrentPage }) {
   });
   // Disponibilidad derivada de los alquileres reales, no del campo equipment.available (que esta desactualizado).
   const availableEquipment = equipment.filter(e => e.status !== 'mantenimiento' && !getOccupyingRental(rentals, e.id));
+  // Un alquiler cuenta como cobrado del mes si se tildo como pagado ese mes, o si
+  // ES NUEVO de este mes (el primer mes se cobra al iniciar; recien vence el mes que viene).
+  const startsThisMonth = (r) => (r.startDate || '').slice(0, 7) === currentMonthKey;
+  const isCollectedThisMonth = (r) => isRentalPaidForMonth(r, currentMonthKey) || (r.status !== 'finalizado' && startsThisMonth(r));
+
   const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
   const monthlyTotal = monthlyRentals.reduce((sum, rental) => sum + Number(rental.price || 0), 0);
   const monthlyCollected = monthlyRentals.reduce((sum, rental) => (
-    isRentalPaidForMonth(rental, currentMonthKey) ? sum + Number(rental.price || 0) : sum
+    isCollectedThisMonth(rental) ? sum + Number(rental.price || 0) : sum
   ), 0);
   const monthlyPending = monthlyTotal - monthlyCollected;
 
-  // Cobrados del mes: alquileres marcados como pagados (tildados como cobrados) en el mes en curso.
-  const collectedRentals = rentals.filter(r => isRentalPaidForMonth(r, currentMonthKey));
+  // Cobrados del mes: tildados como cobrados + altas nuevas del mes.
+  const collectedRentals = rentals.filter(isCollectedThisMonth);
   const collectedTotal = collectedRentals.reduce((s, r) => s + Number(r.price || 0), 0);
 
   const [activeFilter, setActiveFilter] = useState(null);
