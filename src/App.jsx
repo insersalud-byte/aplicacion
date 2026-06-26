@@ -1091,7 +1091,7 @@ function RentalsPage({ data, updateData }) {
                             <button className="btn btn-sm btn-success" title="Pedir reseña en Google" onClick={() => handleReview(rental)}>⭐ Reseña</button>
                           )}
                           {status === 'vencido' && (
-                            <button className="btn btn-sm" style={{ background: '#FB8C00', color: '#fff' }} title="Recordar vencimiento por WhatsApp" onClick={() => handleReminder(rental)}>📲 Recordar</button>
+                            <button className="btn btn-sm" style={{ background: '#FB8C00', color: '#fff' }} title="Enviar recordatorio de vencimiento por WhatsApp" onClick={() => handleReminder(rental)}>📲 Recordatorio</button>
                           )}
                         </div>
                       </td>
