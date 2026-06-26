@@ -907,6 +907,7 @@ function RentalsPage({ data, updateData }) {
   const [editingRental, setEditingRental] = useState(null);
 
   const getPatientName = (id) => patients.find(p => p.id === id)?.name || '-';
+  const getPatientAddress = (id) => patients.find(p => p.id === id)?.address || '';
   const getEquipmentName = (id) => equipment.find(e => e.id === id)?.name || '-';
 
   const rentTodayStr = getToday();
@@ -924,7 +925,8 @@ function RentalsPage({ data, updateData }) {
       const q = search.toLowerCase();
       const pName = getPatientName(r.patientId).toLowerCase();
       const eName = getEquipmentName(r.equipmentId).toLowerCase();
-      if (!pName.includes(q) && !eName.includes(q)) return false;
+      const pAddr = getPatientAddress(r.patientId).toLowerCase();
+      if (!pName.includes(q) && !eName.includes(q) && !pAddr.includes(q)) return false;
     }
     return true;
   });
@@ -1008,7 +1010,7 @@ function RentalsPage({ data, updateData }) {
       )}
 
       <div className="card" style={{ padding: 12, marginBottom: 15 }}>
-        <input type="text" className="form-input" placeholder="Buscar por paciente o equipo..." value={search} onChange={e => setSearch(e.target.value)} />
+        <input type="text" className="form-input" placeholder="Buscar por paciente, equipo o dirección..." value={search} onChange={e => setSearch(e.target.value)} />
       </div>
 
       <div className="filters">
