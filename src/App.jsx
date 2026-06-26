@@ -980,6 +980,28 @@ function RentalsPage({ data, updateData }) {
     }));
   };
 
+  // Reseña: solo en alquileres nuevos del mes que todavia no la pidieron.
+  const rentMonthKey = getToday().slice(0, 7);
+  const esNuevoDelMes = (r) => r.status !== 'finalizado' && !r.reviewSent && (r.startDate || '').slice(0, 7) === rentMonthKey;
+
+  const handleReview = (rental) => {
+    const name = getPatientName(rental.patientId);
+    const phone = patients.find(p => p.id === rental.patientId)?.phone || '';
+    if (!confirm(`¿Enviar pedido de reseña a ${name} por WhatsApp?`)) return;
+    const msg = `Hola ${name}, soy SERGIO de INSER SALUD. Gracias por confiar en nosotros. Si quedaste conforme, ¿nos darías una mano con una reseña en Google? Te toma 30 segundos 👉 https://g.page/r/CZW6Qq0aHAUAEBM/review ¡Gracias!`;
+    sendWhatsApp(phone, msg);
+    updateData(cur => ({ ...cur, rentals: cur.rentals.map(r => r.id === rental.id ? { ...r, reviewSent: true } : r) }));
+  };
+
+  const handleReminder = (rental) => {
+    const name = getPatientName(rental.patientId);
+    const equipo = getEquipmentName(rental.equipmentId);
+    const phone = patients.find(p => p.id === rental.patientId)?.phone || '';
+    if (!confirm(`¿Enviar recordatorio de vencimiento a ${name} por WhatsApp?`)) return;
+    const msg = `Hola ${name}, soy Santi de INSER SALUD. Te recuerdo el vencimiento del alquiler del equipo ${equipo} (vence el ${formatDate(rental.endDate)}). ¡Gracias!`;
+    sendWhatsApp(phone, msg);
+  };
+
   return (
     <div>
       <div className="page-header">
@@ -1062,8 +1084,16 @@ function RentalsPage({ data, updateData }) {
                       <td>{formatCurrency(rental.price)}</td>
                       <td><span className={`badge badge-${status}`}>{status}</span></td>
                       <td>
-                        <button className="btn btn-sm btn-secondary" onClick={() => { setEditingRental(rental); setShowModal(true); }}>✏️</button>
-                        <button className="btn btn-sm btn-danger" onClick={() => handleDelete(rental.id)}>🗑️</button>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <button className="btn btn-sm btn-secondary" onClick={() => { setEditingRental(rental); setShowModal(true); }}>✏️</button>
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(rental.id)}>🗑️</button>
+                          {esNuevoDelMes(rental) && (
+                            <button className="btn btn-sm btn-success" title="Pedir reseña en Google" onClick={() => handleReview(rental)}>⭐ Reseña</button>
+                          )}
+                          {status === 'vencido' && (
+                            <button className="btn btn-sm" style={{ background: '#FB8C00', color: '#fff' }} title="Recordar vencimiento por WhatsApp" onClick={() => handleReminder(rental)}>📲 Recordar</button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
