@@ -1298,10 +1298,16 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
           {isEditing ? (
             <>
               <div className="form-group">
-                <label className="form-label">Equipo *</label>
+                <label className="form-label">Equipo * <span style={{ fontWeight: 400, color: '#5A6978', fontSize: 12 }}>(solo equipos en stock)</span></label>
                 <select className="form-select" value={form.equipmentId} onChange={e => setForm({...form, equipmentId: e.target.value})} required>
                   <option value="">Seleccionar...</option>
-                  {equipment.map(e => <option key={e.id} value={e.id}>{e.name} ({e.serialNumber})</option>)}
+                  {equipment
+                    .filter(e => e.id === form.equipmentId || (!rentedEquipIds.has(e.id) && e.status !== 'mantenimiento'))
+                    .map(e => (
+                      <option key={e.id} value={e.id}>
+                        {e.name} ({e.serialNumber}){e.id === form.equipmentId ? ' — actual' : ''}
+                      </option>
+                    ))}
                 </select>
               </div>
               <div className="form-group">
