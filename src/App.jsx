@@ -496,6 +496,14 @@ function HomePage({ data, updateData, setCurrentPage }) {
           }));
         };
 
+        const handleReminder = (r) => {
+          const p = patients.find(x => x.id === r.patientId);
+          const eq = equipment.find(e => e.id === r.equipmentId);
+          if (!confirm(`¿Enviar recordatorio de vencimiento a ${p?.name || 'este paciente'} por WhatsApp?`)) return;
+          const msg = `Hola ${p?.name || ''}, soy Santi de INSER SALUD. Te recuerdo el vencimiento del alquiler del equipo ${eq?.name || ''} (vence el ${formatDate(r.endDate)}). ¡Gracias!`;
+          sendWhatsApp(p?.phone || '', msg);
+        };
+
         return list.length > 0 ? (
           <div className="card" style={{ borderTop: `3px solid ${color}` }}>
             <h3 className="card-title" style={{ color }}>{title} ({list.length})</h3>
@@ -524,8 +532,11 @@ function HomePage({ data, updateData, setCurrentPage }) {
                       )}
                     </div>
                   </div>
-                  {isVencidos && unpaid.length > 0 && (
+                  {isVencidos && (
                     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                      <button className="btn btn-sm" style={{ background: '#FB8C00', color: '#fff', fontSize: 11, padding: '4px 8px' }} onClick={() => handleReminder(r)}>
+                        📲 Recordatorio
+                      </button>
                       {unpaid.map(mk => (
                         <button key={mk} className="btn btn-sm btn-success" onClick={() => handlePayMonth(r.id, mk)} style={{ fontSize: 11, padding: '4px 8px' }}>
                           Pagar {formatMonthLabel(mk)}
