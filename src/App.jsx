@@ -2135,7 +2135,20 @@ function SalesCartPage({ data, updateData, pageType }) {
       const doc = await generateInvoicePDF(invoiceData, settings, docType);
       downloadInvoicePDF(doc, number, docType);
       const record = { id: generateId(), ...invoiceData, customerName, customerPhone, cartItems: cart, createdAt: getToday() };
-      updateData(cur => ({ ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] }));
+      updateData(cur => {
+        const next = { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
+        // Solo al FACTURAR (no remito, no cotizacion) se descuenta el stock de mascaras y descartables.
+        if (docType === 'factura') {
+          const descontar = (arr, cat) => (arr || []).map(it => {
+            const enCarrito = cart.find(c => c.id === it.id && c._cat === cat);
+            if (!enCarrito) return it;
+            return { ...it, stock: Math.max(0, Number(it.stock || 0) - Number(enCarrito.quantity || 1)) };
+          });
+          next.mascaras = descontar(cur.mascaras, 'mascarillas');
+          next.descartables = descontar(cur.descartables, 'descartables');
+        }
+        return next;
+      });
       alert(`${isRemito ? 'Remito' : (isCotizacion ? 'Cotizacion' : 'Factura')} ${number} generado`);
       clearCart();
     } catch (err) {
@@ -3112,8 +3125,126 @@ function DescartablesPage({ data, updateData }) {
   );
 }
 
+function FacturacionReportes({ data }) {
+  const { invoices = [], rentals = [] } = data;
+  const [showFacturados, setShowFacturados] = useState(false);
+
+  const mesActual = getMonthKey(new Date());
+  const facturadosMes = invoices.filter(inv => (inv.date || inv.createdAt || '').slice(0, 7) === mesActual);
+  const totalFacturadoMes = facturadosMes.reduce((s, inv) => s + Number(inv.total || 0), 0);
+
+  // Ultimos 6 meses (clave YYYY-MM), del mas viejo al actual.
+  const meses = [];
+  const base = new Date();
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
+    meses.push(getMonthKey(d));
+  }
+
+  const ventasPorMes = (mk) => invoices
+    .filter(inv => (inv.date || inv.createdAt || '').slice(0, 7) === mk)
+    .reduce((s, inv) => s + Number(inv.total || 0), 0);
+  const alquiladoPorMes = (mk) => rentals
+    .filter(r => isRentalInMonth(r, mk))
+    .reduce((s, r) => s + Number(r.price || 0), 0);
+
+  const serie = meses.map(mk => ({ mk, alquilado: alquiladoPorMes(mk), ventas: ventasPorMes(mk) }));
+  const maxVal = Math.max(1, ...serie.map(s => Math.max(s.alquilado, s.ventas)));
+
+  // Comparativa mes a mes (actual vs anterior).
+  const act = serie[serie.length - 1] || { alquilado: 0, ventas: 0 };
+  const ant = serie[serie.length - 2] || { alquilado: 0, ventas: 0 };
+  const variacion = (a, b) => {
+    if (!b) return a > 0 ? { txt: 'nuevo', up: true } : { txt: '—', up: null };
+    const pct = Math.round(((a - b) / b) * 100);
+    return { txt: `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}%`, up: pct >= 0 };
+  };
+  const vAlq = variacion(act.alquilado, ant.alquilado);
+  const vVen = variacion(act.ventas, ant.ventas);
+  const mesCorto = (mk) => formatMonthLabel(mk).slice(0, 3);
+
+  // Grafico de barras agrupadas (SVG). Ancho fijo virtual, escala por viewBox.
+  const W = 660, H = 220, pad = 30, gap = 16;
+  const groupW = (W - pad * 2) / serie.length;
+  const barW = (groupW - gap) / 2;
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <button className="btn btn-primary btn-block" onClick={() => setShowFacturados(!showFacturados)}>
+        📄 Facturados de {formatMonthLabel(mesActual)} ({facturadosMes.length}) — {formatCurrency(totalFacturadoMes)}
+      </button>
+
+      {showFacturados && (
+        <div className="card" style={{ borderTop: '3px solid #1E5AA8', marginTop: 12 }}>
+          <div style={{ background: '#E3F2FD', border: '1px solid #90CAF9', borderRadius: 8, padding: '10px 14px', marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontWeight: 600, color: '#1E5AA8' }}>Total facturado del mes</span>
+            <strong style={{ fontSize: 18, color: '#1E5AA8' }}>{formatCurrency(totalFacturadoMes)}</strong>
+          </div>
+          {facturadosMes.length === 0 ? (
+            <p style={{ textAlign: 'center', color: '#5A6978', padding: 10 }}>No hay facturas este mes</p>
+          ) : facturadosMes.map(inv => (
+            <div key={inv.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #E3F2FD' }}>
+              <div>
+                <div style={{ fontWeight: 600 }}>{inv.customerName || inv.clientName || 'Sin nombre'}</div>
+                <div style={{ fontSize: 12, color: '#5A6978' }}>{inv.invoiceNumber || ''} · {formatDate(inv.date || inv.createdAt)}</div>
+              </div>
+              <strong style={{ color: '#1E5AA8' }}>{formatCurrency(inv.total)}</strong>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <h3 className="card-title">📊 Alquilado vs Ventas por mes</h3>
+        <div style={{ display: 'flex', gap: 16, marginBottom: 8, fontSize: 13 }}>
+          <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#1E5AA8', borderRadius: 2, marginRight: 5 }} />Alquilado</span>
+          <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#2E7D32', borderRadius: 2, marginRight: 5 }} />Ventas</span>
+        </div>
+        <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 'auto' }} preserveAspectRatio="xMidYMid meet">
+          <line x1={pad} y1={H - 22} x2={W - pad} y2={H - 22} stroke="#CFD8DC" strokeWidth="1" />
+          {serie.map((s, i) => {
+            const x0 = pad + i * groupW;
+            const chartH = H - 22 - 12;
+            const hAlq = (s.alquilado / maxVal) * chartH;
+            const hVen = (s.ventas / maxVal) * chartH;
+            return (
+              <g key={s.mk}>
+                <rect x={x0 + gap / 2} y={H - 22 - hAlq} width={barW} height={hAlq} fill="#1E5AA8" rx="2" />
+                <rect x={x0 + gap / 2 + barW} y={H - 22 - hVen} width={barW} height={hVen} fill="#2E7D32" rx="2" />
+                <text x={x0 + groupW / 2} y={H - 8} textAnchor="middle" fontSize="11" fill="#5A6978">{mesCorto(s.mk)}</text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+
+      <div className="card" style={{ marginTop: 12 }}>
+        <h3 className="card-title">📈 Comparativa mes a mes</h3>
+        <p className="page-subtitle" style={{ marginBottom: 12 }}>{formatMonthLabel(act.mk)} vs {formatMonthLabel(ant.mk)}</p>
+        <div className="monthly-summary-grid">
+          <div className="monthly-summary-item">
+            <span className="monthly-summary-label">Alquilado (mes actual)</span>
+            <strong className="monthly-summary-value">{formatCurrency(act.alquilado)}</strong>
+            <span style={{ fontSize: 13, fontWeight: 700, color: vAlq.up === false ? '#E53935' : '#2E7D32' }}>{vAlq.txt}</span>
+          </div>
+          <div className="monthly-summary-item">
+            <span className="monthly-summary-label">Ventas (mes actual)</span>
+            <strong className="monthly-summary-value">{formatCurrency(act.ventas)}</strong>
+            <span style={{ fontSize: 13, fontWeight: 700, color: vVen.up === false ? '#E53935' : '#2E7D32' }}>{vVen.txt}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FacturacionPage({ data, updateData }) {
-  return <SalesCartPage data={data} updateData={updateData} pageType="factura" />;
+  return (
+    <>
+      <SalesCartPage data={data} updateData={updateData} pageType="factura" />
+      <FacturacionReportes data={data} />
+    </>
+  );
 }
 
 export default App;
