@@ -991,9 +991,12 @@ function RentalsPage({ data, updateData }) {
     }));
   };
 
-  // Reseña: solo en alquileres nuevos del mes que todavia no la pidieron.
-  const rentMonthKey = getToday().slice(0, 7);
-  const esNuevoDelMes = (r) => r.status !== 'finalizado' && !r.reviewSent && (r.startDate || '').slice(0, 7) === rentMonthKey;
+  // Reseña: en alquileres nuevos (iniciados en los ultimos 60 dias) que todavia
+  // no la pidieron. Se usa recencia y no mes calendario para que el boton no
+  // desaparezca al cambiar de mes.
+  const rentHoy = getToday();
+  const rentHace60 = (() => { const d = new Date(rentHoy + 'T00:00:00'); d.setDate(d.getDate() - 60); return toLocalDateStr(d); })();
+  const esNuevoParaResena = (r) => r.status !== 'finalizado' && !r.reviewSent && r.startDate && r.startDate >= rentHace60 && r.startDate <= rentHoy;
 
   const handleReview = (rental) => {
     const name = getPatientName(rental.patientId);
@@ -1098,7 +1101,7 @@ function RentalsPage({ data, updateData }) {
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                           <button className="btn btn-sm btn-secondary" onClick={() => { setEditingRental(rental); setShowModal(true); }}>✏️</button>
                           <button className="btn btn-sm btn-danger" onClick={() => handleDelete(rental.id)}>🗑️</button>
-                          {esNuevoDelMes(rental) && (
+                          {esNuevoParaResena(rental) && (
                             <button className="btn btn-sm btn-success" title="Pedir reseña en Google" onClick={() => handleReview(rental)}>⭐ Reseña</button>
                           )}
                           {status === 'vencido' && (
@@ -3129,31 +3132,48 @@ function FacturacionReportes({ data }) {
   const { invoices = [], rentals = [] } = data;
   const [showFacturados, setShowFacturados] = useState(false);
 
-  const mesActual = getMonthKey(new Date());
-  const facturadosMes = invoices.filter(inv => (inv.date || inv.createdAt || '').slice(0, 7) === mesActual);
-  const totalFacturadoMes = facturadosMes.reduce((s, inv) => s + Number(inv.total || 0), 0);
+  const hoy = getToday();
+  const primerDiaMes = hoy.slice(0, 7) + '-01';
+  const [desde, setDesde] = useState(primerDiaMes);
+  const [hasta, setHasta] = useState(hoy);
 
-  // Ultimos 6 meses (clave YYYY-MM), del mas viejo al actual.
-  const meses = [];
-  const base = new Date();
-  for (let i = 5; i >= 0; i--) {
-    const d = new Date(base.getFullYear(), base.getMonth() - i, 1);
-    meses.push(getMonthKey(d));
-  }
+  const invDate = (inv) => (inv.date || inv.createdAt || '').slice(0, 10);
+  const facturadosPeriodo = invoices.filter(inv => {
+    const dt = invDate(inv);
+    return dt && dt >= desde && dt <= hasta;
+  });
+  const totalFacturadoPeriodo = facturadosPeriodo.reduce((s, inv) => s + Number(inv.total || 0), 0);
 
   const ventasPorMes = (mk) => invoices
-    .filter(inv => (inv.date || inv.createdAt || '').slice(0, 7) === mk)
+    .filter(inv => invDate(inv).slice(0, 7) === mk)
     .reduce((s, inv) => s + Number(inv.total || 0), 0);
   const alquiladoPorMes = (mk) => rentals
     .filter(r => isRentalInMonth(r, mk))
     .reduce((s, r) => s + Number(r.price || 0), 0);
 
+  // Meses dentro del periodo elegido (por defecto, solo el mes en curso).
+  const meses = (() => {
+    const out = [];
+    let [y, m] = desde.slice(0, 7).split('-').map(Number);
+    const [ey, em] = hasta.slice(0, 7).split('-').map(Number);
+    let guard = 0;
+    while ((y < ey || (y === ey && m <= em)) && guard < 24) {
+      out.push(`${y}-${String(m).padStart(2, '0')}`);
+      m++; if (m > 12) { m = 1; y++; }
+      guard++;
+    }
+    return out.length ? out : [hoy.slice(0, 7)];
+  })();
+  const alquiladoPeriodo = meses.reduce((s, mk) => s + alquiladoPorMes(mk), 0);
+
   const serie = meses.map(mk => ({ mk, alquilado: alquiladoPorMes(mk), ventas: ventasPorMes(mk) }));
   const maxVal = Math.max(1, ...serie.map(s => Math.max(s.alquilado, s.ventas)));
 
-  // Comparativa mes a mes (actual vs anterior).
-  const act = serie[serie.length - 1] || { alquilado: 0, ventas: 0 };
-  const ant = serie[serie.length - 2] || { alquilado: 0, ventas: 0 };
+  // Comparativa: ultimo mes del periodo vs el mes anterior.
+  const act = serie[serie.length - 1] || { mk: hoy.slice(0, 7), alquilado: 0, ventas: 0 };
+  const [py, pm] = act.mk.split('-').map(Number);
+  const prevMk = pm === 1 ? `${py - 1}-12` : `${py}-${String(pm - 1).padStart(2, '0')}`;
+  const ant = { mk: prevMk, alquilado: alquiladoPorMes(prevMk), ventas: ventasPorMes(prevMk) };
   const variacion = (a, b) => {
     if (!b) return a > 0 ? { txt: 'nuevo', up: true } : { txt: '—', up: null };
     const pct = Math.round(((a - b) / b) * 100);
@@ -3170,19 +3190,45 @@ function FacturacionReportes({ data }) {
 
   return (
     <div style={{ marginTop: 24 }}>
-      <button className="btn btn-primary btn-block" onClick={() => setShowFacturados(!showFacturados)}>
-        📄 Facturados de {formatMonthLabel(mesActual)} ({facturadosMes.length}) — {formatCurrency(totalFacturadoMes)}
+      <div className="card">
+        <h3 className="card-title">Reportes de facturación</h3>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Desde</label>
+            <input type="date" className="form-input" value={desde} max={hasta} onChange={e => setDesde(e.target.value)} />
+          </div>
+          <div className="form-group" style={{ margin: 0 }}>
+            <label className="form-label">Hasta</label>
+            <input type="date" className="form-input" value={hasta} min={desde} onChange={e => setHasta(e.target.value)} />
+          </div>
+          <button className="btn btn-secondary" onClick={() => { setDesde(primerDiaMes); setHasta(hoy); }}>Mes actual</button>
+        </div>
+        <p className="page-subtitle" style={{ marginTop: 8 }}>Período: {formatDate(desde)} a {formatDate(hasta)}</p>
+        <div className="monthly-summary-grid" style={{ marginTop: 10 }}>
+          <div className="monthly-summary-item">
+            <span className="monthly-summary-label">Facturado (ventas)</span>
+            <strong className="monthly-summary-value">{formatCurrency(totalFacturadoPeriodo)}</strong>
+          </div>
+          <div className="monthly-summary-item">
+            <span className="monthly-summary-label">Alquilado</span>
+            <strong className="monthly-summary-value">{formatCurrency(alquiladoPeriodo)}</strong>
+          </div>
+        </div>
+      </div>
+
+      <button className="btn btn-primary btn-block" style={{ marginTop: 12 }} onClick={() => setShowFacturados(!showFacturados)}>
+        📄 Facturados del período ({facturadosPeriodo.length}) — {formatCurrency(totalFacturadoPeriodo)}
       </button>
 
       {showFacturados && (
         <div className="card" style={{ borderTop: '3px solid #1E5AA8', marginTop: 12 }}>
           <div style={{ background: '#E3F2FD', border: '1px solid #90CAF9', borderRadius: 8, padding: '10px 14px', marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span style={{ fontWeight: 600, color: '#1E5AA8' }}>Total facturado del mes</span>
-            <strong style={{ fontSize: 18, color: '#1E5AA8' }}>{formatCurrency(totalFacturadoMes)}</strong>
+            <span style={{ fontWeight: 600, color: '#1E5AA8' }}>Total facturado del período</span>
+            <strong style={{ fontSize: 18, color: '#1E5AA8' }}>{formatCurrency(totalFacturadoPeriodo)}</strong>
           </div>
-          {facturadosMes.length === 0 ? (
-            <p style={{ textAlign: 'center', color: '#5A6978', padding: 10 }}>No hay facturas este mes</p>
-          ) : facturadosMes.map(inv => (
+          {facturadosPeriodo.length === 0 ? (
+            <p style={{ textAlign: 'center', color: '#5A6978', padding: 10 }}>No hay facturas en el período</p>
+          ) : facturadosPeriodo.map(inv => (
             <div key={inv.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #E3F2FD' }}>
               <div>
                 <div style={{ fontWeight: 600 }}>{inv.customerName || inv.clientName || 'Sin nombre'}</div>
@@ -3195,7 +3241,7 @@ function FacturacionReportes({ data }) {
       )}
 
       <div className="card" style={{ marginTop: 12 }}>
-        <h3 className="card-title">📊 Alquilado vs Ventas por mes</h3>
+        <h3 className="card-title">📊 Alquilado vs Ventas {meses.length > 1 ? 'por mes' : 'del mes'}</h3>
         <div style={{ display: 'flex', gap: 16, marginBottom: 8, fontSize: 13 }}>
           <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#1E5AA8', borderRadius: 2, marginRight: 5 }} />Alquilado</span>
           <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#2E7D32', borderRadius: 2, marginRight: 5 }} />Ventas</span>
@@ -3223,12 +3269,12 @@ function FacturacionReportes({ data }) {
         <p className="page-subtitle" style={{ marginBottom: 12 }}>{formatMonthLabel(act.mk)} vs {formatMonthLabel(ant.mk)}</p>
         <div className="monthly-summary-grid">
           <div className="monthly-summary-item">
-            <span className="monthly-summary-label">Alquilado (mes actual)</span>
+            <span className="monthly-summary-label">Alquilado ({mesCorto(act.mk)})</span>
             <strong className="monthly-summary-value">{formatCurrency(act.alquilado)}</strong>
             <span style={{ fontSize: 13, fontWeight: 700, color: vAlq.up === false ? '#E53935' : '#2E7D32' }}>{vAlq.txt}</span>
           </div>
           <div className="monthly-summary-item">
-            <span className="monthly-summary-label">Ventas (mes actual)</span>
+            <span className="monthly-summary-label">Ventas ({mesCorto(act.mk)})</span>
             <strong className="monthly-summary-value">{formatCurrency(act.ventas)}</strong>
             <span style={{ fontSize: 13, fontWeight: 700, color: vVen.up === false ? '#E53935' : '#2E7D32' }}>{vVen.txt}</span>
           </div>
