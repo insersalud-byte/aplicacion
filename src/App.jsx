@@ -806,7 +806,7 @@ function QuickDocGenerator({ data, updateData }) {
       )}
 
       <button className="btn btn-primary btn-block" onClick={handleGenerar}>
-        📄 Generar {docType === 'factura' ? 'Factura' : docType === 'remito' ? 'Remito' : 'Cotización'}
+        📄 Generar
       </button>
     </div>
   );

@@ -615,7 +615,17 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
   doc.setFontSize(18);
   doc.setFont(undefined, 'bold');
   doc.text(title, width / 2, y, { align: 'center' });
-  y += 10;
+  if (!isCotizacion && !isRemito) {
+    // Aclaracion legal en letra chica debajo del titulo FACTURA.
+    y += 5;
+    doc.setTextColor(120, 120, 120);
+    doc.setFontSize(7.5);
+    doc.setFont(undefined, 'normal');
+    doc.text('Documento no válido como factura', width / 2, y, { align: 'center' });
+    y += 5;
+  } else {
+    y += 10;
+  }
 
   // ── Doc info ─────────────────────────────────────────────────────────────
   doc.setTextColor(60, 60, 60);
