@@ -194,7 +194,7 @@ function App() {
 
   const renderPage = () => {
     switch (currentPage) {
-      case 'home': return <HomePage data={data} updateData={updateData} setCurrentPage={setCurrentPage} />;
+      case 'home': return <HomePage data={data} updateData={updateData} />;
       case 'patients': return <PatientsPage data={data} updateData={updateData} />;
       case 'rentals': return <RentalsPage data={data} updateData={updateData} />;
       case 'equipment': return <EquipmentPage data={data} updateData={updateData} />;
@@ -206,7 +206,7 @@ function App() {
       case 'facturacion': return <FacturacionPage data={data} updateData={updateData} />;
       case 'settings': return <SettingsPage data={data} updateData={updateData} />;
       case 'api': return <ApiPage />;
-      default: return <HomePage data={data} updateData={updateData} setCurrentPage={setCurrentPage} />;
+      default: return <HomePage data={data} updateData={updateData} />;
     }
   };
 
@@ -283,7 +283,7 @@ function App() {
   );
 }
 
-function HomePage({ data, updateData, setCurrentPage }) {
+function HomePage({ data, updateData }) {
   const { patients, equipment, rentals } = data;
   const today = getToday();
   const currentMonthKey = getMonthKey(new Date());
@@ -602,34 +602,212 @@ function HomePage({ data, updateData, setCurrentPage }) {
         </div>
       )}
 
-      <div className="card">
-        <div className="card-header">
-          <h3 className="card-title">Accesos Rápidos</h3>
+      <QuickDocGenerator data={data} updateData={updateData} />
+
+    </div>
+  );
+}
+
+// Generador rapido en Inicio: factura / remito / cotizacion en un solo lugar.
+// Facturar descuenta stock de mascaras y descartables; remito y cotizacion no.
+function QuickDocGenerator({ data, updateData }) {
+  const { equipment = [], mascaras = [], equiposNuevos = [], descartables = [], patients = [], settings = {}, rentals = [] } = data;
+
+  const [docType, setDocType] = useState('factura');
+  const [clientName, setClientName] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
+  const [category, setCategory] = useState('');
+  const [search, setSearch] = useState('');
+  const [libre, setLibre] = useState({ name: '', price: '' });
+  const [items, setItems] = useState([]);
+
+  // Precio de un equipo de alquiler: campo propio -> alquiler del equipo -> otro con el mismo nombre.
+  const equipPrice = (e) => {
+    if (Number(e.rentalPrice) > 0) return Number(e.rentalPrice);
+    const r = rentals.find(x => x.equipmentId === e.id && x.status !== 'finalizado' && Number(x.price) > 0);
+    if (r) return Number(r.price);
+    const r2 = rentals.find(x => {
+      const re = equipment.find(q => q.id === x.equipmentId);
+      return re && re.name === e.name && Number(x.price) > 0;
+    });
+    return r2 ? Number(r2.price) : 0;
+  };
+
+  const catalogos = {
+    equipos: { label: 'Equipos', items: equipment.map(e => ({ id: e.id, name: e.name, detail: e.serialNumber || '', price: equipPrice(e), imageUrl: e.imageUrl || '', _cat: 'equipos' })) },
+    mascarillas: { label: 'Mascarillas', items: mascaras.map(m => ({ id: m.id, name: m.name, detail: m.talle ? `Talle ${m.talle}` : '', price: Number(m.precio) || 0, imageUrl: m.imageUrl || '', _cat: 'mascarillas' })) },
+    equiposNuevos: { label: 'Equipos Nuevos', items: equiposNuevos.map(e => ({ id: e.id, name: e.name, detail: '', price: Number(e.price) || 0, imageUrl: e.imageUrl || '', _cat: 'equiposNuevos' })) },
+    descartables: { label: 'Descartables', items: descartables.map(d => ({ id: d.id, name: d.name, detail: d.unit || '', price: Number(d.price) || 0, imageUrl: '', _cat: 'descartables' })) },
+  };
+
+  const resultados = category && category !== 'libre' && search
+    ? catalogos[category].items.filter(it => (it.name || '').toLowerCase().includes(search.toLowerCase())).slice(0, 8)
+    : [];
+
+  const addItem = (it) => {
+    setItems(prev => {
+      const ya = prev.find(x => x.id === it.id && x._cat === it._cat);
+      if (ya) return prev.map(x => x === ya ? { ...x, quantity: x.quantity + 1 } : x);
+      return [...prev, { ...it, quantity: 1 }];
+    });
+    setSearch('');
+  };
+
+  const addLibre = () => {
+    if (!libre.name || !(Number(libre.price) > 0)) { alert('Ingresá nombre y precio del item'); return; }
+    setItems(prev => [...prev, { id: 'libre-' + Date.now(), name: libre.name, detail: '', price: Number(libre.price), imageUrl: '', _cat: 'libre', quantity: 1 }]);
+    setLibre({ name: '', price: '' });
+  };
+
+  const cambiarCantidad = (idx, delta) => {
+    setItems(prev => prev.map((x, i) => i === idx ? { ...x, quantity: Math.max(1, x.quantity + delta) } : x).filter(Boolean));
+  };
+
+  const total = items.reduce((s, it) => s + it.price * it.quantity, 0);
+
+  const handleClientChange = (value) => {
+    setClientName(value);
+    const match = patients.find(p => (p.name || '').trim().toLowerCase() === value.trim().toLowerCase());
+    if (match && match.phone) setClientPhone(match.phone);
+  };
+
+  const handleGenerar = async () => {
+    if (items.length === 0) { alert('Agregá al menos un item'); return; }
+    const nombreDoc = docType === 'factura' ? 'factura' : docType === 'remito' ? 'remito' : 'cotizacion';
+    if (!confirm(`¿Generar ${nombreDoc} para "${clientName || 'sin nombre'}" por ${formatCurrency(total)}?`)) return;
+    const prefix = docType === 'factura' ? 'FAC' : docType === 'remito' ? 'REM' : 'COT';
+    const number = generateDocNumber(prefix, clientName);
+    const collectionKey = docType === 'factura' ? 'invoices' : docType === 'remito' ? 'remitos' : 'quotations';
+    const invoiceData = {
+      invoiceNumber: number,
+      date: getToday(),
+      clientName,
+      clientPhone,
+      items: items.map(it => ({ name: it.name, price: it.price, quantity: it.quantity, imageUrl: it.imageUrl || '' })),
+      total,
+      notes: '',
+    };
+    try {
+      const doc = await generateInvoicePDF(invoiceData, settings, nombreDoc);
+      downloadInvoicePDF(doc, number, nombreDoc);
+      const record = { id: generateId(), ...invoiceData, customerName: clientName, customerPhone: clientPhone, cartItems: items, createdAt: getToday() };
+      updateData(cur => {
+        const next = { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
+        // Solo la FACTURA descuenta stock (mascaras y descartables).
+        if (docType === 'factura') {
+          const descontar = (arr, cat) => (arr || []).map(x => {
+            const enItems = items.find(it => it.id === x.id && it._cat === cat);
+            if (!enItems) return x;
+            return { ...x, stock: Math.max(0, Number(x.stock || 0) - enItems.quantity) };
+          });
+          next.mascaras = descontar(cur.mascaras, 'mascarillas');
+          next.descartables = descontar(cur.descartables, 'descartables');
+        }
+        return next;
+      });
+      alert(`${nombreDoc.charAt(0).toUpperCase() + nombreDoc.slice(1)} ${number} generado`);
+      setItems([]); setClientName(''); setClientPhone(''); setSearch(''); setCategory('');
+    } catch (err) {
+      console.error(err);
+      alert('Error al generar PDF');
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3 className="card-title">⚡ Generador rápido</h3>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+        {[['factura', '🧾 Factura'], ['remito', '📝 Remito'], ['cotizacion', '💰 Cotización']].map(([v, lbl]) => (
+          <button key={v} className={`filter-btn ${docType === v ? 'active' : ''}`} onClick={() => setDocType(v)}>{lbl}</button>
+        ))}
+        {docType === 'factura' && <span style={{ fontSize: 12, color: '#5A6978', alignSelf: 'center' }}>La factura descuenta stock</span>}
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+        <div className="form-group" style={{ margin: 0, flex: 2, minWidth: 180 }}>
+          <label className="form-label">Cliente</label>
+          <input type="text" className="form-input" placeholder="Nombre del cliente" list="qdg-pacientes" value={clientName} onChange={e => handleClientChange(e.target.value)} />
+          <datalist id="qdg-pacientes">
+            {patients.map(p => <option key={p.id} value={p.name} />)}
+          </datalist>
         </div>
-        <div className="quick-actions">
-          <div className="quick-action" onClick={() => setCurrentPage('patients')}>
-            <div className="quick-action-icon">👤</div>
-            <div className="quick-action-label">Nuevo Paciente</div>
-          </div>
-          <div className="quick-action" onClick={() => setCurrentPage('rentals')}>
-            <div className="quick-action-icon">📋</div>
-            <div className="quick-action-label">Nuevo Alquiler</div>
-          </div>
-          <div className="quick-action" onClick={() => setCurrentPage('equipment')}>
-            <div className="quick-action-icon">🔧</div>
-            <div className="quick-action-label">Nuevo Equipo</div>
-          </div>
-          <div className="quick-action" onClick={() => setCurrentPage('quotations')}>
-            <div className="quick-action-icon">💰</div>
-            <div className="quick-action-label">Cotización</div>
-          </div>
-          <div className="quick-action" onClick={() => setCurrentPage('api')}>
-            <div className="quick-action-icon">🔌</div>
-            <div className="quick-action-label">API</div>
-          </div>
+        <div className="form-group" style={{ margin: 0, flex: 1, minWidth: 140 }}>
+          <label className="form-label">WhatsApp</label>
+          <input type="tel" className="form-input" placeholder="Teléfono" value={clientPhone} onChange={e => setClientPhone(e.target.value)} />
         </div>
       </div>
 
+      <div className="form-group" style={{ marginBottom: 10 }}>
+        <label className="form-label">Agregar producto</label>
+        <select className="form-select" value={category} onChange={e => { setCategory(e.target.value); setSearch(''); }}>
+          <option value="">Elegir categoría...</option>
+          <option value="equipos">🔧 Equipos</option>
+          <option value="mascarillas">😷 Mascarillas</option>
+          <option value="equiposNuevos">🆕 Equipos Nuevos</option>
+          <option value="descartables">🧤 Descartables</option>
+          <option value="libre">✏️ Item libre</option>
+        </select>
+      </div>
+
+      {category && category !== 'libre' && (
+        <div style={{ marginBottom: 12 }}>
+          <input type="text" className="form-input" placeholder={`Buscar en ${catalogos[category].label}... (ej: f6)`} value={search} onChange={e => setSearch(e.target.value)} />
+          {resultados.length > 0 && (
+            <div style={{ border: '1px solid #BBDEFB', borderRadius: 8, marginTop: 6, maxHeight: 220, overflowY: 'auto' }}>
+              {resultados.map(it => (
+                <div key={it._cat + it.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: '1px solid #E3F2FD', gap: 8 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{it.name}</div>
+                    <div style={{ fontSize: 12, color: '#5A6978' }}>{it.detail} {it.price > 0 ? `· ${formatCurrency(it.price)}` : '· sin precio'}</div>
+                  </div>
+                  <button className="btn btn-sm btn-primary" onClick={() => addItem(it)}>+</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {search && resultados.length === 0 && (
+            <p style={{ fontSize: 13, color: '#5A6978', marginTop: 6 }}>Sin coincidencias en {catalogos[category].label}</p>
+          )}
+        </div>
+      )}
+
+      {category === 'libre' && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <input type="text" className="form-input" placeholder="Nombre del item" style={{ flex: 2, minWidth: 160 }} value={libre.name} onChange={e => setLibre({ ...libre, name: e.target.value })} />
+          <input type="number" className="form-input" placeholder="Precio" style={{ flex: 1, minWidth: 100 }} value={libre.price} onChange={e => setLibre({ ...libre, price: e.target.value })} />
+          <button className="btn btn-secondary" onClick={addLibre}>+ Agregar</button>
+        </div>
+      )}
+
+      {items.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          {items.map((it, idx) => (
+            <div key={it._cat + it.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid #E3F2FD', gap: 8 }}>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{it.name}</div>
+                <div style={{ fontSize: 12, color: '#5A6978' }}>{formatCurrency(it.price)} c/u</div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button className="btn btn-sm" onClick={() => cambiarCantidad(idx, -1)}>➖</button>
+                <span style={{ minWidth: 22, textAlign: 'center', fontWeight: 700 }}>{it.quantity}</span>
+                <button className="btn btn-sm" onClick={() => cambiarCantidad(idx, 1)}>➕</button>
+                <button className="btn btn-sm btn-danger" onClick={() => setItems(items.filter((_, i) => i !== idx))}>×</button>
+              </div>
+            </div>
+          ))}
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 17, fontWeight: 700, color: '#0D47A1' }}>
+            <span>Total</span>
+            <span>{formatCurrency(total)}</span>
+          </div>
+        </div>
+      )}
+
+      <button className="btn btn-primary btn-block" onClick={handleGenerar}>
+        📄 Generar {docType === 'factura' ? 'Factura' : docType === 'remito' ? 'Remito' : 'Cotización'}
+      </button>
     </div>
   );
 }
