@@ -521,7 +521,10 @@ function HomePage({ data, updateData }) {
                 <div key={r.id} style={{ padding: '10px 0', borderBottom: '1px solid #E3F2FD' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <div>
-                      <div style={{ fontWeight: 600 }}>{pat?.name || 'Sin paciente'}</div>
+                      <div style={{ fontWeight: 600 }}>
+                        {pat?.name || 'Sin paciente'}
+                        {pat?.phone && <span style={{ fontWeight: 400, color: '#1E5AA8', fontSize: 13 }}> · 📞 {pat.phone}</span>}
+                      </div>
                       <div style={{ fontSize: 13, color: '#5A6978' }}>{eq?.name || 'Sin equipo'}</div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
