@@ -1858,13 +1858,19 @@ function EquiposNuevosPage({ data, updateData }) {
 
   const filtered = (equiposNuevos || []).filter(e => !search || (e.name || '').toLowerCase().includes(search.toLowerCase()));
 
-  const handleSave = (item) => {
-    if (!confirm(item.id ? `¿Guardar los cambios de "${item.name}"?` : `¿Agregar "${item.name}" al catalogo?`)) return;
+  const handleSave = (payload) => {
+    const isArray = Array.isArray(payload);
+    const nombre = isArray ? (payload[0]?.name || '') : payload.name;
+    const cant = isArray ? payload.length : 1;
+    const msg = payload.id
+      ? `¿Guardar los cambios de "${nombre}"?`
+      : (cant > 1 ? `¿Agregar ${cant} unidades individuales de "${nombre}" al catalogo?` : `¿Agregar "${nombre}" al catalogo?`);
+    if (!confirm(msg)) return;
     updateData(cur => ({
       ...cur,
-      equiposNuevos: item.id
-        ? (cur.equiposNuevos || []).map(e => e.id === item.id ? item : e)
-        : [...(cur.equiposNuevos || []), { ...item, id: generateId() }]
+      equiposNuevos: payload.id
+        ? (cur.equiposNuevos || []).map(e => e.id === payload.id ? payload : e)
+        : [...(cur.equiposNuevos || []), ...(isArray ? payload : [payload]).map(it => ({ ...it, id: generateId() }))]
     }));
     setShowModal(false);
     setEditing(null);
@@ -1895,6 +1901,7 @@ function EquiposNuevosPage({ data, updateData }) {
               {eq.imageUrl && <img src={eq.imageUrl} alt={eq.name} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, marginBottom: 10 }} />}
               <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{eq.name}</div>
               {eq.description && <div style={{ fontSize: 13, color: '#5A6978', marginBottom: 4 }}>{eq.description}</div>}
+              {eq.serialNumber && <div style={{ fontSize: 12, color: '#5A6978', marginBottom: 4 }}>N° serie: {eq.serialNumber}</div>}
               <div style={{ fontSize: 18, fontWeight: 700, color: '#1E5AA8' }}>{formatCurrency(eq.price)}</div>
               {eq.priceUsd > 0 && <div style={{ fontSize: 13, color: '#43A047', fontWeight: 600 }}>USD {eq.priceUsd}</div>}
               {eq.priceVentaUsd > 0 && <div style={{ fontSize: 12, color: '#5A6978' }}>Venta: USD {eq.priceVentaUsd}</div>}
@@ -1909,7 +1916,14 @@ function EquiposNuevosPage({ data, updateData }) {
       )}
       {showModal && (() => {
         const EquipoNuevoModal = () => {
-          const [form, setForm] = useState(editing || { name: '', description: '', price: '', priceUsd: '', priceVentaUsd: '', stock: '', imageUrl: '' });
+          const [form, setForm] = useState(editing || { name: '', description: '', price: '', priceUsd: '', priceVentaUsd: '', stock: '', imageUrl: '', serialNumber: '' });
+          const [cantidad, setCantidad] = useState(1);
+          const [serials, setSerials] = useState(editing ? [editing.serialNumber || ''] : ['']);
+          const setCant = (n) => {
+            const c = Math.max(1, Math.min(50, Number(n) || 1));
+            setCantidad(c);
+            setSerials(prev => { const a = [...prev]; while (a.length < c) a.push(''); return a.slice(0, c); });
+          };
           const handleImg = (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -1936,13 +1950,37 @@ function EquiposNuevosPage({ data, updateData }) {
                   <h2 className="modal-title">{editing ? 'Editar' : 'Nuevo'} Equipo</h2>
                   <span className="modal-close" onClick={() => { setShowModal(false); setEditing(null); }}>x</span>
                 </div>
-                <form onSubmit={e => { e.preventDefault(); if (!form.name) { alert('Nombre obligatorio'); return; } handleSave({ ...form, price: Number(form.price), priceUsd: Number(form.priceUsd || 0), priceVentaUsd: Number(form.priceVentaUsd || 0), stock: Number(form.stock || 0) }); }}>
+                <form onSubmit={e => {
+                  e.preventDefault();
+                  if (!form.name) { alert('Nombre obligatorio'); return; }
+                  const base = { ...form, price: Number(form.price), priceUsd: Number(form.priceUsd || 0), priceVentaUsd: Number(form.priceVentaUsd || 0) };
+                  if (editing) {
+                    handleSave({ ...base, id: editing.id, stock: Number(form.stock || 0), serialNumber: (serials[0] || '').trim() });
+                  } else {
+                    const items = serials.slice(0, cantidad).map(s => ({ ...base, stock: 1, serialNumber: (s || '').trim() }));
+                    handleSave(items);
+                  }
+                }}>
                   <div className="form-group"><label className="form-label">Nombre *</label><input type="text" className="form-input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div>
                   <div className="form-group"><label className="form-label">Descripcion (Marca / Modelo)</label><textarea className="form-textarea" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div>
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     <div className="form-group"><label className="form-label">Precio ARS</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
-                    <div className="form-group"><label className="form-label">Stock</label><input type="number" className="form-input" value={form.stock || ''} onChange={e => setForm({...form, stock: e.target.value})} /></div>
+                    {editing
+                      ? <div className="form-group"><label className="form-label">Stock</label><input type="number" className="form-input" value={form.stock || ''} onChange={e => setForm({...form, stock: e.target.value})} /></div>
+                      : <div className="form-group"><label className="form-label">Cantidad</label><input type="number" min="1" className="form-input" value={cantidad} onChange={e => setCant(e.target.value)} /></div>
+                    }
                   </div>
+                  {editing ? (
+                    <div className="form-group"><label className="form-label">N° de serie</label><input type="text" className="form-input" value={serials[0] || ''} onChange={e => setSerials([e.target.value])} /></div>
+                  ) : (
+                    <div className="form-group">
+                      <label className="form-label">N° de serie {cantidad > 1 ? 'por unidad' : ''}</label>
+                      {serials.map((s, i) => (
+                        <input key={i} type="text" className="form-input" placeholder={cantidad > 1 ? `Unidad ${i + 1}` : 'N° de serie'} value={s} onChange={e => setSerials(prev => prev.map((x, j) => j === i ? e.target.value : x))} style={{ marginBottom: 6 }} />
+                      ))}
+                      {cantidad > 1 && <div style={{ fontSize: 12, color: '#5A6978' }}>Se crearán {cantidad} equipos individuales, uno por cada número de serie.</div>}
+                    </div>
+                  )}
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     <div className="form-group"><label className="form-label">Precio USD</label><input type="number" className="form-input" value={form.priceUsd || ''} onChange={e => setForm({...form, priceUsd: e.target.value})} /></div>
                     <div className="form-group"><label className="form-label">Venta USD</label><input type="number" className="form-input" value={form.priceVentaUsd || ''} onChange={e => setForm({...form, priceVentaUsd: e.target.value})} /></div>
