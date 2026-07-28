@@ -1109,6 +1109,7 @@ function RentalsPage({ data, updateData }) {
   const expiringToday = rentals.filter(r => r.endDate === rentTodayStr && r.status !== 'finalizado');
   const expiringSoon = rentals.filter(r => r.endDate && r.endDate > rentTodayStr && r.endDate <= rentIn2Str && r.status !== 'finalizado');
 
+  const finalizadoKey = (r) => r.finalizedAt || (r.endDate ? r.endDate + 'T00:00:00' : '') || r.createdAt || '';
   const filteredRentals = rentals.filter(r => {
     if (filter === 'activo' && r.status !== 'activo') return false;
     if (filter === 'vencido' && r.status !== 'vencido' && !isRentalExpired(r)) return false;
@@ -1121,6 +1122,10 @@ function RentalsPage({ data, updateData }) {
       if (!pName.includes(q) && !eName.includes(q) && !pAddr.includes(q)) return false;
     }
     return true;
+  }).sort((a, b) => {
+    // En "finalizado", los ultimos finalizados van primero.
+    if (filter !== 'finalizado') return 0;
+    return finalizadoKey(b).localeCompare(finalizadoKey(a));
   });
 
   const handleSave = (payload) => {
@@ -1131,20 +1136,27 @@ function RentalsPage({ data, updateData }) {
         : `¿Crear el alquiler de ${getPatientName(payload.patientId)}?`;
     if (!confirm(confirmMsg)) return;
     updateData(cur => {
+      // Sella la fecha de finalizacion cuando un alquiler pasa a "finalizado".
+      const stamp = (nr) => {
+        if (nr.status !== 'finalizado') return nr;
+        const old = cur.rentals.find(r => r.id === nr.id);
+        const finalizedAt = nr.finalizedAt || (old && old.status === 'finalizado' && old.finalizedAt) || new Date().toISOString();
+        return { ...nr, finalizedAt };
+      };
       let newRentals = [...cur.rentals];
       if (editingRental && payload.update) {
-        newRentals = newRentals.map(r => r.id === payload.update.id ? payload.update : r);
+        newRentals = newRentals.map(r => r.id === payload.update.id ? stamp(payload.update) : r);
         if (payload.create?.length) {
           const createdAt = getToday();
-          newRentals = [...newRentals, ...payload.create.map(r => ({ ...r, id: generateId(), createdAt }))];
+          newRentals = [...newRentals, ...payload.create.map(r => stamp({ ...r, id: generateId(), createdAt }))];
         }
       } else if (editingRental) {
-        newRentals = newRentals.map(r => r.id === payload.id ? payload : r);
+        newRentals = newRentals.map(r => r.id === payload.id ? stamp(payload) : r);
       } else if (Array.isArray(payload)) {
         const createdAt = getToday();
-        newRentals = [...newRentals, ...payload.map(r => ({ ...r, id: generateId(), createdAt }))];
+        newRentals = [...newRentals, ...payload.map(r => stamp({ ...r, id: generateId(), createdAt }))];
       } else {
-        newRentals = [...newRentals, { ...payload, id: generateId(), createdAt: getToday() }];
+        newRentals = [...newRentals, stamp({ ...payload, id: generateId(), createdAt: getToday() })];
       }
       return { ...cur, rentals: newRentals };
     });
