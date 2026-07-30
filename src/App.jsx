@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, onSyncStatus, onDataChange, refreshFromRemote, syncIfRemoteChanged } from './data/database';
+import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, onSyncStatus, onDataChange, refreshFromRemote, syncIfRemoteChanged } from './data/database';
 import './App.css';
 
 function getMonthKey(date = new Date()) {
@@ -1092,7 +1092,7 @@ function PatientModal({ patient, onSave, onClose }) {
 }
 
 function RentalsPage({ data, updateData }) {
-  const { rentals, patients, equipment } = data;
+  const { rentals, patients, equipment, settings } = data;
   const [filter, setFilter] = useState('todos');
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
@@ -1128,6 +1128,34 @@ function RentalsPage({ data, updateData }) {
     return finalizadoKey(b).localeCompare(finalizadoKey(a));
   });
 
+  // Remito automatico: 'entrega' al crear el alquiler, 'retiro' al finalizarlo.
+  const emitirRemitoEquipo = async (tipo, patientId, equipmentIds) => {
+    const p = patients.find(x => x.id === patientId);
+    const equipos = equipmentIds
+      .map(id => equipment.find(e => e.id === id))
+      .filter(Boolean)
+      .map(e => ({ name: e.name, serialNumber: e.serialNumber }));
+    if (equipos.length === 0) return;
+    const prefix = tipo === 'retiro' ? 'RET' : 'ENT';
+    const numero = generateDocNumber(prefix, p?.name || '');
+    try {
+      const doc = await generateRemitoEquipoPDF({
+        tipo,
+        paciente: p?.name || 'Sin paciente',
+        telefono: p?.phone || '',
+        direccion: p?.address || '',
+        dni: p?.dni || '',
+        equipos,
+        fecha: getToday(),
+        numero,
+      }, settings || {});
+      doc.save(`Remito_${tipo === 'retiro' ? 'Retiro' : 'Entrega'}_${numero}.pdf`);
+    } catch (err) {
+      console.error(err);
+      alert('El alquiler se guardo, pero no se pudo generar el remito automatico.');
+    }
+  };
+
   const handleSave = (payload) => {
     const confirmMsg = editingRental
       ? `¿Guardar los cambios del alquiler de ${getPatientName(payload.update?.patientId || payload.patientId)}?`
@@ -1135,6 +1163,23 @@ function RentalsPage({ data, updateData }) {
         ? (payload.length === 1 ? `¿Crear el alquiler de ${getPatientName(payload[0].patientId)}?` : `¿Crear ${payload.length} alquileres?`)
         : `¿Crear el alquiler de ${getPatientName(payload.patientId)}?`;
     if (!confirm(confirmMsg)) return;
+
+    // Detectar que remito corresponde emitir despues de guardar.
+    let remito = null;
+    if (!editingRental) {
+      const nuevos = Array.isArray(payload) ? payload : [payload];
+      remito = { tipo: 'entrega', patientId: nuevos[0]?.patientId, equipmentIds: nuevos.map(r => r.equipmentId) };
+    } else {
+      const actualizado = payload.update || payload;
+      // Pasa a finalizado (antes no lo estaba) -> remito de retiro.
+      if (actualizado.status === 'finalizado' && editingRental.status !== 'finalizado') {
+        remito = { tipo: 'retiro', patientId: actualizado.patientId, equipmentIds: [actualizado.equipmentId] };
+      }
+      // Equipos extra agregados al mismo paciente -> remito de entrega por esos.
+      if (payload.create?.length) {
+        remito = { tipo: 'entrega', patientId: payload.create[0].patientId, equipmentIds: payload.create.map(r => r.equipmentId) };
+      }
+    }
     updateData(cur => {
       // Sella la fecha de finalizacion cuando un alquiler pasa a "finalizado".
       const stamp = (nr) => {
@@ -1162,6 +1207,8 @@ function RentalsPage({ data, updateData }) {
     });
     setShowModal(false);
     setEditingRental(null);
+    // Emitir el remito correspondiente (no bloquea el guardado).
+    if (remito) emitirRemitoEquipo(remito.tipo, remito.patientId, remito.equipmentIds);
   };
 
   const handleDelete = (id) => {

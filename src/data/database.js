@@ -779,6 +779,132 @@ export function downloadInvoicePDF(doc, number, type = 'factura') {
   doc.save(`${prefix}_${number}.pdf`);
 }
 
+/**
+ * Remito automatico de ENTREGA (al crear un alquiler) o RETIRO (al eliminarlo).
+ * data: { tipo:'entrega'|'retiro', paciente, direccion, telefono, dni,
+ *         equipos:[{name, serialNumber}], fecha, numero }
+ * Devuelve el doc de jsPDF (para descargar con downloadInvoicePDF).
+ */
+export async function generateRemitoEquipoPDF(data, settings = {}) {
+  const { jsPDF } = await import('jspdf');
+  const { firmaGerente, firmaRatio } = await import('./firmaGerente.js');
+  const logoBase64 = await toBase64Image(window.location.origin + '/logo.jpg');
+
+  const doc = new jsPDF('p', 'mm', 'a4');
+  const width = doc.internal.pageSize.getWidth();
+  const height = doc.internal.pageSize.getHeight();
+  const esRetiro = data.tipo === 'retiro';
+
+  // ── Cabecera ────────────────────────────────────────────────────────────
+  doc.setFillColor(30, 90, 168);
+  doc.rect(0, 0, width, 48, 'F');
+  if (logoBase64) { try { doc.addImage(logoBase64, 'JPEG', 6, 4, 38, 38); } catch { /* sin logo */ } }
+  const cx = logoBase64 ? width / 2 + 15 : width / 2;
+  doc.setTextColor(255, 255, 255);
+  doc.setFontSize(22);
+  doc.setFont(undefined, 'bold');
+  doc.text(settings.companyName || 'INSER SALUD', cx, 18, { align: 'center' });
+  doc.setFontSize(9);
+  doc.setFont(undefined, 'normal');
+  let hy = 25;
+  if (settings.companyPhone) { doc.text(`Tel: ${settings.companyPhone}`, cx, hy, { align: 'center' }); hy += 5; }
+  if (settings.companyAddress) { doc.text(settings.companyAddress, cx, hy, { align: 'center' }); hy += 5; }
+  if (settings.companyEmail) { doc.text(settings.companyEmail, cx, hy, { align: 'center' }); hy += 5; }
+  doc.setFont(undefined, 'bold');
+  doc.text(settings.companyWebsite || 'inser.ar', cx, hy, { align: 'center' });
+  doc.setFont(undefined, 'normal');
+
+  // ── Titulo ──────────────────────────────────────────────────────────────
+  let y = 58;
+  doc.setTextColor(30, 90, 168);
+  doc.setFontSize(17);
+  doc.setFont(undefined, 'bold');
+  doc.text(esRetiro ? 'REMITO DE RETIRO' : 'REMITO DE ENTREGA', width / 2, y, { align: 'center' });
+  y += 10;
+
+  doc.setTextColor(60, 60, 60);
+  doc.setFontSize(10);
+  doc.setFont(undefined, 'normal');
+  doc.text(`Fecha: ${formatDate(data.fecha || getToday())}`, 20, y);
+  if (data.numero) doc.text(`N°: ${data.numero}`, width - 20, y, { align: 'right' });
+  y += 8;
+  doc.setDrawColor(30, 90, 168);
+  doc.setLineWidth(0.5);
+  doc.line(20, y, width - 20, y);
+  y += 10;
+
+  // ── Paciente ────────────────────────────────────────────────────────────
+  doc.setFontSize(11);
+  doc.setFont(undefined, 'bold');
+  doc.text('PACIENTE', 20, y);
+  y += 7;
+  doc.setFont(undefined, 'normal');
+  doc.setFontSize(10);
+  doc.text(String(data.paciente || '-'), 20, y);
+  if (data.telefono) doc.text(`Tel: ${data.telefono}`, width - 20, y, { align: 'right' });
+  y += 6;
+  if (data.direccion) { doc.text(`Dir: ${data.direccion}`, 20, y); y += 6; }
+  if (data.dni) { doc.text(`DNI: ${data.dni}`, 20, y); y += 6; }
+  y += 6;
+
+  // ── Equipos ─────────────────────────────────────────────────────────────
+  doc.setFontSize(11);
+  doc.setFont(undefined, 'bold');
+  doc.setTextColor(30, 90, 168);
+  doc.text(esRetiro ? 'EQUIPO/S RETIRADO/S' : 'EQUIPO/S ENTREGADO/S', 20, y);
+  y += 8;
+  doc.setFontSize(10);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(60, 60, 60);
+  (data.equipos || []).forEach((eq, i) => {
+    if (y > height - 90) { doc.addPage(); y = 20; }
+    const serie = eq.serialNumber ? `  (N° de serie: ${eq.serialNumber})` : '';
+    const lines = doc.splitTextToSize(`${i + 1}. ${eq.name || 'Equipo'}${serie}`, width - 45);
+    doc.text(lines, 24, y);
+    y += lines.length * 5 + 2;
+  });
+  y += 6;
+
+  // ── Leyenda ─────────────────────────────────────────────────────────────
+  if (y > height - 85) { doc.addPage(); y = 20; }
+  doc.setDrawColor(30, 90, 168);
+  doc.setLineWidth(0.4);
+  doc.line(20, y, width - 20, y);
+  y += 8;
+  doc.setFontSize(10);
+  doc.setFont(undefined, 'normal');
+  doc.setTextColor(60, 60, 60);
+  const leyenda = esRetiro
+    ? 'Se deja constancia de que en la fecha indicada SE RETIRO el/los equipo/s detallado/s del domicilio del paciente, finalizando el alquiler correspondiente.'
+    : 'Se deja constancia de que en la fecha indicada SE ENTREGO el/los equipo/s detallado/s, EN PERFECTO ESTADO DE FUNCIONAMIENTO, con las indicaciones de uso correspondientes.';
+  doc.text(doc.splitTextToSize(leyenda, width - 40), 20, y);
+  y += 16;
+
+  // ── Firmas ──────────────────────────────────────────────────────────────
+  if (y > height - 75) { doc.addPage(); y = 20; }
+  y += 14;
+  // Firma del paciente (izquierda)
+  doc.setFontSize(9);
+  doc.line(22, y + 18, 92, y + 18);
+  doc.text('Firma del paciente / familiar', 22, y + 23);
+  doc.text('Aclaracion: ____________________', 22, y + 30);
+  doc.text('DNI: ____________________', 22, y + 36);
+
+  // Firma de la gerente (derecha): la imagen va ARRIBA del nombre, apoyada sobre la linea.
+  const fx = width - 92;                       // inicio del bloque de firma
+  const fw = 58;                               // ancho de la firma en mm
+  const fh = fw / (firmaRatio || 2.5);         // alto proporcional (sin deformar)
+  const lineY = y + 18;                        // linea sobre la que "apoya" la firma
+  try { doc.addImage(firmaGerente, 'JPEG', fx, lineY - fh - 1, fw, fh); } catch { /* sin firma */ }
+  doc.line(fx, lineY, fx + 70, lineY);
+  doc.setFont(undefined, 'bold');
+  doc.text('MARCELA CORDERO', fx, lineY + 5);
+  doc.setFont(undefined, 'normal');
+  doc.text('Gerente', fx, lineY + 11);
+
+  return doc;
+}
+
 export function sendInvoiceByEmail(email, invoiceNumber, clientName, total) {
   if (!email) {
     alert('Ingrese un correo electronico');
