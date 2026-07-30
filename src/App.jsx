@@ -1002,10 +1002,11 @@ function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode,
 }
 
 function PatientsPage({ data, updateData }) {
-  const { patients } = data;
+  const { patients, rentals = [], equipment = [] } = data;
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingPatient, setEditingPatient] = useState(null);
+  const [historialPatient, setHistorialPatient] = useState(null);
 
   const filteredPatients = [...patients].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).filter(p =>
     p.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -1063,6 +1064,7 @@ function PatientsPage({ data, updateData }) {
               <div className="patient-detail">{patient.address}</div>
             </div>
             <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button className="btn btn-sm" style={{ background: '#00838F', color: '#fff' }} title="Historial de pagos" onClick={(e) => { e.stopPropagation(); setHistorialPatient(patient); }}>📋 Historial</button>
               <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditingPatient(patient); setShowModal(true); }}>✏️</button>
               <button className="btn btn-sm btn-danger" onClick={(e) => { e.stopPropagation(); handleDelete(patient.id); }}>🗑️</button>
             </div>
@@ -1073,6 +1075,82 @@ function PatientsPage({ data, updateData }) {
       {showModal && (
         <PatientModal patient={editingPatient} onSave={handleSave} onClose={() => { setShowModal(false); setEditingPatient(null); }} />
       )}
+
+      {historialPatient && (
+        <PatientHistorialModal
+          patient={historialPatient}
+          rentals={rentals}
+          equipment={equipment}
+          onClose={() => setHistorialPatient(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Historial de pagos de un paciente: cada mes cobrado, con la fecha en que se
+// registro el pago, el equipo y el importe. Al final, la suma total.
+function PatientHistorialModal({ patient, rentals, equipment, onClose }) {
+  const equipName = (id) => equipment.find(e => e.id === id)?.name || 'Sin equipo';
+
+  const pagos = [];
+  rentals
+    .filter(r => r.patientId === patient.id)
+    .forEach(r => {
+      const meses = r.paymentStatusByMonth || {};
+      Object.keys(meses).forEach(mk => {
+        if (!meses[mk]?.paid) return;
+        pagos.push({
+          mes: mk,
+          fechaPago: meses[mk].updatedAt || '',
+          equipo: equipName(r.equipmentId),
+          monto: Number(r.price) || 0,
+        });
+      });
+    });
+  // Mas recientes primero (por mes cobrado).
+  pagos.sort((a, b) => b.mes.localeCompare(a.mes));
+  const total = pagos.reduce((s, p) => s + p.monto, 0);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2 className="modal-title">Historial de pagos</h2>
+          <span className="modal-close" onClick={onClose}>×</span>
+        </div>
+
+        <p style={{ fontWeight: 600, marginBottom: 4 }}>{patient.name}</p>
+        <p className="page-subtitle" style={{ marginBottom: 14 }}>
+          {pagos.length} {pagos.length === 1 ? 'pago registrado' : 'pagos registrados'}
+        </p>
+
+        {pagos.length === 0 ? (
+          <p style={{ textAlign: 'center', color: '#5A6978', padding: 16 }}>
+            Este paciente todavia no tiene pagos registrados.
+          </p>
+        ) : (
+          <>
+            {pagos.map((p, i) => (
+              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #E3F2FD' }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, textTransform: 'capitalize' }}>{formatMonthLabel(p.mes)}</div>
+                  <div style={{ fontSize: 12, color: '#5A6978' }}>{p.equipo}</div>
+                  <div style={{ fontSize: 12, color: '#5A6978' }}>
+                    Pagado el {p.fechaPago ? formatDate(p.fechaPago.slice(0, 10)) : 's/f'}
+                  </div>
+                </div>
+                <strong style={{ color: '#2E7D32', whiteSpace: 'nowrap' }}>{formatCurrency(p.monto)}</strong>
+              </div>
+            ))}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, padding: '12px 14px', background: '#E8F5E9', border: '1px solid #A5D6A7', borderRadius: 8 }}>
+              <span style={{ fontWeight: 700, color: '#2E7D32' }}>TOTAL COBRADO</span>
+              <strong style={{ fontSize: 18, color: '#2E7D32' }}>{formatCurrency(total)}</strong>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
