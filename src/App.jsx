@@ -284,7 +284,7 @@ function App() {
 }
 
 function HomePage({ data, updateData }) {
-  const { patients, equipment, rentals } = data;
+  const { patients, equipment, rentals, settings } = data;
   const today = getToday();
   const currentMonthKey = getMonthKey(new Date());
 
@@ -496,6 +496,42 @@ function HomePage({ data, updateData }) {
           }));
         };
 
+        // Cese de alquiler: finaliza el alquiler (sale de vencidos y pasa a Finalizados),
+        // libera el equipo para volver a alquilarlo y emite el remito de retiro.
+        const handleCese = async (r) => {
+          const p = patients.find(x => x.id === r.patientId);
+          const eq = equipment.find(e => e.id === r.equipmentId);
+          const msg = `¿Dar de baja el alquiler de ${p?.name || 'este paciente'}?\n\n`
+            + `Equipo: ${eq?.name || 'sin equipo'}\n\n`
+            + `- Se genera el remito de retiro (PDF)\n`
+            + `- El equipo vuelve al stock para alquilar\n`
+            + `- El alquiler pasa a Finalizados`;
+          if (!confirm(msg)) return;
+          updateData(currentData => ({
+            ...currentData,
+            rentals: currentData.rentals.map(x => x.id === r.id
+              ? { ...x, status: 'finalizado', finalizedAt: new Date().toISOString() }
+              : x)
+          }));
+          try {
+            const numero = generateDocNumber('RET', p?.name || '');
+            const doc = await generateRemitoEquipoPDF({
+              tipo: 'retiro',
+              paciente: p?.name || 'Sin paciente',
+              telefono: p?.phone || '',
+              direccion: p?.address || '',
+              dni: p?.dni || '',
+              equipos: eq ? [{ name: eq.name, serialNumber: eq.serialNumber }] : [],
+              fecha: getToday(),
+              numero,
+            }, settings || {});
+            doc.save(`Remito_Retiro_${numero}.pdf`);
+          } catch (err) {
+            console.error(err);
+            alert('El alquiler se dio de baja y el equipo quedo libre, pero no se pudo generar el remito.');
+          }
+        };
+
         const handleReminder = (r) => {
           const p = patients.find(x => x.id === r.patientId);
           const eq = equipment.find(e => e.id === r.equipmentId);
@@ -545,6 +581,9 @@ function HomePage({ data, updateData }) {
                           Pagar {formatMonthLabel(mk)}
                         </button>
                       ))}
+                      <button className="btn btn-sm btn-danger" style={{ fontSize: 11, padding: '4px 8px' }} title="Dar de baja: genera remito de retiro y libera el equipo" onClick={() => handleCese(r)}>
+                        🛑 Cese alquiler
+                      </button>
                     </div>
                   )}
                 </div>
