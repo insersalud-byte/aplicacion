@@ -20,6 +20,11 @@
   --gray-100: #F5F7FA;
   --gray-200: #E8ECF0;
   --gray-300: #CFD8DC;
+
+  /* La app es de tema claro. Sin esto, con el sistema en modo oscuro el
+     navegador pinta los controles nativos (inputs, fechas, selects) en
+     oscuro y el texto quedaba ilegible sobre los fondos blancos. */
+  color-scheme: light;
 }
 
 * {
@@ -389,6 +394,17 @@ body {
   font-size: 16px;
   outline: none;
   background: transparent;
+  /* Color explicito: sin esto, con el sistema en modo oscuro el navegador
+     pinta el texto del input en claro y quedaba blanco sobre blanco. */
+  color: var(--text);
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+}
+
+.search-input::placeholder {
+  color: #9AA5B4;
+  -webkit-text-fill-color: #9AA5B4;
+  opacity: 1;
 }
 
 /* Modal */
