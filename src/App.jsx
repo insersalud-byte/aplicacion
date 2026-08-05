@@ -9,6 +9,14 @@ import './App.css';
 const sinFotoPesada = (url) => (typeof url === 'string' && url.startsWith('data:') ? '' : (url || ''));
 const itemLiviano = (it) => ({ ...it, imageUrl: sinFotoPesada(it.imageUrl) });
 
+// Los mas nuevos SIEMPRE primero, en listas y en desplegables.
+// Desempata por id: los ids se generan con timestamp, asi que el mayor es el
+// mas reciente (necesario porque createdAt es solo la fecha, sin hora).
+const masNuevoPrimero = (a, b) =>
+  String(b.createdAt || '').localeCompare(String(a.createdAt || '')) ||
+  String(b.id || '').localeCompare(String(a.id || ''));
+const ordenNuevosPrimero = (arr) => [...(arr || [])].sort(masNuevoPrimero);
+
 function getMonthKey(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -780,7 +788,7 @@ function QuickDocGenerator({ data, updateData }) {
           <label className="form-label">Cliente</label>
           <input type="text" className="form-input" placeholder="Nombre del cliente" list="qdg-pacientes" value={clientName} onChange={e => handleClientChange(e.target.value)} />
           <datalist id="qdg-pacientes">
-            {patients.map(p => <option key={p.id} value={p.name} />)}
+            {ordenNuevosPrimero(patients).map(p => <option key={p.id} value={p.name} />)}
           </datalist>
         </div>
         <div className="form-group" style={{ margin: 0, flex: 1, minWidth: 140 }}>
@@ -1015,10 +1023,10 @@ function PatientsPage({ data, updateData }) {
   const [editingPatient, setEditingPatient] = useState(null);
   const [historialPatient, setHistorialPatient] = useState(null);
 
-  const filteredPatients = [...patients].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || '')).filter(p =>
-    p.name.toLowerCase().includes(search.toLowerCase()) ||
-    p.dni.includes(search) ||
-    p.phone.includes(search)
+  const filteredPatients = ordenNuevosPrimero(patients).filter(p =>
+    (p.name || '').toLowerCase().includes(search.toLowerCase()) ||
+    (p.dni || '').includes(search) ||
+    (p.phone || '').includes(search)
   );
 
   const handleSave = (patient) => {
@@ -1247,9 +1255,10 @@ function RentalsPage({ data, updateData }) {
     }
     return true;
   }).sort((a, b) => {
-    // En "finalizado", los ultimos finalizados van primero.
-    if (filter !== 'finalizado') return 0;
-    return finalizadoKey(b).localeCompare(finalizadoKey(a));
+    // En "finalizado", los ultimos finalizados primero; en el resto, los mas
+    // nuevos primero (alta mas reciente arriba).
+    if (filter === 'finalizado') return finalizadoKey(b).localeCompare(finalizadoKey(a));
+    return masNuevoPrimero(a, b);
   });
 
   // Remito automatico: 'entrega' al crear el alquiler, 'retiro' al finalizarlo.
@@ -1681,7 +1690,7 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
             <div style={{ display: 'flex', gap: 5 }}>
               <select className="form-select" value={form.patientId} onChange={e => setForm({...form, patientId: e.target.value})} required style={{ flex: 1 }}>
                 <option value="">Seleccionar...</option>
-                {patients.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {ordenNuevosPrimero(patients).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
               <button type="button" className="btn" onClick={() => setShowNewPatient(!showNewPatient)}>➕</button>
             </div>
@@ -2646,7 +2655,7 @@ function SalesCartPage({ data, updateData, pageType }) {
             }}
           />
           <datalist id="pacientes-sugeridos">
-            {(patients || []).map(p => <option key={p.id} value={p.name} />)}
+            {ordenNuevosPrimero(patients).map(p => <option key={p.id} value={p.name} />)}
           </datalist>
         </div>
         <div className="form-group">

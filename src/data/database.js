@@ -167,6 +167,7 @@ const COLLECTIONS = ['patients', 'equipment', 'rentals', 'quotations', 'remitos'
 let _baseState = null;                 // ultimo estado confirmado en la base (base del merge)
 let _pendingLocal = null;              // cambios locales aun no confirmados (para reintentar)
 let _writeChain = Promise.resolve();   // serializa escrituras: nunca se pisan ni reordenan
+let _writesInFlight = 0;               // guardados en curso: mientras haya, no se pisa la pantalla
 let _lastRemoteTs = null;              // updated_at que ya aplicamos (para detectar cambios ajenos)
 
 const _dataListeners = new Set();
@@ -396,7 +397,8 @@ export async function saveData(nextState) {
   } catch (e) { /* sin espacio: igual se reintenta online */ }
   cacheLocal(mine);                    // nunca perder el cambio localmente
   // Encadenar para serializar escrituras (evita reordenamiento de PATCH).
-  _writeChain = _writeChain.then(() => _commit(mine));
+  _writesInFlight++;
+  _writeChain = _writeChain.then(() => _commit(mine)).finally(() => { _writesInFlight--; });
   return _writeChain;
 }
 
@@ -433,6 +435,9 @@ async function _commit(mine) {
 // Primero empuja cambios pendientes para no perderlos, luego trae lo remoto.
 export async function refreshFromRemote() {
   try {
+    // Con un guardado en curso, NO bajar lo remoto: llegaria sin el cambio
+    // recien hecho y lo borraria de la pantalla (parecia que no habia guardado).
+    if (_writesInFlight > 0) return;
     if (_pendingLocal) {
       await saveData(_pendingLocal); // saveData ya hace merge + emitData
       return;
@@ -454,6 +459,8 @@ export async function refreshFromRemote() {
 // Asi lo que se carga en cualquier dispositivo se refleja en los demas en segundos.
 export async function syncIfRemoteChanged() {
   try {
+    // Mientras se esta guardando, no tocar nada (ver refreshFromRemote).
+    if (_writesInFlight > 0) return;
     // Si tengo cambios locales sin confirmar, primero los empujo (no perderlos).
     if (_pendingLocal) {
       await saveData(_pendingLocal);
