@@ -2,6 +2,13 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, onSyncStatus, onDataChange, refreshFromRemote, syncIfRemoteChanged } from './data/database';
 import './App.css';
 
+// Los documentos guardados (cotizaciones, remitos, facturas) NO deben llevar
+// las fotos en base64: cada documento copiaba ~130 KB por producto y el blob
+// que se sube en cada guardado crecia a megas, haciendo lentisimo el guardado.
+// El PDF ya se genero con la foto; en el historial alcanza con el texto.
+const sinFotoPesada = (url) => (typeof url === 'string' && url.startsWith('data:') ? '' : (url || ''));
+const itemLiviano = (it) => ({ ...it, imageUrl: sinFotoPesada(it.imageUrl) });
+
 function getMonthKey(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -725,14 +732,14 @@ function QuickDocGenerator({ data, updateData }) {
       date: getToday(),
       clientName,
       clientPhone,
-      items: items.map(it => ({ name: it.name, price: it.price, quantity: it.quantity, imageUrl: it.imageUrl || '' })),
+      items: items.map(it => ({ name: it.name, price: it.price, quantity: it.quantity, imageUrl: sinFotoPesada(it.imageUrl) })),
       total,
       notes: '',
     };
     try {
       const doc = await generateInvoicePDF(invoiceData, settings, nombreDoc);
       downloadInvoicePDF(doc, number, nombreDoc);
-      const record = { id: generateId(), ...invoiceData, customerName: clientName, customerPhone: clientPhone, cartItems: items, createdAt: getToday() };
+      const record = { id: generateId(), ...invoiceData, customerName: clientName, customerPhone: clientPhone, cartItems: items.map(itemLiviano), createdAt: getToday() };
       updateData(cur => {
         const next = { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
         // Solo la FACTURA descuenta stock (mascaras y descartables).
@@ -2528,7 +2535,7 @@ function SalesCartPage({ data, updateData, pageType }) {
       date: getToday(),
       clientName: customerName,
       clientPhone: customerPhone,
-      items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity, imageUrl: c.imageUrl || '' })),
+      items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity, imageUrl: sinFotoPesada(c.imageUrl) })),
       total: cartTotal,
       notes,
       ...(isRemito ? { sigFirma, sigAclaracion, sigDni } : {})
@@ -2536,7 +2543,7 @@ function SalesCartPage({ data, updateData, pageType }) {
     try {
       const doc = await generateInvoicePDF(invoiceData, settings, docType);
       downloadInvoicePDF(doc, number, docType);
-      const record = { id: generateId(), ...invoiceData, customerName, customerPhone, cartItems: cart, createdAt: getToday() };
+      const record = { id: generateId(), ...invoiceData, customerName, customerPhone, cartItems: cart.map(itemLiviano), createdAt: getToday() };
       updateData(cur => {
         const next = { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
         // Solo al FACTURAR (no remito, no cotizacion) se descuenta el stock de mascaras y descartables.

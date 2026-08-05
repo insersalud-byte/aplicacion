@@ -252,6 +252,81 @@ async function flushDirtyLocal(remoteData) {
   return merged;
 }
 
+// ── Aligerado de datos ──────────────────────────────────────────────────────
+// El estado entero se sube en CADA guardado. Con fotos en base64 el blob habia
+// llegado a 4,2 MB y un guardado tardaba ~24 s: parecia que no guardaba y habia
+// que guardar dos veces. Estas migraciones corren una sola vez al cargar.
+
+// 1) Los documentos guardados (cotizaciones/facturas/remitos) copiaban la foto
+//    base64 de cada producto. El PDF ya se genero; en el historial no hace falta.
+function quitarFotosDeDocumentos(data) {
+  let quitadas = 0;
+  const limpiar = (arr) => (Array.isArray(arr) ? arr.map(it => {
+    if (it && typeof it.imageUrl === 'string' && it.imageUrl.startsWith('data:')) {
+      quitadas++;
+      return { ...it, imageUrl: '' };
+    }
+    return it;
+  }) : arr);
+  ['quotations', 'invoices', 'remitos'].forEach(k => {
+    if (!Array.isArray(data[k])) return;
+    data[k] = data[k].map(doc => ({ ...doc, items: limpiar(doc.items), cartItems: limpiar(doc.cartItems) }));
+  });
+  return quitadas;
+}
+
+// 2) Comprime una foto base64 con canvas (mismo criterio que usa la app al subir).
+function comprimirFotoBase64(dataUrl, maxW = 900, quality = 0.8) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const ratio = Math.min(maxW / img.width, 1);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.width * ratio);
+          canvas.height = Math.round(img.height * ratio);
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          const out = canvas.toDataURL('image/jpeg', quality);
+          resolve(out.length < dataUrl.length ? out : dataUrl);
+        } catch { resolve(dataUrl); }
+      };
+      img.onerror = () => resolve(dataUrl);
+      img.src = dataUrl;
+    } catch { resolve(dataUrl); }
+  });
+}
+
+async function comprimirFotosDeProductos(data) {
+  let comprimidas = 0;
+  for (const col of ['mascaras', 'equipment', 'equiposNuevos', 'descartables']) {
+    if (!Array.isArray(data[col])) continue;
+    const nuevos = [];
+    for (const it of data[col]) {
+      const u = it?.imageUrl;
+      // Solo fotos base64 grandes (las chicas ya estan bien).
+      if (typeof u === 'string' && u.startsWith('data:image') && u.length > 60000) {
+        const out = await comprimirFotoBase64(u);
+        if (out !== u) { comprimidas++; nuevos.push({ ...it, imageUrl: out }); continue; }
+      }
+      nuevos.push(it);
+    }
+    data[col] = nuevos;
+  }
+  return comprimidas;
+}
+
+// Corre las migraciones y devuelve true si hubo cambios que convenga guardar.
+async function aligerarDatos(data) {
+  const quitadas = quitarFotosDeDocumentos(data);
+  const comprimidas = await comprimirFotosDeProductos(data);
+  if (quitadas || comprimidas) {
+    console.info(`Datos aligerados: ${quitadas} fotos duplicadas quitadas de documentos, ${comprimidas} fotos comprimidas.`);
+    return true;
+  }
+  return false;
+}
+
 export async function loadData() {
   try {
     setSyncStatus('loading');
@@ -273,6 +348,19 @@ export async function loadData() {
       _lastRemoteTs = remote.updatedAt;
       cacheLocal(data);
       setSyncStatus('ok');
+
+      // Aligerar el blob (una sola vez). Se hace despues de devolver los datos
+      // para no demorar el arranque; el resultado se guarda por la via normal.
+      setTimeout(async () => {
+        try {
+          const copia = JSON.parse(JSON.stringify(data));
+          if (await aligerarDatos(copia)) {
+            await saveData(copia);
+            emitData(copia);
+          }
+        } catch (e) { console.error('No se pudo aligerar los datos:', e); }
+      }, 1500);
+
       return data;
     }
 
