@@ -877,6 +877,9 @@ body {
   .main-content {
     padding: 15px;
     margin-left: 70px;
+    /* Sin esto quedaba el max-width del escritorio (100vw - 240px): en un
+       celular de 375px el contenido se aplastaba a 135px de ancho. */
+    max-width: calc(100vw - 70px);
   }
   
   .grid-2, .grid-3 {
