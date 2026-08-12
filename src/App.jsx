@@ -364,19 +364,6 @@ function HomePage({ data, updateData }) {
     return r.endDate >= today && r.endDate.substring(0, 7) === today.substring(0, 7);
   });
 
-  const homeTodayStr = getToday();
-  const homeTodayParts = homeTodayStr.split('-').map(Number);
-  const homeIn2DaysDate = new Date(homeTodayParts[0], homeTodayParts[1] - 1, homeTodayParts[2] + 2);
-  const homeIn2DaysStr = `${homeIn2DaysDate.getFullYear()}-${String(homeIn2DaysDate.getMonth()+1).padStart(2,'0')}-${String(homeIn2DaysDate.getDate()).padStart(2,'0')}`;
-  const homeExpiringToday = rentals.filter(r => r.endDate === homeTodayStr && r.status !== 'finalizado');
-  const homeExpiringSoon = rentals.filter(r => r.endDate && r.endDate > homeTodayStr && r.endDate <= homeIn2DaysStr && r.status !== 'finalizado');
-  const getPatientNameHome = (id) => patients.find(p => p.id === id)?.name || '-';
-  const getEquipmentNameHome = (id) => equipment.find(e => e.id === id)?.name || '-';
-  // Vencidos de dias anteriores (los que vencen HOY van en el bloque "Vencen HOY" de arriba).
-  const homeAlreadyExpired = rentals.filter(r => {
-    if (r.status === 'finalizado' || !r.endDate) return false;
-    return r.endDate < homeTodayStr;
-  });
   // Tarjeta "Vencidos": vencidos (hoy inclusive) con meses sin pagar.
   const expiredRentals = rentals.filter(r => {
     if (r.status === 'finalizado' || !r.endDate || r.endDate > today) return false;
@@ -408,39 +395,6 @@ function HomePage({ data, updateData }) {
         <h1 className="page-title">Inser Salud</h1>
         <p className="page-subtitle">Gestión de Equipos Respiratorios</p>
       </div>
-
-      {homeExpiringToday.length > 0 && (
-        <div style={{ background: '#FFEBEE', border: '2px solid #EF5350', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, color: '#C62828', marginBottom: 4 }}>🔴 Vencen HOY ({homeExpiringToday.length})</div>
-          {homeExpiringToday.map(r => (
-            <div key={r.id} style={{ fontSize: 13, color: '#B71C1C', marginTop: 2 }}>
-              • {getPatientNameHome(r.patientId)} — {getEquipmentNameHome(r.equipmentId)} — vence {formatDate(r.endDate)}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {homeExpiringSoon.length > 0 && (
-        <div style={{ background: '#FFF3E0', border: '2px solid #FFA726', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}>🟠 Por vencer en 2 dias ({homeExpiringSoon.length})</div>
-          {homeExpiringSoon.map(r => (
-            <div key={r.id} style={{ fontSize: 13, color: '#BF360C', marginTop: 2 }}>
-              • {getPatientNameHome(r.patientId)} — {getEquipmentNameHome(r.equipmentId)} — vence {formatDate(r.endDate)}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {homeAlreadyExpired.length > 0 && (
-        <div style={{ background: '#F3E5F5', border: '2px solid #AB47BC', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, color: '#6A1B9A', marginBottom: 4 }}>⚠️ Vencidos ({homeAlreadyExpired.length})</div>
-          {homeAlreadyExpired.map(r => (
-            <div key={r.id} style={{ fontSize: 13, color: '#4A148C', marginTop: 2 }}>
-              • {getPatientNameHome(r.patientId)} — {getEquipmentNameHome(r.equipmentId)} — vencio {formatDate(r.endDate)}
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="stats-grid">
         <div className="stat-card" style={{ cursor: 'pointer', outline: activeFilter === 'activos' ? '3px solid #1E5AA8' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'activos' ? null : 'activos')}>
