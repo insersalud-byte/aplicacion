@@ -694,14 +694,16 @@ function QuickDocGenerator({ data, updateData }) {
       date: getToday(),
       clientName,
       clientPhone,
-      items: items.map(it => ({ name: it.name, price: it.price, quantity: it.quantity, imageUrl: sinFotoPesada(it.imageUrl) })),
+      // Al PDF van las fotos COMPLETAS (se ven al lado de la descripcion).
+      // Solo el registro que se guarda va sin base64, por peso (ver mas abajo).
+      items: items.map(it => ({ name: it.name, price: it.price, quantity: it.quantity, imageUrl: it.imageUrl || '' })),
       total,
       notes: '',
     };
     try {
       const doc = await generateInvoicePDF(invoiceData, settings, nombreDoc);
       downloadInvoicePDF(doc, number, nombreDoc);
-      const record = { id: generateId(), ...invoiceData, customerName: clientName, customerPhone: clientPhone, cartItems: items.map(itemLiviano), createdAt: getToday() };
+      const record = { id: generateId(), ...invoiceData, items: invoiceData.items.map(itemLiviano), customerName: clientName, customerPhone: clientPhone, cartItems: items.map(itemLiviano), createdAt: getToday() };
       updateData(cur => {
         const next = { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
         // Solo la FACTURA descuenta stock (mascaras y descartables).
@@ -2498,7 +2500,9 @@ function SalesCartPage({ data, updateData, pageType }) {
       date: getToday(),
       clientName: customerName,
       clientPhone: customerPhone,
-      items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity, imageUrl: sinFotoPesada(c.imageUrl) })),
+      // Al PDF van las fotos COMPLETAS (se ven al lado de la descripcion).
+      // Solo el registro que se guarda va sin base64, por peso (ver mas abajo).
+      items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity, imageUrl: c.imageUrl || '' })),
       total: cartTotal,
       notes,
       ...(isRemito ? { sigFirma, sigAclaracion, sigDni } : {})
@@ -2506,7 +2510,7 @@ function SalesCartPage({ data, updateData, pageType }) {
     try {
       const doc = await generateInvoicePDF(invoiceData, settings, docType);
       downloadInvoicePDF(doc, number, docType);
-      const record = { id: generateId(), ...invoiceData, customerName, customerPhone, cartItems: cart.map(itemLiviano), createdAt: getToday() };
+      const record = { id: generateId(), ...invoiceData, items: invoiceData.items.map(itemLiviano), customerName, customerPhone, cartItems: cart.map(itemLiviano), createdAt: getToday() };
       updateData(cur => {
         const next = { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
         // Solo al FACTURAR (no remito, no cotizacion) se descuenta el stock de mascaras y descartables.
