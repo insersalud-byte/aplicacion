@@ -646,32 +646,47 @@ function loadImageAsBase64(src) {
   });
 }
 
+// Corta la espera de una foto: si no llega a tiempo, el PDF sale igual (sin esa
+// foto) en vez de quedarse colgado o fallar. Cada intento tiene su propio tope.
+function conTopeDeTiempo(promesa, ms) {
+  return Promise.race([promesa, new Promise(res => setTimeout(() => res(null), ms))]);
+}
+
 async function toBase64Image(url) {
-  if (!url) return null;
-  if (url.startsWith('data:')) return url;
-  // 1) Carga directa (sirve para same-origin o CDNs que permiten CORS).
-  let result = await loadImageAsBase64(url);
-  if (result) return result;
-  if (/^https?:\/\//.test(url)) {
-    // 2) Proxy propio (funcion de Vercel, same-origin: sin problema de CORS).
-    //    Necesario porque cdn.zyrosite.com no manda Access-Control-Allow-Origin
-    //    y el canvas queda "tainted": la foto no llegaba al PDF.
-    result = await loadImageAsBase64(`/api/server?img=${encodeURIComponent(url)}`);
+  try {
+    if (!url) return null;
+    if (url.startsWith('data:')) return url;
+    // 1) Carga directa (sirve para same-origin o CDNs que permiten CORS).
+    let result = await conTopeDeTiempo(loadImageAsBase64(url), 5000);
     if (result) return result;
-    // 3) Fallback universal: proxy publico de imagenes con CORS.
-    result = await loadImageAsBase64(`https://wsrv.nl/?url=${encodeURIComponent(url)}`);
-    if (result) return result;
+    if (/^https?:\/\//.test(url)) {
+      // 2) Proxy propio (funcion de Vercel, same-origin: sin problema de CORS).
+      //    Necesario porque cdn.zyrosite.com no manda Access-Control-Allow-Origin
+      //    y el canvas queda "tainted": la foto no llegaba al PDF.
+      result = await conTopeDeTiempo(loadImageAsBase64(`/api/server?img=${encodeURIComponent(url)}`), 6000);
+      if (result) return result;
+      // 3) Fallback universal: proxy publico de imagenes con CORS.
+      result = await conTopeDeTiempo(loadImageAsBase64(`https://wsrv.nl/?url=${encodeURIComponent(url)}`), 6000);
+      if (result) return result;
+    }
+    return null;
+  } catch {
+    return null; // una foto nunca debe impedir que se genere el documento
   }
-  return null;
 }
 
 export async function generateInvoicePDF(invoiceData, settings, type = 'factura') {
   const { jsPDF } = await import('jspdf');
 
-  const [logoBase64, ...itemImages] = await Promise.all([
+  // allSettled + tope global: ninguna foto puede tumbar ni colgar el documento.
+  const resultados = await conTopeDeTiempo(Promise.allSettled([
     toBase64Image(window.location.origin + '/logo.jpg'),
     ...invoiceData.items.map(item => toBase64Image(item.imageUrl || ''))
-  ]);
+  ]), 20000);
+  const fotos = Array.isArray(resultados)
+    ? resultados.map(r => (r.status === 'fulfilled' ? r.value : null))
+    : new Array(invoiceData.items.length + 1).fill(null);
+  const [logoBase64, ...itemImages] = fotos;
   const hasAnyImage = itemImages.some(Boolean);
 
   const doc = new jsPDF('p', 'mm', 'a4');

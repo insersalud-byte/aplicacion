@@ -722,7 +722,7 @@ function QuickDocGenerator({ data, updateData }) {
       setItems([]); setClientName(''); setClientPhone(''); setSearch(''); setCategory('');
     } catch (err) {
       console.error(err);
-      alert('Error al generar PDF');
+      alert('Error al generar PDF:\n\n' + (err?.message || err) + '\n\nSacale una foto a este mensaje si el problema se repite.');
     }
   };
 
@@ -2529,7 +2529,7 @@ function SalesCartPage({ data, updateData, pageType }) {
       clearCart();
     } catch (err) {
       console.error(err);
-      alert('Error al generar PDF');
+      alert('Error al generar PDF:\n\n' + (err?.message || err) + '\n\nSacale una foto a este mensaje si el problema se repite.');
     }
   };
 
