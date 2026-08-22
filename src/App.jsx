@@ -669,6 +669,19 @@ function QuickDocGenerator({ data, updateData }) {
     setSearch('');
   };
 
+  // Los equipos son solo de alquiler: si se pasa a factura o cotizacion hay que sacarlos.
+  const cambiarDocType = (v) => {
+    setDocType(v);
+    if (v !== 'remito') {
+      if (category === 'equipos') { setCategory(''); setSearch(''); }
+      const quedan = items.filter(it => it._cat !== 'equipos');
+      if (quedan.length !== items.length) {
+        setItems(quedan);
+        alert('Los equipos de alquiler se quitaron del documento: solo se pueden incluir en un remito.');
+      }
+    }
+  };
+
   const addLibre = () => {
     if (!libre.name || !(Number(libre.price) > 0)) { alert('Ingresá nombre y precio del item'); return; }
     setItems(prev => [...prev, { id: 'libre-' + Date.now(), name: libre.name, detail: '', price: Number(libre.price), imageUrl: '', _cat: 'libre', quantity: 1 }]);
@@ -739,7 +752,7 @@ function QuickDocGenerator({ data, updateData }) {
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
         {[['factura', '🧾 Factura'], ['remito', '📝 Remito'], ['cotizacion', '💰 Cotización']].map(([v, lbl]) => (
-          <button key={v} className={`filter-btn ${docType === v ? 'active' : ''}`} onClick={() => setDocType(v)}>{lbl}</button>
+          <button key={v} className={`filter-btn ${docType === v ? 'active' : ''}`} onClick={() => cambiarDocType(v)}>{lbl}</button>
         ))}
         {docType === 'factura' && <span style={{ fontSize: 12, color: '#5A6978', alignSelf: 'center' }}>La factura descuenta stock</span>}
       </div>
@@ -762,7 +775,7 @@ function QuickDocGenerator({ data, updateData }) {
         <label className="form-label">Agregar producto</label>
         <select className="form-select" value={category} onChange={e => { setCategory(e.target.value); setSearch(''); }}>
           <option value="">Elegir categoría...</option>
-          <option value="equipos">🔧 Equipos</option>
+          {docType === 'remito' && <option value="equipos">🔧 Equipos (alquiler)</option>}
           <option value="mascarillas">😷 Mascarillas</option>
           <option value="equiposNuevos">🆕 Equipos Nuevos</option>
           <option value="descartables">🧤 Descartables</option>
@@ -2505,14 +2518,15 @@ function SalesCartPage({ data, updateData, pageType }) {
 
   const categories = [
     { value: 'todos', label: 'Todos' },
-    { value: 'equipos', label: '🔧 Equipos' },
+    // Los equipos son solo de alquiler: no se venden, asi que no van en factura ni cotizacion.
+    ...(isRemito ? [{ value: 'equipos', label: '🔧 Equipos (alquiler)' }] : []),
     { value: 'equiposNuevos', label: '🆕 Equipos Nuevos' },
     { value: 'mascarillas', label: '😷 Mascarillas' },
     { value: 'descartables', label: '🧤 Descartables' }
   ];
 
   const allProducts = [
-    ...(equipment || []).map(e => ({ ...e, price: getEquipPrice(e), _cat: 'equipos', _label: 'Equipo' })),
+    ...(isRemito ? (equipment || []).map(e => ({ ...e, price: getEquipPrice(e), _cat: 'equipos', _label: 'Equipo' })) : []),
     ...(equiposNuevos || []).map(e => ({ ...e, _cat: 'equiposNuevos', _label: 'Equipo Nuevo' })),
     ...(mascaras || []).map(m => ({ ...m, price: m.precio || m.price || 0, _cat: 'mascarillas', _label: 'Mascarilla' })),
     ...(descartables || []).map(d => ({ ...d, _cat: 'descartables', _label: 'Descartable' }))
