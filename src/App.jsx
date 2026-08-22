@@ -1798,13 +1798,21 @@ function EquipmentPage({ data, updateData }) {
   });
 
   const handleSave = (equip) => {
-    const isNew = !equip.id;
-    if (!confirm(isNew ? `¿Agregar el equipo "${equip.name}"?` : `¿Guardar los cambios del equipo "${equip.name}"?`)) return;
+    // Al dar de alta puede venir una lista: una unidad por cada numero de serie.
+    const esLista = Array.isArray(equip);
+    const nombre = esLista ? (equip[0]?.name || '') : equip.name;
+    const isNew = esLista || !equip.id;
+    const msg = esLista
+      ? `¿Agregar ${equip.length} equipos individuales de "${nombre}", uno por cada numero de serie?`
+      : (isNew ? `¿Agregar el equipo "${nombre}"?` : `¿Guardar los cambios del equipo "${nombre}"?`);
+    if (!confirm(msg)) return;
     updateData(cur => ({
       ...cur,
-      equipment: isNew
-        ? [...cur.equipment, { ...equip, id: generateId() }]
-        : cur.equipment.map(e => e.id === equip.id ? equip : e)
+      equipment: esLista
+        ? [...cur.equipment, ...equip.map(it => ({ ...it, id: generateId() }))]
+        : isNew
+          ? [...cur.equipment, { ...equip, id: generateId() }]
+          : cur.equipment.map(e => e.id === equip.id ? equip : e)
     }));
     setShowModal(false);
     setEditingEquipment(null);
@@ -1896,6 +1904,15 @@ function EquipmentPage({ data, updateData }) {
 
 function EquipmentModal({ equipment, onSave, onClose }) {
   const [form, setForm] = useState(equipment || { name: '', serialNumber: '', type: 'otro', status: 'disponible', description: '', available: true, imageUrl: '', ownership: 'propio', rentalPrice: '' });
+  // Cada registro de Equipos es UNA unidad fisica. Por eso la cantidad solo aplica al alta:
+  // se crean N equipos, uno por cada numero de serie.
+  const [cantidad, setCantidad] = useState(1);
+  const [serials, setSerials] = useState([equipment?.serialNumber || '']);
+  const setCant = (v) => {
+    const c = Math.max(1, Math.min(50, Number(v) || 1));
+    setCantidad(c);
+    setSerials(prev => { const a = [...prev]; while (a.length < c) a.push(''); return a.slice(0, c); });
+  };
 
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
@@ -1919,11 +1936,18 @@ function EquipmentModal({ equipment, onSave, onClose }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!form.name || !form.serialNumber) {
-      alert('Nombre y serie son obligatorios');
+    const series = serials.slice(0, equipment ? 1 : cantidad).map(s => (s || '').trim());
+    if (!form.name || series.some(s => !s)) {
+      alert(series.length > 1 ? 'Nombre y el numero de serie de cada unidad son obligatorios' : 'Nombre y serie son obligatorios');
       return;
     }
-    onSave({ ...form, rentalPrice: Number(form.rentalPrice) || 0 });
+    if (new Set(series).size !== series.length) { alert('Hay numeros de serie repetidos. Cada unidad tiene que tener el suyo.'); return; }
+    const base = { ...form, rentalPrice: Number(form.rentalPrice) || 0 };
+    if (!equipment && series.length > 1) {
+      onSave(series.map(s => ({ ...base, serialNumber: s })));
+      return;
+    }
+    onSave({ ...base, serialNumber: series[0] });
   };
 
   return (
@@ -1940,9 +1964,19 @@ function EquipmentModal({ equipment, onSave, onClose }) {
             <input type="text" className="form-input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required />
           </div>
           
+          {!equipment && (
+            <div className="form-group">
+              <label className="form-label">Cantidad</label>
+              <input type="number" min="1" className="form-input" value={cantidad} onChange={e => setCant(e.target.value)} />
+            </div>
+          )}
+
           <div className="form-group">
-            <label className="form-label">Número de serie *</label>
-            <input type="text" className="form-input" value={form.serialNumber} onChange={e => setForm({...form, serialNumber: e.target.value})} required />
+            <label className="form-label">Número de serie {cantidad > 1 && !equipment ? 'por unidad *' : '*'}</label>
+            {serials.slice(0, equipment ? 1 : cantidad).map((s, i) => (
+              <input key={i} type="text" className="form-input" placeholder={cantidad > 1 && !equipment ? `Unidad ${i + 1}` : 'N° de serie'} value={s} onChange={e => setSerials(prev => prev.map((x, j) => j === i ? e.target.value : x))} style={{ marginBottom: 6 }} required />
+            ))}
+            {cantidad > 1 && !equipment && <div style={{ fontSize: 12, color: '#5A6978' }}>Se crearán {cantidad} equipos individuales, uno por cada número de serie.</div>}
           </div>
           
           <div className="form-group">
