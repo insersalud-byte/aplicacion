@@ -2118,6 +2118,7 @@ function EquiposNuevosPage({ data, updateData }) {
               {eq.priceVentaUsd > 0 && <div style={{ fontSize: 12, color: '#5A6978' }}>Venta: USD {eq.priceVentaUsd}</div>}
               <div style={{ fontSize: 13, fontWeight: 600, color: Number(eq.stock) > 0 ? '#43A047' : '#E53935', marginBottom: 8 }}>Stock: {Number(eq.stock) || 0}</div>
               <div style={{ display: 'flex', gap: 6 }}>
+                <button className="btn btn-sm btn-secondary" title="Otra unidad con distinto N° de serie" onClick={() => { setEditing({ ...eq, id: null, serialNumber: '', stock: 1 }); setShowModal(true); }}>📋</button>
                 <button className="btn btn-sm btn-secondary" onClick={() => { setEditing(eq); setShowModal(true); }}>✏️</button>
                 <button className="btn btn-sm btn-danger" onClick={() => handleDelete(eq.id)}>🗑️</button>
               </div>
@@ -2171,7 +2172,7 @@ function EquiposNuevosPage({ data, updateData }) {
             <div className="modal-overlay" onClick={() => { setShowModal(false); setEditing(null); }}>
               <div className="modal" onClick={e => e.stopPropagation()}>
                 <div className="modal-header">
-                  <h2 className="modal-title">{editing ? 'Editar' : 'Nuevo'} Equipo</h2>
+                  <h2 className="modal-title">{editing && editing.id ? 'Editar' : 'Nuevo'} Equipo</h2>
                   <span className="modal-close" onClick={() => { setShowModal(false); setEditing(null); }}>x</span>
                 </div>
                 <form onSubmit={e => {
