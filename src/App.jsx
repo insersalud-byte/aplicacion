@@ -9,6 +9,11 @@ import './App.css';
 const sinFotoPesada = (url) => (typeof url === 'string' && url.startsWith('data:') ? '' : (url || ''));
 const itemLiviano = (it) => ({ ...it, imageUrl: sinFotoPesada(it.imageUrl) });
 
+// Numero de serie: distingue unidades que se llaman igual al facturar.
+const serieDe = (it) => (it && it.serialNumber ? String(it.serialNumber).trim() : '');
+const etiquetaSerie = (it) => { const s = serieDe(it); return s ? `N° serie: ${s}` : ''; };
+const nombreConSerie = (it) => { const s = serieDe(it); return s ? `${it.name} (N° de serie: ${s})` : it.name; };
+
 // Los mas nuevos SIEMPRE primero, en listas y en desplegables.
 // Desempata por id: los ids se generan con timestamp, asi que el mayor es el
 // mas reciente (necesario porque createdAt es solo la fecha, sin hora).
@@ -645,14 +650,14 @@ function QuickDocGenerator({ data, updateData }) {
   };
 
   const catalogos = {
-    equipos: { label: 'Equipos', items: equipment.map(e => ({ id: e.id, name: e.name, detail: e.serialNumber || '', price: equipPrice(e), imageUrl: e.imageUrl || '', _cat: 'equipos' })) },
+    equipos: { label: 'Equipos', items: equipment.map(e => ({ id: e.id, name: e.name, detail: etiquetaSerie(e), serialNumber: e.serialNumber || '', price: equipPrice(e), imageUrl: e.imageUrl || '', _cat: 'equipos' })) },
     mascarillas: { label: 'Mascarillas', items: mascaras.map(m => ({ id: m.id, name: m.name, detail: m.talle ? `Talle ${m.talle}` : '', price: Number(m.precio) || 0, imageUrl: m.imageUrl || '', _cat: 'mascarillas' })) },
-    equiposNuevos: { label: 'Equipos Nuevos', items: equiposNuevos.map(e => ({ id: e.id, name: e.name, detail: '', price: Number(e.price) || 0, imageUrl: e.imageUrl || '', _cat: 'equiposNuevos' })) },
+    equiposNuevos: { label: 'Equipos Nuevos', items: equiposNuevos.map(e => ({ id: e.id, name: e.name, detail: etiquetaSerie(e), serialNumber: e.serialNumber || '', price: Number(e.price) || 0, imageUrl: e.imageUrl || '', _cat: 'equiposNuevos' })) },
     descartables: { label: 'Descartables', items: descartables.map(d => ({ id: d.id, name: d.name, detail: d.unit || '', price: Number(d.price) || 0, imageUrl: '', _cat: 'descartables' })) },
   };
 
   const resultados = category && category !== 'libre' && search
-    ? catalogos[category].items.filter(it => (it.name || '').toLowerCase().includes(search.toLowerCase())).slice(0, 8)
+    ? catalogos[category].items.filter(it => `${it.name || ''} ${serieDe(it)}`.toLowerCase().includes(search.toLowerCase())).slice(0, 20)
     : [];
 
   const addItem = (it) => {
@@ -696,7 +701,7 @@ function QuickDocGenerator({ data, updateData }) {
       clientPhone,
       // Al PDF van las fotos COMPLETAS (se ven al lado de la descripcion).
       // Solo el registro que se guarda va sin base64, por peso (ver mas abajo).
-      items: items.map(it => ({ name: it.name, price: it.price, quantity: it.quantity, imageUrl: it.imageUrl || '' })),
+      items: items.map(it => ({ name: nombreConSerie(it), price: it.price, quantity: it.quantity, imageUrl: it.imageUrl || '' })),
       total,
       notes: '',
     };
@@ -2481,7 +2486,7 @@ function SalesCartPage({ data, updateData, pageType }) {
 
   const filtered = allProducts.filter(p => {
     if (category !== 'todos' && p._cat !== category) return false;
-    if (search && !(p.name || '').toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !`${p.name || ''} ${serieDe(p)}`.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
 
@@ -2540,7 +2545,7 @@ function SalesCartPage({ data, updateData, pageType }) {
       clientPhone: customerPhone,
       // Al PDF van las fotos COMPLETAS (se ven al lado de la descripcion).
       // Solo el registro que se guarda va sin base64, por peso (ver mas abajo).
-      items: cart.map(c => ({ name: c.name, price: c.price, quantity: c.quantity, imageUrl: c.imageUrl || '' })),
+      items: cart.map(c => ({ name: nombreConSerie(c), price: c.price, quantity: c.quantity, imageUrl: c.imageUrl || '' })),
       total: cartTotal,
       notes,
       ...(isRemito ? { sigFirma, sigAclaracion, sigDni } : {})
@@ -2607,6 +2612,7 @@ function SalesCartPage({ data, updateData, pageType }) {
             <div key={p.id + p._cat} style={{ border: '1px solid #E3F2FD', borderRadius: 8, padding: 10, background: '#FAFDFF' }}>
               {p.imageUrl && <img src={p.imageUrl} alt={p.name} style={{ width: '100%', height: 80, objectFit: 'cover', borderRadius: 6, marginBottom: 6 }} />}
               <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
+              {serieDe(p) && <div style={{ fontSize: 11, color: '#1E5AA8', fontWeight: 600 }}>{etiquetaSerie(p)}</div>}
               <div style={{ fontSize: 11, color: '#5A6978' }}>{p._label}</div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
                 <span style={{ color: '#1E5AA8', fontWeight: 700 }}>{formatCurrency(p.price)}</span>
@@ -2665,6 +2671,7 @@ function SalesCartPage({ data, updateData, pageType }) {
           <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #E3F2FD' }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 600, fontSize: 13 }}>{c.name}</div>
+              {serieDe(c) && <div style={{ fontSize: 11, color: '#1E5AA8', fontWeight: 600 }}>{etiquetaSerie(c)}</div>}
               <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12 }}>
                 <span>$</span>
                 <input type="number" style={{ width: 80, border: '2px solid #90CAF9', borderRadius: 6, padding: '3px 6px', fontSize: 13, fontWeight: 700, color: '#1E5AA8', background: '#F0F7FF' }} value={c.price} onChange={e => updateCartItem(c.id, 'price', Number(e.target.value))} />
