@@ -2006,20 +2006,31 @@ function EquiposNuevosPage({ data, updateData }) {
 
   const filtered = (equiposNuevos || []).filter(e => !search || (e.name || '').toLowerCase().includes(search.toLowerCase()));
 
-  const handleSave = (payload) => {
+  // reemplazaId: el equipo existente se divide en varias unidades individuales, una por numero de serie
+  const handleSave = (payload, reemplazaId) => {
     const isArray = Array.isArray(payload);
     const nombre = isArray ? (payload[0]?.name || '') : payload.name;
     const cant = isArray ? payload.length : 1;
-    const msg = payload.id
-      ? `¿Guardar los cambios de "${nombre}"?`
-      : (cant > 1 ? `¿Agregar ${cant} unidades individuales de "${nombre}" al catalogo?` : `¿Agregar "${nombre}" al catalogo?`);
+    const msg = reemplazaId
+      ? `"${nombre}" pasa a ser ${cant} equipos individuales, uno por cada numero de serie. ¿Confirmas?`
+      : payload.id
+        ? `¿Guardar los cambios de "${nombre}"?`
+        : (cant > 1 ? `¿Agregar ${cant} unidades individuales de "${nombre}" al catalogo?` : `¿Agregar "${nombre}" al catalogo?`);
     if (!confirm(msg)) return;
-    updateData(cur => ({
-      ...cur,
-      equiposNuevos: payload.id
-        ? (cur.equiposNuevos || []).map(e => e.id === payload.id ? payload : e)
-        : [...(cur.equiposNuevos || []), ...(isArray ? payload : [payload]).map(it => ({ ...it, id: generateId() }))]
-    }));
+    updateData(cur => {
+      const lista = cur.equiposNuevos || [];
+      if (reemplazaId) {
+        // la primera unidad conserva el id original para no perder la posicion en el catalogo
+        const unidades = payload.map((it, i) => ({ ...it, id: i === 0 ? reemplazaId : generateId() }));
+        return { ...cur, equiposNuevos: lista.flatMap(e => e.id === reemplazaId ? unidades : [e]) };
+      }
+      return {
+        ...cur,
+        equiposNuevos: payload.id
+          ? lista.map(e => e.id === payload.id ? payload : e)
+          : [...lista, ...(isArray ? payload : [payload]).map(it => ({ ...it, id: generateId() }))]
+      };
+    });
     setShowModal(false);
     setEditing(null);
   };
@@ -2066,12 +2077,25 @@ function EquiposNuevosPage({ data, updateData }) {
         const EquipoNuevoModal = () => {
           const [form, setForm] = useState(editing || { name: '', description: '', price: '', priceUsd: '', priceVentaUsd: '', stock: '', imageUrl: '', serialNumber: '' });
           const [cantidad, setCantidad] = useState(1);
-          const [serials, setSerials] = useState(editing ? [editing.serialNumber || ''] : ['']);
+          const [serials, setSerials] = useState(() => {
+            if (!editing) return [''];
+            const c = Math.max(1, Math.min(50, Number(editing.stock) || 1));
+            const a = [editing.serialNumber || ''];
+            while (a.length < c) a.push('');
+            return a;
+          });
+          const ajustarFilas = (c) => setSerials(prev => { const a = [...prev]; while (a.length < c) a.push(''); return a.slice(0, c); });
           const setCant = (n) => {
             const c = Math.max(1, Math.min(50, Number(n) || 1));
             setCantidad(c);
-            setSerials(prev => { const a = [...prev]; while (a.length < c) a.push(''); return a.slice(0, c); });
+            ajustarFilas(c);
           };
+          // al editar, el stock manda cuantos numeros de serie se piden
+          const setStock = (n) => {
+            setForm(f => ({ ...f, stock: n }));
+            ajustarFilas(Math.max(1, Math.min(50, Number(n) || 1)));
+          };
+          const unidadesEdit = Math.max(1, Math.min(50, Number(form.stock) || 1));
           const handleImg = (e) => {
             const file = e.target.files[0];
             if (!file) return;
@@ -2103,7 +2127,15 @@ function EquiposNuevosPage({ data, updateData }) {
                   if (!form.name) { alert('Nombre obligatorio'); return; }
                   const base = { ...form, price: Number(form.price), priceUsd: Number(form.priceUsd || 0), priceVentaUsd: Number(form.priceVentaUsd || 0) };
                   if (editing) {
-                    handleSave({ ...base, id: editing.id, stock: Number(form.stock || 0), serialNumber: (serials[0] || '').trim() });
+                    const stk = Number(form.stock || 0);
+                    const series = serials.slice(0, Math.max(1, stk)).map(s => (s || '').trim());
+                    const cargadas = series.filter(Boolean);
+                    if (new Set(cargadas).size !== cargadas.length) { alert('Hay numeros de serie repetidos. Cada unidad tiene que tener el suyo.'); return; }
+                    if (stk >= 2 && cargadas.length >= 2) {
+                      handleSave(series.map(s => ({ ...base, stock: 1, serialNumber: s })), editing.id);
+                    } else {
+                      handleSave({ ...base, id: editing.id, stock: stk, serialNumber: (series[0] || '') });
+                    }
                   } else {
                     const items = serials.slice(0, cantidad).map(s => ({ ...base, stock: 1, serialNumber: (s || '').trim() }));
                     handleSave(items);
@@ -2114,12 +2146,18 @@ function EquiposNuevosPage({ data, updateData }) {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     <div className="form-group"><label className="form-label">Precio ARS</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
                     {editing
-                      ? <div className="form-group"><label className="form-label">Stock</label><input type="number" className="form-input" value={form.stock || ''} onChange={e => setForm({...form, stock: e.target.value})} /></div>
+                      ? <div className="form-group"><label className="form-label">Stock</label><input type="number" min="0" className="form-input" value={form.stock || ''} onChange={e => setStock(e.target.value)} /></div>
                       : <div className="form-group"><label className="form-label">Cantidad</label><input type="number" min="1" className="form-input" value={cantidad} onChange={e => setCant(e.target.value)} /></div>
                     }
                   </div>
                   {editing ? (
-                    <div className="form-group"><label className="form-label">N° de serie</label><input type="text" className="form-input" value={serials[0] || ''} onChange={e => setSerials([e.target.value])} /></div>
+                    <div className="form-group">
+                      <label className="form-label">N° de serie {unidadesEdit > 1 ? 'por unidad' : ''}</label>
+                      {serials.slice(0, unidadesEdit).map((s, i) => (
+                        <input key={i} type="text" className="form-input" placeholder={unidadesEdit > 1 ? `Unidad ${i + 1}` : 'N° de serie'} value={s} onChange={e => setSerials(prev => prev.map((x, j) => j === i ? e.target.value : x))} style={{ marginBottom: 6 }} />
+                      ))}
+                      {unidadesEdit > 1 && <div style={{ fontSize: 12, color: '#5A6978' }}>Si cargas el numero de serie de cada unidad, al guardar se separan en {unidadesEdit} equipos individuales.</div>}
+                    </div>
                   ) : (
                     <div className="form-group">
                       <label className="form-label">N° de serie {cantidad > 1 ? 'por unidad' : ''}</label>
