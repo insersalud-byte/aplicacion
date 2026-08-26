@@ -2910,16 +2910,35 @@ function ContabilidadPage({ data, updateData }) {
   // finalizados, igual que en Inicio, para que los dos numeros coincidan; en los
   // meses ya cerrados se cuentan, porque esa plata entro igual.
   const arrancaEnMes = (r, mk) => (r.startDate || '').slice(0, 7) === mk;
+  // Baja: finalizedAt es lo correcto, pero el campo se agrego despues y falta en
+  // varios; se cae a endDate. Los que no tienen ninguna fecha quedan sin mes.
+  const mesDeBaja = (r) => String(r.finalizedAt || r.endDate || '').slice(0, 7);
   const cobradoEnMes = (r, mk) => isRentalPaidForMonth(r, mk)
     || (arrancaEnMes(r, mk) && (mk !== mesActual || r.status !== 'finalizado'));
 
   const alquilerCobradoDeMes = (mk) => rentals
     .filter(r => cobradoEnMes(r, mk))
     .reduce((s, r) => s + (Number(r.price) || 0), 0);
+  // Vigente en el mes: arranco antes o durante y todavia no habia terminado. Si se
+  // cobro ese mes, estaba vigente por definicion. El mes de la baja solo cuenta si
+  // efectivamente se cobro, para no inventar deuda de un alquiler que ya termino.
+  const vigenteEnMes = (r, mk) => {
+    if (cobradoEnMes(r, mk)) return true;
+    const inicio = (r.startDate || '').slice(0, 7);
+    if (!inicio || inicio > mk) return false;
+    if (r.status === 'finalizado') {
+      const baja = mesDeBaja(r);
+      return !baja || baja > mk;
+    }
+    return true;
+  };
   const alquilerContratadoDeMes = (mk) => rentals
-    .filter(r => isRentalInMonth(r, mk))
+    .filter(r => vigenteEnMes(r, mk))
     .reduce((s, r) => s + (Number(r.price) || 0), 0);
   const entregasDeMes = (mk) => rentals.filter(r => arrancaEnMes(r, mk)).length;
+  const bajasDeMes = (mk) => rentals.filter(r => r.status === 'finalizado' && mesDeBaja(r) === mk).length;
+  const activosDeMes = (mk) => rentals.filter(r => vigenteEnMes(r, mk)).length;
+  const bajasSinFecha = rentals.filter(r => r.status === 'finalizado' && !mesDeBaja(r)).length;
 
   // ---- Ganancia de un mes ----
   const resumenDeMes = (mk) => {
@@ -3207,6 +3226,88 @@ function ContabilidadPage({ data, updateData }) {
         </div>
         <p style={{ fontSize: 11, color: '#90A4AE', marginTop: 10 }}>
           Ventas = facturas por su fecha. Alquileres = lo cobrado segun la seccion Alquileres (mes tildado como pagado, o mes de alta, que se cobra al iniciar).
+        </p>
+      </div>
+
+      {/* Alquileres mes a mes */}
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3 className="card-title">Alquileres mes a mes</h3>
+        <p style={{ fontSize: 12, color: '#5A6978', marginTop: 0 }}>Como se movio el parque en alquiler: cuantos hubo, cuantos entraron y salieron, y cuanto se cobro de lo contratado.</p>
+        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#5A6978', marginBottom: 6, flexWrap: 'wrap' }}>
+          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#90CAF9', borderRadius: 2, marginRight: 4 }} />Contratado</span>
+          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#00897B', borderRadius: 2, marginRight: 4 }} />Cobrado</span>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', minWidth: 460, height: 'auto' }} role="img">
+            <line x1={padX} y1={H - padY} x2={W - padX} y2={H - padY} stroke="#CFD8DC" strokeWidth="1" />
+            {(() => {
+              const filas = serieGrafico.map(s => ({ mk: s.mk, contratado: alquilerContratadoDeMes(s.mk), cobrado: s.alquiler }));
+              const tope = Math.max(1, ...filas.map(r => r.contratado));
+              const alt = (v) => Math.max(0, ((H - padY * 2) * v) / tope);
+              return filas.map((r, i) => {
+                const x0 = padX + i * grupoW + gap / 2;
+                const hc = alt(r.contratado), hk = alt(r.cobrado);
+                return (
+                  <g key={r.mk}>
+                    <rect x={x0} y={H - padY - hc} width={barW} height={hc} fill="#90CAF9" rx="3">
+                      <title>{`${formatMonthLabel(r.mk)} — contratado ${formatCurrency(r.contratado)}`}</title>
+                    </rect>
+                    <rect x={x0 + barW + 2} y={H - padY - hk} width={barW} height={hk} fill="#00897B" rx="3">
+                      <title>{`${formatMonthLabel(r.mk)} — cobrado ${formatCurrency(r.cobrado)}`}</title>
+                    </rect>
+                    <text x={x0 + barW} y={H - padY + 12} textAnchor="middle" fontSize="10" fill="#5A6978">{mesCorto(r.mk)}</text>
+                  </g>
+                );
+              });
+            })()}
+          </svg>
+        </div>
+
+        <div className="table-container" style={{ overflowX: 'auto', marginTop: 12 }}>
+          <table className="table" style={{ minWidth: 700 }}>
+            <thead>
+              <tr>
+                <th>Mes</th>
+                <th style={{ textAlign: 'center' }}>Activos</th>
+                <th style={{ textAlign: 'center' }}>Altas</th>
+                <th style={{ textAlign: 'center' }}>Bajas</th>
+                <th style={{ textAlign: 'right' }}>Contratado</th>
+                <th style={{ textAlign: 'right' }}>Cobrado</th>
+                <th style={{ textAlign: 'right' }}>Pendiente</th>
+                <th style={{ textAlign: 'center' }}>Cobranza</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...meses].reverse().map(mk => {
+                const contr = alquilerContratadoDeMes(mk);
+                const cobr = alquilerCobradoDeMes(mk);
+                const pend = Math.max(0, contr - cobr);
+                const pct = contr ? Math.round((cobr / contr) * 100) : 0;
+                const altas = entregasDeMes(mk);
+                const bajas = bajasDeMes(mk);
+                const neto = altas - bajas;
+                return (
+                  <tr key={mk} style={{ background: mk === mes ? '#E8F5E9' : undefined, cursor: 'pointer' }} onClick={() => setMes(mk)}>
+                    <td style={{ fontWeight: mk === mes ? 700 : 500 }}>{formatMonthLabel(mk)}</td>
+                    <td style={{ textAlign: 'center', fontWeight: 600 }}>{activosDeMes(mk)}</td>
+                    <td style={{ textAlign: 'center', color: altas ? '#2E7D32' : '#B0BEC5', fontWeight: 600 }}>{altas ? `+${altas}` : '—'}</td>
+                    <td style={{ textAlign: 'center', color: bajas ? '#E53935' : '#B0BEC5', fontWeight: 600 }}>{bajas ? `−${bajas}` : '—'}</td>
+                    <td style={{ textAlign: 'right' }}>{formatCurrency(contr)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600, color: '#00695C' }}>{formatCurrency(cobr)}</td>
+                    <td style={{ textAlign: 'right', color: pend ? '#E53935' : '#B0BEC5' }}>{pend ? formatCurrency(pend) : '—'}</td>
+                    <td style={{ textAlign: 'center' }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, padding: '2px 8px', borderRadius: 10, color: '#fff', background: pct >= 80 ? '#2E7D32' : pct >= 50 ? '#F9A825' : '#E53935' }}>{pct}%</span>
+                      {neto !== 0 && <div style={{ fontSize: 10, color: neto > 0 ? '#2E7D32' : '#E53935', marginTop: 2 }}>{neto > 0 ? `+${neto}` : neto} neto</div>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p style={{ fontSize: 11, color: '#90A4AE', marginTop: 10 }}>
+          Activos = alquileres vigentes ese mes. Altas = los que arrancaron. Bajas = los finalizados, por su fecha de baja (o la de vencimiento si no quedo registrada).
+          {bajasSinFecha > 0 && ` Hay ${bajasSinFecha} alquiler(es) finalizado(s) sin ninguna fecha, que no entran en la columna Bajas.`}
         </p>
       </div>
     </div>
