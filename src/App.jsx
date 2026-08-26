@@ -224,6 +224,7 @@ function App() {
       case 'calendar': return <CalendarPage data={data} />;
       case 'descartables': return <DescartablesPage data={data} updateData={updateData} />;
       case 'facturacion': return <FacturacionPage data={data} updateData={updateData} />;
+      case 'contabilidad': return <ContabilidadPage data={data} updateData={updateData} />;
       case 'settings': return <SettingsPage data={data} updateData={updateData} />;
       case 'api': return <ApiPage />;
       default: return <HomePage data={data} updateData={updateData} />;
@@ -284,6 +285,10 @@ function App() {
         <div className={`nav-item ${currentPage === 'facturacion' ? 'active' : ''}`} onClick={() => setCurrentPage('facturacion')}>
           <span className="nav-icon">🛒</span>
           <span className="nav-label">Facturación</span>
+        </div>
+        <div className={`nav-item ${currentPage === 'contabilidad' ? 'active' : ''}`} onClick={() => setCurrentPage('contabilidad')}>
+          <span className="nav-icon">📊</span>
+          <span className="nav-label">Contabilidad</span>
         </div>
         
         <div className={`nav-item ${currentPage === 'settings' ? 'active' : ''}`} onClick={() => setCurrentPage('settings')}>
@@ -2821,6 +2826,389 @@ function QuotationsPage({ data, updateData }) {
         </button>
       </div>
       <SalesCartPage key={docType} data={data} updateData={updateData} pageType={docType} />
+    </div>
+  );
+}
+
+// ============ CONTABILIDAD ============
+// Agrupa en una sola pantalla la plata que entra (ventas + alquileres),
+// la ganancia estimada, el estado del parque y la evolucion mes a mes.
+//
+// Fuentes: ventas = invoices (por fecha del documento). Alquileres = seccion
+// Alquileres (precio mensual + paymentStatusByMonth), NO las facturas.
+//
+// Categorias del parque: se derivan del NOMBRE del equipo, no del campo type,
+// porque type esta sin cargar en 47 de 73 equipos (dice "otro" hasta en CPAP).
+const CATEGORIAS_EQUIPO = [
+  { key: 'Concentradores', test: /concentrador/i },
+  { key: 'BiPAP', test: /bipap|bpap/i },
+  { key: 'CPAP / AutoCPAP', test: /cpap|yamind/i },
+  { key: 'Ventiladores', test: /ventilador|stellar|respirador|legendair/i },
+  { key: 'Oxigeno portatil', test: /mochila|cilindro|tubo|oxigeno/i },
+  { key: 'Aspiradores', test: /aspirador/i },
+  { key: 'Tos asistida', test: /cough|tos\b/i },
+];
+const categoriaDeEquipo = (nombre) => {
+  const n = String(nombre || '');
+  const hit = CATEGORIAS_EQUIPO.find(c => c.test.test(n));
+  return hit ? hit.key : 'Otros';
+};
+
+const mesSiguiente = (mk) => {
+  let [y, m] = mk.split('-').map(Number);
+  m++; if (m > 12) { m = 1; y++; }
+  return `${y}-${String(m).padStart(2, '0')}`;
+};
+const mesAnterior = (mk) => {
+  let [y, m] = mk.split('-').map(Number);
+  m--; if (m < 1) { m = 12; y--; }
+  return `${y}-${String(m).padStart(2, '0')}`;
+};
+
+function ContabilidadPage({ data, updateData }) {
+  const { invoices = [], rentals = [], equipment = [], settings = {} } = data;
+  const mesActual = getToday().slice(0, 7);
+  const [mes, setMes] = useState(mesActual);
+
+  // ---- Parametros editables (se guardan en settings) ----
+  const guardada = settings.contabilidad || {};
+  const [cfg, setCfg] = useState({
+    margenBruto: guardada.margenBruto ?? 30,
+    margenNeto: guardada.margenNeto ?? 20,
+    gastoEntrega: guardada.gastoEntrega ?? 0,
+  });
+  const sinGuardar = Number(cfg.margenBruto) !== Number(guardada.margenBruto ?? 30)
+    || Number(cfg.margenNeto) !== Number(guardada.margenNeto ?? 20)
+    || Number(cfg.gastoEntrega) !== Number(guardada.gastoEntrega ?? 0);
+  const guardarCfg = () => {
+    if (!confirm(`¿Guardar los parametros? Margen bruto ${cfg.margenBruto}%, neto ${cfg.margenNeto}%, entrega ${formatCurrency(Number(cfg.gastoEntrega) || 0)}.`)) return;
+    updateData(cur => ({
+      ...cur,
+      settings: {
+        ...(cur.settings || {}),
+        contabilidad: {
+          margenBruto: Number(cfg.margenBruto) || 0,
+          margenNeto: Number(cfg.margenNeto) || 0,
+          gastoEntrega: Number(cfg.gastoEntrega) || 0,
+        }
+      }
+    }));
+  };
+  const pBruto = (Number(cfg.margenBruto) || 0) / 100;
+  const pNeto = (Number(cfg.margenNeto) || 0) / 100;
+  const costoEntrega = Number(cfg.gastoEntrega) || 0;
+
+  // ---- Ingresos por mes ----
+  const fechaFactura = (i) => (i.date || i.createdAt || '').slice(0, 10);
+  const ventasDeMes = (mk) => invoices
+    .filter(i => fechaFactura(i).slice(0, 7) === mk)
+    .reduce((s, i) => s + (Number(i.total) || 0), 0);
+  const cantVentasDeMes = (mk) => invoices.filter(i => fechaFactura(i).slice(0, 7) === mk).length;
+
+  // Un alquiler cuenta como cobrado del mes si se tildo pagado, o si arranco ese mes
+  // (el primer mes se cobra al iniciar). Para el MES EN CURSO se excluyen los
+  // finalizados, igual que en Inicio, para que los dos numeros coincidan; en los
+  // meses ya cerrados se cuentan, porque esa plata entro igual.
+  const arrancaEnMes = (r, mk) => (r.startDate || '').slice(0, 7) === mk;
+  const cobradoEnMes = (r, mk) => isRentalPaidForMonth(r, mk)
+    || (arrancaEnMes(r, mk) && (mk !== mesActual || r.status !== 'finalizado'));
+
+  const alquilerCobradoDeMes = (mk) => rentals
+    .filter(r => cobradoEnMes(r, mk))
+    .reduce((s, r) => s + (Number(r.price) || 0), 0);
+  const alquilerContratadoDeMes = (mk) => rentals
+    .filter(r => isRentalInMonth(r, mk))
+    .reduce((s, r) => s + (Number(r.price) || 0), 0);
+  const entregasDeMes = (mk) => rentals.filter(r => arrancaEnMes(r, mk)).length;
+
+  // ---- Ganancia de un mes ----
+  const resumenDeMes = (mk) => {
+    const ventas = ventasDeMes(mk);
+    const alquiler = alquilerCobradoDeMes(mk);
+    const entregas = entregasDeMes(mk);
+    const gastoEnt = entregas * costoEntrega;
+    const gananciaVentas = ventas * pNeto;
+    const gananciaAlquiler = Math.max(0, alquiler - gastoEnt);
+    return {
+      mk, ventas, alquiler, entregas, gastoEnt,
+      ingreso: ventas + alquiler,
+      brutoVentas: ventas * pBruto,
+      gananciaVentas,
+      gananciaAlquiler,
+      ganancia: gananciaVentas + gananciaAlquiler,
+    };
+  };
+
+  // ---- Serie historica ----
+  const meses = (() => {
+    const claves = [];
+    invoices.forEach(i => { const k = fechaFactura(i).slice(0, 7); if (k) claves.push(k); });
+    rentals.forEach(r => {
+      const k = (r.startDate || '').slice(0, 7); if (k) claves.push(k);
+      Object.keys(r.paymentStatusByMonth || {}).forEach(k2 => claves.push(k2));
+    });
+    if (!claves.length) return [mesActual];
+    let cursor = claves.sort()[0];
+    const out = [];
+    let guard = 0;
+    while (cursor <= mesActual && guard < 60) { out.push(cursor); cursor = mesSiguiente(cursor); guard++; }
+    return out;
+  })();
+  const serie = meses.map(resumenDeMes);
+  const serieGrafico = serie.slice(-12);
+
+  const act = resumenDeMes(mes);
+  const ant = resumenDeMes(mesAnterior(mes));
+  const variacion = (a, b) => {
+    if (!b) return { txt: a > 0 ? 'nuevo' : '—', color: a > 0 ? '#2E7D32' : '#5A6978' };
+    const pct = Math.round(((a - b) / b) * 100);
+    return { txt: `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}%`, color: pct >= 0 ? '#2E7D32' : '#E53935' };
+  };
+
+  // ---- Parque de equipos ----
+  const enMantenimiento = equipment.filter(e => e.status === 'mantenimiento');
+  const operativos = equipment.filter(e => e.status !== 'mantenimiento');
+  const alquilados = operativos.filter(e => getOccupyingRental(rentals, e.id));
+  const libres = operativos.filter(e => !getOccupyingRental(rentals, e.id));
+  const ocupacion = operativos.length ? Math.round((alquilados.length / operativos.length) * 100) : 0;
+
+  const porCategoria = (() => {
+    const mapa = {};
+    operativos.forEach(e => {
+      const k = categoriaDeEquipo(e.name);
+      if (!mapa[k]) mapa[k] = { key: k, total: 0, alquilados: 0, libres: 0 };
+      mapa[k].total++;
+      if (getOccupyingRental(rentals, e.id)) mapa[k].alquilados++; else mapa[k].libres++;
+    });
+    return Object.values(mapa).sort((a, b) => b.total - a.total);
+  })();
+
+  // ---- Indicadores ----
+  const activos = rentals.filter(r => r.status !== 'finalizado');
+  const mrr = activos.reduce((s, r) => s + (Number(r.price) || 0), 0);
+  const ticketVenta = cantVentasDeMes(mes) ? act.ventas / cantVentasDeMes(mes) : 0;
+  const mixAlquiler = act.ingreso ? Math.round((act.alquiler / act.ingreso) * 100) : 0;
+  const contratado = alquilerContratadoDeMes(mes);
+  const pendiente = Math.max(0, contratado - act.alquiler);
+  const cobranza = contratado ? Math.round((act.alquiler / contratado) * 100) : 0;
+  const margenSobreIngreso = act.ingreso ? Math.round((act.ganancia / act.ingreso) * 100) : 0;
+
+  // ---- Grafico de barras (SVG) ----
+  const W = 720, H = 240, padX = 34, padY = 18, gap = 10;
+  const maxVal = Math.max(1, ...serieGrafico.map(s => Math.max(s.ventas, s.alquiler)));
+  const grupoW = (W - padX * 2) / Math.max(1, serieGrafico.length);
+  const barW = Math.max(4, (grupoW - gap) / 2);
+  const altura = (v) => Math.max(0, ((H - padY * 2) * v) / maxVal);
+  const mesCorto = (mk) => formatMonthLabel(mk).slice(0, 3);
+
+  const Tarjeta = ({ icono, etiqueta, valor, detalle, color }) => (
+    <div className="card" style={{ padding: 16, borderTop: `4px solid ${color}` }}>
+      <div style={{ fontSize: 22 }}>{icono}</div>
+      <div style={{ fontSize: 12, color: '#5A6978', fontWeight: 600, marginTop: 2 }}>{etiqueta}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color, lineHeight: 1.2, marginTop: 2, wordBreak: 'break-word' }}>{valor}</div>
+      {detalle && <div style={{ fontSize: 11, color: '#5A6978', marginTop: 4 }}>{detalle}</div>}
+    </div>
+  );
+
+  const Fila = ({ label, valor, negativo, fuerte, nota }) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '7px 0', borderBottom: '1px solid #EEF3F8', gap: 10 }}>
+      <span style={{ fontSize: 13, color: fuerte ? '#0D47A1' : '#5A6978', fontWeight: fuerte ? 700 : 500 }}>
+        {label}{nota && <span style={{ fontSize: 11, color: '#90A4AE' }}> {nota}</span>}
+      </span>
+      <span style={{ fontSize: fuerte ? 16 : 14, fontWeight: fuerte ? 800 : 600, color: negativo ? '#E53935' : (fuerte ? '#2E7D32' : '#0D47A1'), whiteSpace: 'nowrap' }}>
+        {negativo ? '− ' : ''}{formatCurrency(Math.abs(valor))}
+      </span>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="page-header">
+        <h1 className="page-title">📊 Contabilidad</h1>
+        <p className="page-subtitle">Ventas, alquileres, ganancia y parque de equipos en un solo lugar</p>
+      </div>
+
+      {/* Selector de mes */}
+      <div className="card" style={{ padding: 12, marginBottom: 14, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label className="form-label" style={{ margin: 0 }}>Mes</label>
+        <select className="form-select" style={{ maxWidth: 220 }} value={mes} onChange={e => setMes(e.target.value)}>
+          {[...meses].reverse().map(mk => <option key={mk} value={mk}>{formatMonthLabel(mk)}</option>)}
+        </select>
+        {mes !== mesActual && <button className="btn btn-sm btn-secondary" onClick={() => setMes(mesActual)}>Ir al mes actual</button>}
+      </div>
+
+      {/* KPIs */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <Tarjeta icono="🛒" etiqueta="Ventas facturadas" color="#1E5AA8"
+          valor={formatCurrency(act.ventas)}
+          detalle={`${cantVentasDeMes(mes)} factura(s) · ${variacion(act.ventas, ant.ventas).txt} vs mes anterior`} />
+        <Tarjeta icono="📋" etiqueta="Alquileres cobrados" color="#00897B"
+          valor={formatCurrency(act.alquiler)}
+          detalle={`${cobranza}% de lo contratado · ${variacion(act.alquiler, ant.alquiler).txt} vs mes anterior`} />
+        <Tarjeta icono="💵" etiqueta="Ingreso total" color="#5E35B1"
+          valor={formatCurrency(act.ingreso)}
+          detalle={`${100 - mixAlquiler}% venta · ${mixAlquiler}% alquiler`} />
+        <Tarjeta icono="📈" etiqueta="Ganancia estimada" color="#2E7D32"
+          valor={formatCurrency(act.ganancia)}
+          detalle={`${margenSobreIngreso}% del ingreso · ${variacion(act.ganancia, ant.ganancia).txt} vs mes anterior`} />
+      </div>
+
+      {/* Como se calcula */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 14, marginBottom: 16 }}>
+        <div className="card">
+          <h3 className="card-title">Ganancia de {formatMonthLabel(mes)}</h3>
+          <div style={{ fontSize: 12, color: '#5A6978', fontWeight: 700, margin: '6px 0 2px' }}>VENTAS</div>
+          <Fila label="Facturado" valor={act.ventas} />
+          <Fila label="Margen bruto" nota={`(${cfg.margenBruto}%)`} valor={act.brutoVentas} />
+          <Fila label="Queda neto" nota={`(${cfg.margenNeto}% tras fletes y demas)`} valor={act.gananciaVentas} fuerte />
+          <div style={{ fontSize: 12, color: '#5A6978', fontWeight: 700, margin: '14px 0 2px' }}>ALQUILERES</div>
+          <Fila label="Cobrado" valor={act.alquiler} />
+          <Fila label="Gasto de entrega" nota={`(${act.entregas} entrega(s) × ${formatCurrency(costoEntrega)})`} valor={act.gastoEnt} negativo />
+          <Fila label="Queda neto" valor={act.gananciaAlquiler} fuerte />
+          <div style={{ marginTop: 14, padding: 12, background: '#E8F5E9', borderRadius: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span style={{ fontWeight: 800, color: '#1B5E20' }}>GANANCIA NETA</span>
+            <span style={{ fontWeight: 800, fontSize: 20, color: '#1B5E20' }}>{formatCurrency(act.ganancia)}</span>
+          </div>
+          {costoEntrega === 0 && (
+            <div style={{ marginTop: 10, fontSize: 12, color: '#F57C00', background: '#FFF8E1', padding: 8, borderRadius: 8 }}>
+              El gasto de entrega esta en $0. Cargalo abajo para que la ganancia del alquiler sea real.
+            </div>
+          )}
+        </div>
+
+        <div className="card">
+          <h3 className="card-title">Parametros de calculo</h3>
+          <p style={{ fontSize: 12, color: '#5A6978', marginTop: 0 }}>Se aplican a todos los meses de esta pantalla.</p>
+          <div className="form-group">
+            <label className="form-label">Margen bruto sobre ventas (%)</label>
+            <input type="number" min="0" max="100" className="form-input" value={cfg.margenBruto} onChange={e => setCfg({ ...cfg, margenBruto: e.target.value })} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Margen neto sobre ventas (%), ya sacando fletes</label>
+            <input type="number" min="0" max="100" className="form-input" value={cfg.margenNeto} onChange={e => setCfg({ ...cfg, margenNeto: e.target.value })} />
+          </div>
+          <div className="form-group">
+            <label className="form-label">Gasto de entrega por equipo entregado ($)</label>
+            <input type="number" min="0" className="form-input" value={cfg.gastoEntrega} onChange={e => setCfg({ ...cfg, gastoEntrega: e.target.value })} />
+          </div>
+          <button className="btn btn-primary btn-block" disabled={!sinGuardar} onClick={guardarCfg}>
+            {sinGuardar ? 'Guardar parametros' : 'Parametros guardados'}
+          </button>
+
+          <div style={{ marginTop: 16, borderTop: '1px solid #E3F2FD', paddingTop: 12 }}>
+            <h3 className="card-title" style={{ fontSize: 14 }}>Cobranza del mes</h3>
+            <Fila label="Alquiler contratado" valor={contratado} />
+            <Fila label="Cobrado" valor={act.alquiler} fuerte />
+            <Fila label="Pendiente de cobro" valor={pendiente} negativo={pendiente > 0} />
+            <div style={{ height: 10, background: '#E8ECF0', borderRadius: 6, overflow: 'hidden', marginTop: 8 }}>
+              <div style={{ width: `${cobranza}%`, height: '100%', background: cobranza >= 80 ? '#2E7D32' : cobranza >= 50 ? '#F9A825' : '#E53935' }} />
+            </div>
+            <div style={{ fontSize: 12, color: '#5A6978', marginTop: 4 }}>{cobranza}% cobrado</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Indicadores */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <Tarjeta icono="🔁" etiqueta="Ingreso recurrente mensual" color="#00897B"
+          valor={formatCurrency(mrr)} detalle={`${activos.length} alquiler(es) vigentes`} />
+        <Tarjeta icono="🎟️" etiqueta="Ticket promedio de venta" color="#1E5AA8"
+          valor={formatCurrency(ticketVenta)} detalle={`sobre ${cantVentasDeMes(mes)} factura(s) del mes`} />
+        <Tarjeta icono="🔧" etiqueta="Ocupacion del parque" color="#5E35B1"
+          valor={`${ocupacion}%`} detalle={`${alquilados.length} alquilados · ${libres.length} libres`} />
+        <Tarjeta icono="📦" etiqueta="Equipos libres" color="#F57C00"
+          valor={String(libres.length)} detalle={enMantenimiento.length ? `${enMantenimiento.length} en mantenimiento aparte` : 'listos para colocar'} />
+      </div>
+
+      {/* Parque por categoria */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 className="card-title">Parque de equipos por categoria</h3>
+        <p style={{ fontSize: 12, color: '#5A6978', marginTop: 0 }}>Cada equipo cuenta como alquilado mientras tenga un alquiler sin finalizar.</p>
+        {porCategoria.map(c => {
+          const pct = c.total ? Math.round((c.alquilados / c.total) * 100) : 0;
+          return (
+            <div key={c.key} style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 4, flexWrap: 'wrap', gap: 6 }}>
+                <span style={{ fontWeight: 700, color: '#0D47A1' }}>{c.key}</span>
+                <span style={{ color: '#5A6978' }}>
+                  <b style={{ color: '#00897B' }}>{c.alquilados} alquilados</b> · <b style={{ color: '#F57C00' }}>{c.libres} libres</b> · {c.total} total
+                </span>
+              </div>
+              <div style={{ display: 'flex', height: 14, borderRadius: 7, overflow: 'hidden', background: '#E8ECF0' }}>
+                <div style={{ width: `${pct}%`, background: '#00897B' }} title={`${c.alquilados} alquilados`} />
+                <div style={{ width: `${100 - pct}%`, background: '#FFB74D' }} title={`${c.libres} libres`} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Evolucion mes a mes */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <h3 className="card-title">Evolucion mes a mes</h3>
+        <div style={{ display: 'flex', gap: 16, fontSize: 12, color: '#5A6978', marginBottom: 6, flexWrap: 'wrap' }}>
+          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#1E5AA8', borderRadius: 2, marginRight: 4 }} />Ventas</span>
+          <span><span style={{ display: 'inline-block', width: 10, height: 10, background: '#00897B', borderRadius: 2, marginRight: 4 }} />Alquileres cobrados</span>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', minWidth: 460, height: 'auto' }} role="img">
+            <line x1={padX} y1={H - padY} x2={W - padX} y2={H - padY} stroke="#CFD8DC" strokeWidth="1" />
+            {serieGrafico.map((s, i) => {
+              const x0 = padX + i * grupoW + gap / 2;
+              const hv = altura(s.ventas), ha = altura(s.alquiler);
+              return (
+                <g key={s.mk}>
+                  <rect x={x0} y={H - padY - hv} width={barW} height={hv} fill="#1E5AA8" rx="3">
+                    <title>{`${formatMonthLabel(s.mk)} — ventas ${formatCurrency(s.ventas)}`}</title>
+                  </rect>
+                  <rect x={x0 + barW + 2} y={H - padY - ha} width={barW} height={ha} fill="#00897B" rx="3">
+                    <title>{`${formatMonthLabel(s.mk)} — alquileres ${formatCurrency(s.alquiler)}`}</title>
+                  </rect>
+                  <text x={x0 + barW} y={H - padY + 12} textAnchor="middle" fontSize="10" fill="#5A6978">{mesCorto(s.mk)}</text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+
+      {/* Tabla historica */}
+      <div className="card">
+        <h3 className="card-title">Detalle mes a mes</h3>
+        <div className="table-container" style={{ overflowX: 'auto' }}>
+          <table className="table" style={{ minWidth: 620 }}>
+            <thead>
+              <tr>
+                <th>Mes</th>
+                <th style={{ textAlign: 'right' }}>Ventas</th>
+                <th style={{ textAlign: 'right' }}>Alquileres</th>
+                <th style={{ textAlign: 'right' }}>Ingreso</th>
+                <th style={{ textAlign: 'right' }}>Ganancia</th>
+                <th style={{ textAlign: 'right' }}>vs mes anterior</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...serie].reverse().map((s, idx, arr) => {
+                const prev = arr[idx + 1];
+                const v = variacion(s.ganancia, prev ? prev.ganancia : 0);
+                return (
+                  <tr key={s.mk} style={{ background: s.mk === mes ? '#E8F5E9' : undefined, cursor: 'pointer' }} onClick={() => setMes(s.mk)}>
+                    <td style={{ fontWeight: s.mk === mes ? 700 : 500 }}>{formatMonthLabel(s.mk)}</td>
+                    <td style={{ textAlign: 'right' }}>{formatCurrency(s.ventas)}</td>
+                    <td style={{ textAlign: 'right' }}>{formatCurrency(s.alquiler)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatCurrency(s.ingreso)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: '#2E7D32' }}>{formatCurrency(s.ganancia)}</td>
+                    <td style={{ textAlign: 'right', color: v.color, fontWeight: 600 }}>{v.txt}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p style={{ fontSize: 11, color: '#90A4AE', marginTop: 10 }}>
+          Ventas = facturas por su fecha. Alquileres = lo cobrado segun la seccion Alquileres (mes tildado como pagado, o mes de alta, que se cobra al iniciar).
+        </p>
+      </div>
     </div>
   );
 }
