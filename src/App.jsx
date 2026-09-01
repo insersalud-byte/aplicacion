@@ -2840,17 +2840,42 @@ function QuotationsPage({ data, updateData }) {
 // Categorias del parque: se derivan del NOMBRE del equipo, no del campo type,
 // porque type esta sin cargar en 47 de 73 equipos (dice "otro" hasta en CPAP).
 const CATEGORIAS_EQUIPO = [
+  { key: 'Oxigeno portatil', test: /portatil|portátil|simplygo|longfian|activox|inogen|zen-?o|kingon|freestyle|eclipse/i },
   { key: 'Concentradores', test: /concentrador/i },
   { key: 'BiPAP', test: /bipap|bpap/i },
-  { key: 'CPAP / AutoCPAP', test: /cpap|yamind/i },
+  { key: 'AutoCPAP', test: /auto\s*cpap/i },
+  { key: 'CPAP', test: /cpap|yamind/i },
   { key: 'Ventiladores', test: /ventilador|stellar|respirador|legendair/i },
-  { key: 'Oxigeno portatil', test: /mochila|cilindro|tubo|oxigeno/i },
+  { key: 'Mochilas de oxigeno', test: /mochila/i },
+  { key: 'Cilindros y tubos', test: /cilindro|tubo/i },
   { key: 'Aspiradores', test: /aspirador/i },
   { key: 'Tos asistida', test: /cough|tos\b/i },
 ];
 const categoriaDeEquipo = (nombre) => {
   const n = String(nombre || '');
   const hit = CATEGORIAS_EQUIPO.find(c => c.test.test(n));
+  return hit ? hit.key : 'Otros';
+};
+
+// Lo facturado suma mascaras, que no estan en el parque de alquiler.
+// Buconasal va ANTES que nasal: la palabra buconasal contiene nasal.
+const CATEGORIAS_VENTA = [
+  { key: 'Mascara buconasal', test: /buconasal|full ?face|\bf6\b|\bf20\b|\bf2\b/i },
+  { key: 'Mascara nasal', test: /nasal|dreamwear|rescom|wisp|airfit|almohadilla|mascara/i },
+  { key: 'Oxigeno portatil', test: /portatil|portátil|simplygo|longfian|activox|inogen|zen-?o|kingon|freestyle|eclipse/i },
+  { key: 'Concentradores', test: /concentrador/i },
+  { key: 'AutoCPAP', test: /auto\s*cpap/i },
+  { key: 'BiPAP', test: /bipap|bpap/i },
+  { key: 'CPAP', test: /cpap|yamind/i },
+  { key: 'Ventiladores', test: /ventilador|stellar|respirador|legendair/i },
+  { key: 'Mochilas de oxigeno', test: /mochila/i },
+  { key: 'Cilindros y tubos', test: /cilindro|tubo/i },
+  { key: 'Aspiradores', test: /aspirador/i },
+  { key: 'Tos asistida', test: /cough|tos\b/i },
+];
+const categoriaDeVenta = (nombre) => {
+  const n = String(nombre || '');
+  const hit = CATEGORIAS_VENTA.find(c => c.test.test(n));
   return hit ? hit.key : 'Otros';
 };
 
@@ -2869,6 +2894,7 @@ function ContabilidadPage({ data, updateData }) {
   const { invoices = [], rentals = [], equipment = [], settings = {} } = data;
   const mesActual = getToday().slice(0, 7);
   const [mes, setMes] = useState(mesActual);
+  const [alcanceVentas, setAlcanceVentas] = useState('mes');
 
   // ---- Parametros editables (se guardan en settings) ----
   const guardada = settings.contabilidad || {};
@@ -2990,6 +3016,33 @@ function ContabilidadPage({ data, updateData }) {
   const alquilados = operativos.filter(e => getOccupyingRental(rentals, e.id));
   const libres = operativos.filter(e => !getOccupyingRental(rentals, e.id));
   const ocupacion = operativos.length ? Math.round((alquilados.length / operativos.length) * 100) : 0;
+
+  // ---- Ventas por item: cada renglon de las facturas, agrupado por categoria ----
+  const ventasPorItem = (() => {
+    const facturas = invoices.filter(i => alcanceVentas === 'todo' || fechaFactura(i).slice(0, 7) === mes);
+    const porNombre = {};
+    facturas.forEach(inv => (inv.items || []).forEach(it => {
+      const nombre = String(it.name || '').trim() || 'Sin nombre';
+      const cat = categoriaDeVenta(nombre);
+      const clave = cat + '|' + nombre.toLowerCase();
+      if (!porNombre[clave]) porNombre[clave] = { cat, nombre, unidades: 0, bruto: 0 };
+      const q = Number(it.quantity) || 1;
+      porNombre[clave].unidades += q;
+      porNombre[clave].bruto += (Number(it.price) || 0) * q;
+    }));
+    const porCat = {};
+    Object.values(porNombre).forEach(x => {
+      if (!porCat[x.cat]) porCat[x.cat] = { cat: x.cat, unidades: 0, bruto: 0, items: [] };
+      porCat[x.cat].unidades += x.unidades;
+      porCat[x.cat].bruto += x.bruto;
+      porCat[x.cat].items.push(x);
+    });
+    return Object.values(porCat)
+      .map(c => ({ ...c, items: c.items.sort((a, b) => b.bruto - a.bruto) }))
+      .sort((a, b) => b.bruto - a.bruto);
+  })();
+  const totalItems = ventasPorItem.reduce((s, c) => s + c.bruto, 0);
+  const unidadesItems = ventasPorItem.reduce((s, c) => s + c.unidades, 0);
 
   const porCategoria = (() => {
     const mapa = {};
@@ -3160,6 +3213,65 @@ function ContabilidadPage({ data, updateData }) {
             </div>
           );
         })}
+      </div>
+
+      {/* Ventas por item */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+          <h3 className="card-title" style={{ margin: 0 }}>Ventas por item</h3>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button className={`filter-btn ${alcanceVentas === 'mes' ? 'active' : ''}`} onClick={() => setAlcanceVentas('mes')}>{formatMonthLabel(mes)}</button>
+            <button className={`filter-btn ${alcanceVentas === 'todo' ? 'active' : ''}`} onClick={() => setAlcanceVentas('todo')}>Todo el historico</button>
+          </div>
+        </div>
+        <p style={{ fontSize: 12, color: '#5A6978', marginTop: 6 }}>Cada renglon facturado, agrupado por tipo. Aparatos y mascaras con el mismo criterio.</p>
+        {ventasPorItem.length === 0 ? (
+          <p style={{ color: '#5A6978', padding: '10px 0' }}>No hay ventas facturadas en {formatMonthLabel(mes)}.</p>
+        ) : (
+          <div className="table-container" style={{ overflowX: 'auto' }}>
+            <table className="table" style={{ minWidth: 640 }}>
+              <thead>
+                <tr>
+                  <th>Item</th>
+                  <th style={{ textAlign: 'center' }}>Unidades</th>
+                  <th style={{ textAlign: 'right' }}>Facturado</th>
+                  <th style={{ textAlign: 'right' }}>Ganancia bruta</th>
+                  <th style={{ textAlign: 'right' }}>Ganancia neta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ventasPorItem.map(c => [
+                  <tr key={c.cat} style={{ background: '#E3F2FD' }}>
+                    <td style={{ fontWeight: 700, color: '#0D47A1' }}>{c.cat}</td>
+                    <td style={{ textAlign: 'center', fontWeight: 700 }}>{c.unidades}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700 }}>{formatCurrency(c.bruto)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: '#1565C0' }}>{formatCurrency(c.bruto * pBruto)}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: '#2E7D32' }}>{formatCurrency(c.bruto * pNeto)}</td>
+                  </tr>,
+                  ...c.items.map(x => (
+                    <tr key={c.cat + x.nombre}>
+                      <td style={{ paddingLeft: 22, fontSize: 13, color: '#5A6978' }}>{x.nombre}</td>
+                      <td style={{ textAlign: 'center', fontSize: 13 }}>{x.unidades}</td>
+                      <td style={{ textAlign: 'right', fontSize: 13 }}>{formatCurrency(x.bruto)}</td>
+                      <td style={{ textAlign: 'right', fontSize: 13, color: '#1565C0' }}>{formatCurrency(x.bruto * pBruto)}</td>
+                      <td style={{ textAlign: 'right', fontSize: 13, color: '#2E7D32' }}>{formatCurrency(x.bruto * pNeto)}</td>
+                    </tr>
+                  ))
+                ])}
+                <tr style={{ borderTop: '2px solid #90CAF9' }}>
+                  <td style={{ fontWeight: 800 }}>TOTAL</td>
+                  <td style={{ textAlign: 'center', fontWeight: 800 }}>{unidadesItems}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 800 }}>{formatCurrency(totalItems)}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 800, color: '#1565C0' }}>{formatCurrency(totalItems * pBruto)}</td>
+                  <td style={{ textAlign: 'right', fontWeight: 800, color: '#2E7D32' }}>{formatCurrency(totalItems * pNeto)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p style={{ fontSize: 11, color: '#90A4AE', marginTop: 10 }}>
+          Ganancia bruta = {cfg.margenBruto}% de lo facturado. Ganancia neta = {cfg.margenNeto}%, ya descontados fletes y demas. Los dos porcentajes se cambian en Parametros de calculo.
+        </p>
       </div>
 
       {/* Evolucion mes a mes */}
