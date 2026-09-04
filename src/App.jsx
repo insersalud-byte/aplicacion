@@ -1289,8 +1289,13 @@ function RentalsPage({ data, updateData }) {
     }
     const prefix = tipo === 'retiro' ? 'RET' : 'ENT';
     const numero = generateDocNumber(prefix, p?.name || '');
+    const nombreArchivo = `Remito_${tipo === 'retiro' ? 'Retiro' : 'Entrega'}_${numero}.pdf`;
+    const salto = String.fromCharCode(10) + String.fromCharCode(10);
+
+    // Paso 1: armar el PDF.
+    let doc;
     try {
-      const doc = await generateRemitoEquipoPDF({
+      doc = await generateRemitoEquipoPDF({
         tipo,
         paciente: p?.name || 'Sin paciente',
         telefono: p?.phone || '',
@@ -1300,13 +1305,29 @@ function RentalsPage({ data, updateData }) {
         fecha: getToday(),
         numero,
       }, settings || {});
-      doc.save(`Remito_${tipo === 'retiro' ? 'Retiro' : 'Entrega'}_${numero}.pdf`);
     } catch (err) {
-      console.error(err);
-      // El motivo real importa: sin el no hay forma de saber que fallo.
-      alert('El alquiler se guardo, pero no se pudo generar el remito automatico.'
-        + String.fromCharCode(10) + String.fromCharCode(10) + 'Motivo: ' + (err && err.message ? err.message : err)
-        + String.fromCharCode(10) + String.fromCharCode(10) + 'Podes volver a emitirlo con el boton Remito del alquiler.');
+      console.error('remito: fallo al armar el PDF', err);
+      alert('No se pudo ARMAR el remito.' + salto + 'Motivo: ' + (err && err.message ? err.message : err)
+        + salto + 'Podes reintentar con el boton Remito del alquiler.');
+      return;
+    }
+
+    // Paso 2: bajarlo. En celulares el navegador puede bloquear la descarga
+    // automatica, asi que si falla se abre en una pestana para guardarlo a mano.
+    try {
+      doc.save(nombreArchivo);
+    } catch (err) {
+      console.error('remito: fallo la descarga', err);
+      try {
+        const url = doc.output('bloburl');
+        const win = window.open(url, '_blank');
+        if (!win) throw new Error('el navegador bloqueo la ventana');
+        alert('El remito se abrio en una pestana nueva porque el navegador bloqueo la descarga. Guardalo desde ahi.');
+      } catch (err2) {
+        alert('El remito se genero pero no se pudo DESCARGAR.' + salto
+          + 'Motivo: ' + (err && err.message ? err.message : err) + salto
+          + 'Segundo intento: ' + (err2 && err2.message ? err2.message : err2));
+      }
     }
   };
 
