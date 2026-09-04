@@ -22,6 +22,22 @@ const masNuevoPrimero = (a, b) =>
   String(b.id || '').localeCompare(String(a.id || ''));
 const ordenNuevosPrimero = (arr) => [...(arr || [])].sort(masNuevoPrimero);
 
+// Para buscar por telefono o DNI sin importar espacios, guiones ni parentesis.
+const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
+// Cada palabra tiene que aparecer en algun lado, asi se pueden combinar terminos.
+// Si la palabra es numerica se compara contra los digitos del texto.
+const coincideTexto = (campo, consulta) => {
+  const palabras = String(consulta || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!palabras.length) return true;
+  const texto = String(campo || '').toLowerCase();
+  const digitos = soloDigitos(texto);
+  return palabras.every(w => {
+    if (texto.includes(w)) return true;
+    const d = soloDigitos(w);
+    return d.length >= 3 && digitos.includes(d);
+  });
+};
+
 function getMonthKey(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -1002,11 +1018,21 @@ function PatientsPage({ data, updateData }) {
   const [editingPatient, setEditingPatient] = useState(null);
   const [historialPatient, setHistorialPatient] = useState(null);
 
-  const filteredPatients = ordenNuevosPrimero(patients).filter(p =>
-    (p.name || '').toLowerCase().includes(search.toLowerCase()) ||
-    (p.dni || '').includes(search) ||
-    (p.phone || '').includes(search)
-  );
+  // Busca en todos los datos del paciente y ademas en los equipos que tiene
+  // alquilados, para poder encontrarlo por el aparato o su numero de serie.
+  const textoDelPaciente = (p) => {
+    const susEquipos = rentals
+      .filter(r => r.patientId === p.id)
+      .map(r => {
+        const e = equipment.find(x => x.id === r.equipmentId);
+        return [e && e.name, e && e.serialNumber, r.notes, r.status].filter(Boolean).join(' ');
+      })
+      .join(' ');
+    return [p.name, p.phone, p.address, p.dni, p.observations, susEquipos]
+      .filter(Boolean).join(' ').toLowerCase();
+  };
+  const filteredPatients = ordenNuevosPrimero(patients)
+    .filter(p => !search.trim() || coincideTexto(textoDelPaciente(p), search));
 
   const handleSave = (patient) => {
     if (!confirm(editingPatient ? `¿Guardar los cambios del paciente "${patient.name}"?` : `¿Agregar el paciente "${patient.name}"?`)) return;
@@ -1035,7 +1061,7 @@ function PatientsPage({ data, updateData }) {
 
       <div className="search-box">
         <span>🔍</span>
-        <input type="text" className="search-input" placeholder="Buscar por nombre, DNI o teléfono..." value={search} onChange={(e) => setSearch(e.target.value)} />
+        <input type="text" className="search-input" placeholder="Buscar por nombre, teléfono, DNI, dirección, equipo..." value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
 
       <button className="btn btn-primary btn-block" onClick={() => { setEditingPatient(null); setShowModal(true); }} style={{ marginBottom: 20 }}>
@@ -1215,7 +1241,6 @@ function RentalsPage({ data, updateData }) {
   // La busqueda mira TODO el alquiler: paciente (nombre, telefono, direccion,
   // DNI, observaciones), equipo (nombre, serie, tipo, descripcion) y el alquiler
   // en si (notas, estado, precio, fechas y los equipos del detalle).
-  const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
   const textoDelAlquiler = (r) => {
     const p = patients.find(x => x.id === r.patientId) || {};
     const e = equipment.find(x => x.id === r.equipmentId) || {};
@@ -1227,20 +1252,7 @@ function RentalsPage({ data, updateData }) {
       (r.items || []).map(i => i && i.name).join(' ')
     ].filter(Boolean).join(' ').toLowerCase();
   };
-  // Cada palabra tiene que aparecer en algun lado (se pueden combinar terminos).
-  // Si la palabra es numerica se compara contra los digitos, asi el telefono
-  // entra escrito con espacios, guiones o parentesis.
-  const coincideBusqueda = (r, texto) => {
-    const palabras = texto.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!palabras.length) return true;
-    const campo = textoDelAlquiler(r);
-    const digitos = soloDigitos(campo);
-    return palabras.every(w => {
-      if (campo.includes(w)) return true;
-      const d = soloDigitos(w);
-      return d.length >= 3 && digitos.includes(d);
-    });
-  };
+  const coincideBusqueda = (r, texto) => coincideTexto(textoDelAlquiler(r), texto);
 
   const rentTodayStr = getToday();
   const rentTodayParts = rentTodayStr.split('-').map(Number);
