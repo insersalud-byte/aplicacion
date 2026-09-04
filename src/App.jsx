@@ -1210,8 +1210,37 @@ function RentalsPage({ data, updateData }) {
   const [editingRental, setEditingRental] = useState(null);
 
   const getPatientName = (id) => patients.find(p => p.id === id)?.name || '-';
-  const getPatientAddress = (id) => patients.find(p => p.id === id)?.address || '';
   const getEquipmentName = (id) => equipment.find(e => e.id === id)?.name || '-';
+
+  // La busqueda mira TODO el alquiler: paciente (nombre, telefono, direccion,
+  // DNI, observaciones), equipo (nombre, serie, tipo, descripcion) y el alquiler
+  // en si (notas, estado, precio, fechas y los equipos del detalle).
+  const soloDigitos = (v) => String(v || '').replace(/\D/g, '');
+  const textoDelAlquiler = (r) => {
+    const p = patients.find(x => x.id === r.patientId) || {};
+    const e = equipment.find(x => x.id === r.equipmentId) || {};
+    return [
+      p.name, p.phone, p.address, p.dni, p.observations,
+      e.name, e.serialNumber, e.type, e.description,
+      r.notes, r.status, r.price, r.startDate, r.endDate,
+      r.startDate && formatDate(r.startDate), r.endDate && formatDate(r.endDate),
+      (r.items || []).map(i => i && i.name).join(' ')
+    ].filter(Boolean).join(' ').toLowerCase();
+  };
+  // Cada palabra tiene que aparecer en algun lado (se pueden combinar terminos).
+  // Si la palabra es numerica se compara contra los digitos, asi el telefono
+  // entra escrito con espacios, guiones o parentesis.
+  const coincideBusqueda = (r, texto) => {
+    const palabras = texto.toLowerCase().split(/\s+/).filter(Boolean);
+    if (!palabras.length) return true;
+    const campo = textoDelAlquiler(r);
+    const digitos = soloDigitos(campo);
+    return palabras.every(w => {
+      if (campo.includes(w)) return true;
+      const d = soloDigitos(w);
+      return d.length >= 3 && digitos.includes(d);
+    });
+  };
 
   const rentTodayStr = getToday();
   const rentTodayParts = rentTodayStr.split('-').map(Number);
@@ -1225,13 +1254,7 @@ function RentalsPage({ data, updateData }) {
     if (filter === 'activo' && r.status !== 'activo') return false;
     if (filter === 'vencido' && r.status !== 'vencido' && !isRentalExpired(r)) return false;
     if (filter === 'finalizado' && r.status !== 'finalizado') return false;
-    if (search) {
-      const q = search.toLowerCase();
-      const pName = getPatientName(r.patientId).toLowerCase();
-      const eName = getEquipmentName(r.equipmentId).toLowerCase();
-      const pAddr = getPatientAddress(r.patientId).toLowerCase();
-      if (!pName.includes(q) && !eName.includes(q) && !pAddr.includes(q)) return false;
-    }
+    if (search.trim() && !coincideBusqueda(r, search)) return false;
     return true;
   }).sort((a, b) => {
     // En "finalizado", los ultimos finalizados primero; en el resto, los mas
@@ -1398,7 +1421,7 @@ function RentalsPage({ data, updateData }) {
       )}
 
       <div className="card" style={{ padding: 12, marginBottom: 15 }}>
-        <input type="text" className="form-input" placeholder="Buscar por paciente, equipo o dirección..." value={search} onChange={e => setSearch(e.target.value)} />
+        <input type="text" className="form-input" placeholder="Buscar por paciente, teléfono, equipo, serie, dirección, notas..." value={search} onChange={e => setSearch(e.target.value)} />
       </div>
 
       <div className="filters">
