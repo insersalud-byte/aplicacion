@@ -1270,7 +1270,11 @@ function RentalsPage({ data, updateData }) {
       .map(id => equipment.find(e => e.id === id))
       .filter(Boolean)
       .map(e => ({ name: e.name, serialNumber: e.serialNumber }));
-    if (equipos.length === 0) return;
+    // Antes salia en silencio y parecia que el remito no se habia intentado.
+    if (equipos.length === 0) {
+      alert('No se pudo armar el remito: no se encontro el equipo del alquiler. Podes emitirlo despues con el boton Remito.');
+      return;
+    }
     const prefix = tipo === 'retiro' ? 'RET' : 'ENT';
     const numero = generateDocNumber(prefix, p?.name || '');
     try {
@@ -1287,8 +1291,19 @@ function RentalsPage({ data, updateData }) {
       doc.save(`Remito_${tipo === 'retiro' ? 'Retiro' : 'Entrega'}_${numero}.pdf`);
     } catch (err) {
       console.error(err);
-      alert('El alquiler se guardo, pero no se pudo generar el remito automatico.');
+      // El motivo real importa: sin el no hay forma de saber que fallo.
+      alert('El alquiler se guardo, pero no se pudo generar el remito automatico.'
+        + String.fromCharCode(10) + String.fromCharCode(10) + 'Motivo: ' + (err && err.message ? err.message : err)
+        + String.fromCharCode(10) + String.fromCharCode(10) + 'Podes volver a emitirlo con el boton Remito del alquiler.');
     }
+  };
+
+  // Emitir el remito a mano cuando el automatico no salio, o si hace falta otra copia.
+  const handleRemitoManual = (rental) => {
+    const tipo = rental.status === 'finalizado' ? 'retiro' : 'entrega';
+    const quien = getPatientName(rental.patientId);
+    if (!confirm(`¿Generar el remito de ${tipo} de ${quien}?`)) return;
+    emitirRemitoEquipo(tipo, rental.patientId, [rental.equipmentId]);
   };
 
   const handleSave = (payload) => {
@@ -1475,6 +1490,7 @@ function RentalsPage({ data, updateData }) {
                       <td>
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
                           <button className="btn btn-sm btn-secondary" onClick={() => { setEditingRental(rental); setShowModal(true); }}>✏️</button>
+                          <button className="btn btn-sm btn-secondary" title={rental.status === 'finalizado' ? 'Generar remito de retiro' : 'Generar remito de entrega'} onClick={() => handleRemitoManual(rental)}>📄 Remito</button>
                           <button className="btn btn-sm btn-danger" onClick={() => handleDelete(rental.id)}>🗑️</button>
                           {esNuevoParaResena(rental) && (
                             <button className="btn btn-sm btn-success" title="Pedir reseña en Google" onClick={() => handleReview(rental)}>⭐ Reseña</button>
