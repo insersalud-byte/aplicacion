@@ -969,7 +969,9 @@ export async function generateRemitoEquipoPDF(data, settings = {}) {
   (data.equipos || []).forEach((eq, i) => {
     if (y > height - 90) { doc.addPage(); y = 20; }
     const serie = eq.serialNumber ? `  (N° de serie: ${eq.serialNumber})` : '';
-    const lines = doc.splitTextToSize(`${i + 1}. ${eq.name || 'Equipo'}${serie}`, width - 45);
+    // Periodo del alquiler, cuando viene: queda escrito en el remito.
+    const periodo = eq.periodo === 'quincenal' ? '  — Alquiler por 15 dias' : (eq.periodo === 'mensual' ? '  — Alquiler mensual' : '');
+    const lines = doc.splitTextToSize(`${i + 1}. ${eq.name || 'Equipo'}${serie}${periodo}`, width - 45);
     doc.text(lines, 24, y);
     y += lines.length * 5 + 2;
   });

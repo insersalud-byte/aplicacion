@@ -65,8 +65,86 @@ function isRentalInMonth(rental, monthKey) {
   return rentalStart <= monthEnd && (!rentalEnd || rentalEnd >= monthStart);
 }
 
+// Pago registrado bajo una clave exacta (mes YYYY-MM o quincena YYYY-MM-DD).
+const isPaidKey = (rental, key) => Boolean(rental.paymentStatusByMonth?.[key]?.paid);
+
 function isRentalPaidForMonth(rental, monthKey) {
-  return Boolean(rental.paymentStatusByMonth?.[monthKey]?.paid);
+  const p = rental.paymentStatusByMonth || {};
+  if (p[monthKey]?.paid) return true;
+  // Quincenal: las claves son fechas; el mes cuenta como cobrado si alguna quincena de ese mes esta paga.
+  return Object.entries(p).some(([k, v]) => v && v.paid && k.length === 10 && k.slice(0, 7) === monthKey);
+}
+
+// ---- Periodo del alquiler: mensual (por defecto) o quincenal (15 dias) ----
+// Los alquileres viejos no tienen el campo y se tratan como mensuales.
+const PERIODO_LABEL = { mensual: 'Mensual', quincenal: '15 dias' };
+const periodoDe = (r) => (r && r.period === 'quincenal' ? 'quincenal' : 'mensual');
+function addDaysStr(dateStr, dias) {
+  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d + dias);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+}
+// Clave con la que se registra el pago del periodo que vence en dueDate:
+// mensual = el mes (YYYY-MM), quincenal = la fecha exacta (YYYY-MM-DD).
+const claveDePeriodo = (dueDate, periodo) => (periodo === 'quincenal' ? (dueDate || '') : (dueDate || '').slice(0, 7));
+const mesDeClave = (k) => String(k || '').slice(0, 7);
+const etiquetaPeriodo = (k) => (String(k || '').length === 10 ? `quincena al ${formatDate(k)}` : formatMonthLabel(k));
+// Precio del equipo segun el periodo elegido.
+const precioEquipoPorPeriodo = (e, periodo) => (periodo === 'quincenal' ? (Number(e?.rentalPrice15) || 0) : (Number(e?.rentalPrice) || 0));
+
+// Cuantos periodos se cobraron en un mes: los tildados como pagos con clave de ese
+// mes, mas el primero (se cobra al iniciar) si el alquiler arranco ese mes. Un
+// alquiler ya finalizado solo suma el de alta en meses pasados. Mensual = maximo
+// uno por mes (hay datos viejos con el mes de alta tildado ademas).
+function periodosCobradosEnMes(rental, monthKey) {
+  const p = rental.paymentStatusByMonth || {};
+  let cant = Object.entries(p).filter(([k, v]) => v && v.paid && mesDeClave(k) === monthKey).length;
+  const mesActual = getToday().slice(0, 7);
+  const arranca = (rental.startDate || '').slice(0, 7) === monthKey;
+  if (arranca && (monthKey < mesActual || rental.status !== 'finalizado')) cant += 1;
+  if (periodoDe(rental) === 'mensual') cant = Math.min(cant, 1);
+  return cant;
+}
+const montoCobradoEnMes = (rental, monthKey) => periodosCobradosEnMes(rental, monthKey) * (Number(rental.price) || 0);
+
+// Cuantos periodos corresponde cobrar en un mes: mensual siempre 1; quincenal, el de
+// alta (si arranco ese mes) mas cada vencimiento de 15 dias que cae en el mes.
+function periodosContratadosEnMes(rental, monthKey) {
+  if (periodoDe(rental) !== 'quincenal') return 1;
+  let cant = (rental.startDate || '').slice(0, 7) === monthKey ? 1 : 0;
+  let d = addDaysStr(rental.startDate, 15);
+  let guard = 0;
+  while (d && d.slice(0, 7) <= monthKey && guard < 400) {
+    if (d.slice(0, 7) === monthKey) cant += 1;
+    d = addDaysStr(d, 15); guard++;
+  }
+  return Math.max(1, cant);
+}
+
+// Periodos vencidos y sin pagar, desde el vencimiento actual hasta hoy.
+function periodosImpagos(rental) {
+  if (!rental.endDate) return [];
+  const out = [];
+  if (periodoDe(rental) === 'quincenal') {
+    const hoy = getToday();
+    let d = rental.endDate;
+    let guard = 0;
+    while (d && d <= hoy && guard < 400) {
+      if (!isPaidKey(rental, d)) out.push(d);
+      d = addDaysStr(d, 15); guard++;
+    }
+    return out;
+  }
+  const end = new Date(rental.endDate);
+  const now = new Date();
+  let d = new Date(end.getFullYear(), end.getMonth(), 1);
+  while (d <= now) {
+    const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    if (!isPaidKey(rental, mk)) out.push(mk);
+    d.setMonth(d.getMonth() + 1);
+  }
+  return out;
 }
 
 // ---- Fuente de verdad unica para estado de alquileres y ocupacion de equipos ----
@@ -329,26 +407,14 @@ function HomePage({ data, updateData }) {
   const today = getToday();
   const currentMonthKey = getMonthKey(new Date());
 
-  const getUnpaidMonthsForRental = (rental) => {
-    if (!rental.endDate) return [];
-    const end = new Date(rental.endDate);
-    const now = new Date();
-    const months = [];
-    let d = new Date(end.getFullYear(), end.getMonth(), 1);
-    while (d <= now) {
-      const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-      if (!isRentalPaidForMonth(rental, mk)) months.push(mk);
-      d.setMonth(d.getMonth() + 1);
-    }
-    return months;
-  };
+  const getUnpaidMonthsForRental = (rental) => periodosImpagos(rental);
 
   useEffect(() => {
     const todayStr = getToday();
     const needsUpdate = rentals.some(r => {
       if (r.status === 'finalizado' || !r.startDate) return false;
       if (!r.endDate) return true; // sin vencimiento -> hay que ponerlo automaticamente
-      if (alignDueDay(r.endDate, r.startDate) !== r.endDate) return true; // vencimiento no cae el dia de inicio
+      if (alignDueDay(r.endDate, r.startDate, periodoDe(r)) !== r.endDate) return true; // vencimiento no cae el dia de inicio
       if (cappedDueDate(r) !== r.endDate) return true; // vencimiento a mas de un mes del que corresponde
       if (r.status === 'activo' && r.endDate <= todayStr) return true;
       if (r.status === 'vencido' && r.endDate > todayStr) return true;
@@ -362,10 +428,10 @@ function HomePage({ data, updateData }) {
         if (rental.status === 'finalizado' || !rental.startDate) return rental;
         let r = rental;
         // 0) Si no tiene vencimiento, ponerlo automaticamente: dia de inicio, proximo vencimiento desde hoy.
-        if (!r.endDate) r = { ...r, endDate: rollingDueDate(r.startDate) };
+        if (!r.endDate) r = { ...r, endDate: rollingDueDate(r.startDate, periodoDe(r)) };
         if (!r.endDate) return r; // startDate invalido: no se pudo calcular
         // 1) El vencimiento SIEMPRE cae el dia de inicio (corrige desfases automaticamente).
-        const aligned = alignDueDay(r.endDate, r.startDate);
+        const aligned = alignDueDay(r.endDate, r.startDate, periodoDe(r));
         if (aligned !== r.endDate) r = { ...r, endDate: aligned };
         // 2) Tope: el vencimiento nunca a mas de un mes del que corresponde por inicio.
         const capped = cappedDueDate(r);
@@ -374,8 +440,8 @@ function HomePage({ data, updateData }) {
         if (r.status === 'activo' && r.endDate <= todayStr) return { ...r, status: 'vencido' };
         if (r.status === 'vencido' && r.endDate > todayStr) return { ...r, status: 'activo' };
         if (r.status === 'vencido' && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0) {
-          // Pago al dia: el proximo vencimiento es el dia de inicio del mes siguiente.
-          return { ...r, status: 'activo', endDate: nextDueAfter(r.endDate, r.startDate) };
+          // Pago al dia: el proximo vencimiento es el periodo siguiente.
+          return { ...r, status: 'activo', endDate: nextDueAfter(r.endDate, r.startDate, periodoDe(r)) };
         }
         return r;
       });
@@ -399,19 +465,17 @@ function HomePage({ data, updateData }) {
   const availableEquipment = equipment.filter(e => e.status !== 'mantenimiento' && !getOccupyingRental(rentals, e.id));
   // Un alquiler cuenta como cobrado del mes si se tildo como pagado ese mes, o si
   // ES NUEVO de este mes (el primer mes se cobra al iniciar; recien vence el mes que viene).
-  const startsThisMonth = (r) => (r.startDate || '').slice(0, 7) === currentMonthKey;
-  const isCollectedThisMonth = (r) => isRentalPaidForMonth(r, currentMonthKey) || (r.status !== 'finalizado' && startsThisMonth(r));
+  // Un quincenal puede cobrar dos periodos en el mismo mes: se suma por periodos.
+  const isCollectedThisMonth = (r) => periodosCobradosEnMes(r, currentMonthKey) > 0;
 
   const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
-  const monthlyTotal = monthlyRentals.reduce((sum, rental) => sum + Number(rental.price || 0), 0);
-  const monthlyCollected = monthlyRentals.reduce((sum, rental) => (
-    isCollectedThisMonth(rental) ? sum + Number(rental.price || 0) : sum
-  ), 0);
+  const monthlyTotal = monthlyRentals.reduce((sum, rental) => sum + Number(rental.price || 0) * periodosContratadosEnMes(rental, currentMonthKey), 0);
+  const monthlyCollected = monthlyRentals.reduce((sum, rental) => sum + montoCobradoEnMes(rental, currentMonthKey), 0);
   const monthlyPending = monthlyTotal - monthlyCollected;
 
   // Cobrados del mes: tildados como cobrados + altas nuevas del mes.
   const collectedRentals = rentals.filter(isCollectedThisMonth);
-  const collectedTotal = collectedRentals.reduce((s, r) => s + Number(r.price || 0), 0);
+  const collectedTotal = collectedRentals.reduce((s, r) => s + montoCobradoEnMes(r, currentMonthKey), 0);
 
   const [activeFilter, setActiveFilter] = useState(null);
 
@@ -457,24 +521,12 @@ function HomePage({ data, updateData }) {
         const color = activeFilter === 'activos' ? '#1E5AA8' : activeFilter === 'porVencer' ? '#F9A825' : isCobrados ? '#2E7D32' : '#E53935';
         const isVencidos = activeFilter === 'vencidos';
 
-        const getUnpaidMonths = (rental) => {
-          if (!rental.endDate) return [];
-          const end = new Date(rental.endDate);
-          const now = new Date();
-          const months = [];
-          let d = new Date(end.getFullYear(), end.getMonth(), 1);
-          while (d <= now) {
-            const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-            if (!isRentalPaidForMonth(rental, mk)) months.push(mk);
-            d.setMonth(d.getMonth() + 1);
-          }
-          return months;
-        };
+        const getUnpaidMonths = (rental) => periodosImpagos(rental);
 
         const handlePayMonth = (rentalId, mk) => {
           const rentalPay = rentals.find(r => r.id === rentalId);
           const patientPay = patients.find(p => p.id === rentalPay?.patientId);
-          if (!confirm(`¿Registrar el pago de ${formatMonthLabel(mk)} de ${patientPay?.name || 'este alquiler'}?`)) return;
+          if (!confirm(`¿Registrar el pago de ${etiquetaPeriodo(mk)} de ${patientPay?.name || 'este alquiler'}?`)) return;
           updateData(currentData => ({
             ...currentData,
             rentals: currentData.rentals.map(r => {
@@ -482,9 +534,9 @@ function HomePage({ data, updateData }) {
               const updated = { ...r, paymentStatusByMonth: { ...(r.paymentStatusByMonth || {}), [mk]: { paid: true, updatedAt: new Date().toISOString() } } };
               const remaining = getUnpaidMonths(updated).filter(m => m !== mk);
               if (remaining.length === 0 && (r.status === 'vencido' || isRentalExpired(r))) {
-                // El proximo vencimiento es el dia de INICIO del mes siguiente al vencimiento actual.
+                // El proximo vencimiento es el periodo siguiente al vencimiento actual.
                 updated.status = 'activo';
-                updated.endDate = nextDueAfter(r.endDate, r.startDate);
+                updated.endDate = nextDueAfter(r.endDate, r.startDate, periodoDe(r));
               }
               return updated;
             })
@@ -559,10 +611,10 @@ function HomePage({ data, updateData }) {
                       <div style={{ fontSize: 13, color: '#5A6978' }}>{eq?.name || 'Sin equipo'}</div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontWeight: 600, color }}>{formatCurrency(r.price)}/mes</div>
+                      <div style={{ fontWeight: 600, color }}>{formatCurrency(r.price)}{periodoDe(r) === 'quincenal' ? '/15 dias' : '/mes'}</div>
                       <div style={{ fontSize: 12, color: '#5A6978' }}>Vence: {formatDate(r.endDate)}</div>
                       {isVencidos && unpaid.length > 0 && (
-                        <div style={{ fontSize: 12, fontWeight: 700, color: '#E53935', marginTop: 2 }}>{unpaid.length} {unpaid.length === 1 ? 'mes' : 'meses'} sin pagar</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: '#E53935', marginTop: 2 }}>{unpaid.length} {periodoDe(r) === 'quincenal' ? (unpaid.length === 1 ? 'quincena' : 'quincenas') : (unpaid.length === 1 ? 'mes' : 'meses')} sin pagar</div>
                       )}
                     </div>
                   </div>
@@ -573,7 +625,7 @@ function HomePage({ data, updateData }) {
                       </button>
                       {unpaid.map(mk => (
                         <button key={mk} className="btn btn-sm btn-success" onClick={() => handlePayMonth(r.id, mk)} style={{ fontSize: 11, padding: '4px 8px' }}>
-                          Pagar {formatMonthLabel(mk)}
+                          Pagar {etiquetaPeriodo(mk)}
                         </button>
                       ))}
                       <button className="btn btn-sm btn-danger" style={{ fontSize: 11, padding: '4px 8px' }} title="Dar de baja: genera remito de retiro y libera el equipo" onClick={() => handleCese(r)}>
@@ -1122,6 +1174,7 @@ function PatientHistorialModal({ patient, rentals, equipment, onClose }) {
         if (!meses[mk]?.paid) return;
         pagos.push({
           mes: mk,
+          periodo: periodoDe(r),
           fechaPago: meses[mk].updatedAt || '',
           equipo: equipName(r.equipmentId),
           monto: Number(r.price) || 0,
@@ -1278,10 +1331,15 @@ function RentalsPage({ data, updateData }) {
   // Remito automatico: 'entrega' al crear el alquiler, 'retiro' al finalizarlo.
   const emitirRemitoEquipo = async (tipo, patientId, equipmentIds) => {
     const p = patients.find(x => x.id === patientId);
+    // Cada entrada puede ser el id del equipo o { id, period }: el periodo del
+    // alquiler (mensual / 15 dias) sale escrito en el remito.
     const equipos = equipmentIds
-      .map(id => equipment.find(e => e.id === id))
-      .filter(Boolean)
-      .map(e => ({ name: e.name, serialNumber: e.serialNumber }));
+      .map(x => (typeof x === 'string' ? { id: x } : (x || {})))
+      .map(x => {
+        const e = equipment.find(eq => eq.id === x.id);
+        return e ? { name: e.name, serialNumber: e.serialNumber, periodo: x.period === 'quincenal' ? 'quincenal' : 'mensual' } : null;
+      })
+      .filter(Boolean);
     // Antes salia en silencio y parecia que el remito no se habia intentado.
     if (equipos.length === 0) {
       alert('No se pudo armar el remito: no se encontro el equipo del alquiler. Podes emitirlo despues con el boton Remito.');
@@ -1336,7 +1394,7 @@ function RentalsPage({ data, updateData }) {
     const tipo = rental.status === 'finalizado' ? 'retiro' : 'entrega';
     const quien = getPatientName(rental.patientId);
     if (!confirm(`¿Generar el remito de ${tipo} de ${quien}?`)) return;
-    emitirRemitoEquipo(tipo, rental.patientId, [rental.equipmentId]);
+    emitirRemitoEquipo(tipo, rental.patientId, [{ id: rental.equipmentId, period: rental.period }]);
   };
 
   const handleSave = (payload) => {
@@ -1351,16 +1409,16 @@ function RentalsPage({ data, updateData }) {
     let remito = null;
     if (!editingRental) {
       const nuevos = Array.isArray(payload) ? payload : [payload];
-      remito = { tipo: 'entrega', patientId: nuevos[0]?.patientId, equipmentIds: nuevos.map(r => r.equipmentId) };
+      remito = { tipo: 'entrega', patientId: nuevos[0]?.patientId, equipmentIds: nuevos.map(r => ({ id: r.equipmentId, period: r.period })) };
     } else {
       const actualizado = payload.update || payload;
       // Pasa a finalizado (antes no lo estaba) -> remito de retiro.
       if (actualizado.status === 'finalizado' && editingRental.status !== 'finalizado') {
-        remito = { tipo: 'retiro', patientId: actualizado.patientId, equipmentIds: [actualizado.equipmentId] };
+        remito = { tipo: 'retiro', patientId: actualizado.patientId, equipmentIds: [{ id: actualizado.equipmentId, period: actualizado.period }] };
       }
       // Equipos extra agregados al mismo paciente -> remito de entrega por esos.
       if (payload.create?.length) {
-        remito = { tipo: 'entrega', patientId: payload.create[0].patientId, equipmentIds: payload.create.map(r => r.equipmentId) };
+        remito = { tipo: 'entrega', patientId: payload.create[0].patientId, equipmentIds: payload.create.map(r => ({ id: r.equipmentId, period: r.period })) };
       }
     }
     updateData(cur => {
@@ -1407,7 +1465,7 @@ function RentalsPage({ data, updateData }) {
       ...cur,
       rentals: cur.rentals.map(r => {
         if (r.status === 'finalizado' || !r.startDate) return r;
-        const newEndDate = rollingDueDate(r.startDate);
+        const newEndDate = rollingDueDate(r.startDate, periodoDe(r));
         if (!newEndDate) return r;
         return { ...r, endDate: newEndDate };
       })
@@ -1518,7 +1576,7 @@ function RentalsPage({ data, updateData }) {
                       <td>{getEquipmentName(rental.equipmentId)}</td>
                       <td>{formatDate(rental.startDate)}</td>
                       <td>{formatDate(rental.endDate)}</td>
-                      <td>{formatCurrency(rental.price)}</td>
+                      <td>{formatCurrency(rental.price)}<div style={{ fontSize: 11, color: periodoDe(rental) === 'quincenal' ? '#F57C00' : '#5A6978', fontWeight: 600 }}>{PERIODO_LABEL[periodoDe(rental)]}</div></td>
                       <td><span className={`badge badge-${status}`}>{status}</span></td>
                       <td>
                         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -1578,7 +1636,8 @@ function nextMonthDate(start) {
 // de una fecha (manteniendo mes/anio) al dia de inicio, corrigiendo el desfase
 // de +/-1 que arrastraban datos viejos. Si el dia no existe (ej: 31 en feb),
 // usa el ultimo dia del mes.
-function alignDueDay(refDate, startDate) {
+function alignDueDay(refDate, startDate, periodo) {
+  if (periodo === 'quincenal') return refDate; // la quincena no cae en el dia de inicio
   if (!refDate || !startDate || !/^\d{4}-\d{2}-\d{2}$/.test(refDate) || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return refDate;
   const [y, m] = refDate.split('-').map(Number);
   const startDay = Number(startDate.split('-')[2]);
@@ -1588,7 +1647,10 @@ function alignDueDay(refDate, startDate) {
 }
 
 // Proximo vencimiento: el dia de INICIO, en el mes siguiente al vencimiento actual.
-function nextDueAfter(refDate, startDate) {
+function nextDueAfter(refDate, startDate, periodo) {
+  if (periodo === 'quincenal') {
+    return refDate && /^\d{4}-\d{2}-\d{2}$/.test(refDate) ? addDaysStr(refDate, 15) : addDaysStr(startDate, 15);
+  }
   if (!refDate || !/^\d{4}-\d{2}-\d{2}$/.test(refDate)) return nextMonthDate(startDate);
   const [y, m] = refDate.split('-').map(Number);
   let ny = y, nm = m + 1;
@@ -1599,8 +1661,15 @@ function nextDueAfter(refDate, startDate) {
 // Vencimiento = un mes despues del inicio, avanzando mes a mes sucesivamente
 // hasta el primer vencimiento que sea hoy o futuro. Asi los alquileres viejos
 // quedan con el proximo vencimiento real (no uno pasado que marque todo vencido).
-function rollingDueDate(start) {
+function rollingDueDate(start, periodo) {
   if (!start || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return '';
+  if (periodo === 'quincenal') {
+    const hoy = getToday();
+    let due = addDaysStr(start, 15);
+    let guard = 0;
+    while (due < hoy && guard < 400) { due = addDaysStr(due, 15); guard++; }
+    return due;
+  }
   const [y, m, d] = start.split('-').map(Number);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -1621,10 +1690,11 @@ function rollingDueDate(start) {
 // si no, es D. Si la fecha cargada quedo mas adelante, se la trae al tope.
 function cappedDueDate(rental) {
   if (!rental.startDate || !rental.endDate) return rental.endDate;
-  const D = rollingDueDate(rental.startDate);
+  const periodo = periodoDe(rental);
+  const D = rollingDueDate(rental.startDate, periodo);
   if (!D) return rental.endDate;
-  const paidActual = isRentalPaidForMonth(rental, D.slice(0, 7));
-  const tope = paidActual ? nextDueAfter(D, rental.startDate) : D;
+  const paidActual = isPaidKey(rental, claveDePeriodo(D, periodo));
+  const tope = paidActual ? nextDueAfter(D, rental.startDate, periodo) : D;
   return rental.endDate > tope ? tope : rental.endDate;
 }
 
@@ -1637,19 +1707,43 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
   });
   const [items, setItems] = useState(() => {
     if (rental) return [];
-    return [{ equipmentId: '', endDate: nextMonthDate(getToday()), price: '' }];
+    return [{ equipmentId: '', period: 'mensual', endDate: nextMonthDate(getToday()), price: '' }];
   });
+  // Primer vencimiento segun el periodo: +1 mes (dia de inicio) o +15 dias.
+  const primerVencimiento = (start, periodo) => (periodo === 'quincenal' ? addDaysStr(start, 15) : nextMonthDate(start));
+  const equipoDe = (id) => equipment.find(e => e.id === id);
   const [showNewPatient, setShowNewPatient] = useState(false);
   const [newPatient, setNewPatient] = useState({ name: '', phone: '', dni: '', address: '', observations: '' });
 
   const handleStartDateChange = (start) => {
-    const prevDefault = nextMonthDate(form.startDate);
-    const newDefault = nextMonthDate(start);
-    // El vencimiento sigue a la fecha de inicio (1 mes despues). Editable luego a mano.
-    setForm({ ...form, startDate: start, ...(isEditing ? { endDate: newDefault } : {}) });
+    // El vencimiento sigue a la fecha de inicio segun el periodo. Editable luego a mano.
+    setForm({ ...form, startDate: start, ...(isEditing ? { endDate: primerVencimiento(start, periodoDe(form)) } : {}) });
     if (!isEditing) {
-      setItems(items.map(it => ({ ...it, endDate: it.endDate === prevDefault || !it.endDate ? newDefault : it.endDate })));
+      setItems(items.map(it => {
+        const prevDefault = primerVencimiento(form.startDate, it.period);
+        return { ...it, endDate: it.endDate === prevDefault || !it.endDate ? primerVencimiento(start, it.period) : it.endDate };
+      }));
     }
+  };
+
+  // Al elegir equipo o periodo en una fila se completa el precio de ese equipo para ese
+  // periodo y se recalcula el vencimiento. El precio queda editable a mano.
+  const elegirEquipoEnFila = (idx, equipmentId) => {
+    const it = items[idx];
+    const precio = precioEquipoPorPeriodo(equipoDe(equipmentId), it.period);
+    updateItem(idx, { equipmentId, price: precio > 0 ? precio : it.price });
+  };
+  const elegirPeriodoEnFila = (idx, period) => {
+    const it = items[idx];
+    const precio = precioEquipoPorPeriodo(equipoDe(it.equipmentId), period);
+    updateItem(idx, { period, endDate: primerVencimiento(form.startDate, period), price: precio > 0 ? precio : it.price });
+  };
+  // Al editar: cambiar de periodo trae el precio del equipo para ese periodo y
+  // recalcula el vencimiento desde el inicio (proximo periodo que cae hoy o despues).
+  const cambiarPeriodoEdit = (period) => {
+    const precio = precioEquipoPorPeriodo(equipoDe(form.equipmentId), period);
+    const endDate = rollingDueDate(form.startDate, period) || form.endDate;
+    setForm({ ...form, period, endDate, ...(precio > 0 ? { price: precio } : {}) });
   };
 
   const updateItem = (idx, patch) => {
@@ -1657,7 +1751,7 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
   };
 
   const addItem = () => {
-    setItems([...items, { equipmentId: '', endDate: nextMonthDate(form.startDate), price: '' }]);
+    setItems([...items, { equipmentId: '', period: 'mensual', endDate: nextMonthDate(form.startDate), price: '' }]);
   };
 
   const removeItem = (idx) => {
@@ -1678,6 +1772,7 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
         const extraRentals = validExtra.map(it => ({
           patientId: form.patientId,
           equipmentId: it.equipmentId,
+          period: it.period || 'mensual',
           startDate: form.startDate,
           endDate: it.endDate,
           price: Number(it.price),
@@ -1702,6 +1797,7 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
     const rentalsToCreate = items.map(it => ({
       patientId: form.patientId,
       equipmentId: it.equipmentId,
+      period: it.period || 'mensual',
       startDate: form.startDate,
       endDate: it.endDate,
       price: Number(it.price),
@@ -1779,11 +1875,19 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
                 </select>
               </div>
               <div className="form-group">
+                <label className="form-label">Periodo</label>
+                <select className="form-select" value={periodoDe(form)} onChange={e => cambiarPeriodoEdit(e.target.value)}>
+                  <option value="mensual">Mensual</option>
+                  <option value="quincenal">15 dias</option>
+                </select>
+                <div style={{ fontSize: 12, color: '#5A6978', marginTop: 4 }}>Al cambiar el periodo se toma el precio del equipo para ese periodo y se recalcula el vencimiento.</div>
+              </div>
+              <div className="form-group">
                 <label className="form-label">Fecha de fin</label>
                 <input type="date" className="form-input" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} />
               </div>
               <div className="form-group">
-                <label className="form-label">Precio mensual ($)</label>
+                <label className="form-label">Precio {periodoDe(form) === 'quincenal' ? 'por 15 dias' : 'mensual'} ($)</label>
                 <input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} />
               </div>
             </>
@@ -1794,10 +1898,14 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
                 const usedIds = items.filter((_, i) => i !== idx).map(x => x.equipmentId).filter(Boolean);
                 const options = availableEquipment.filter(e => !usedIds.includes(e.id));
                 return (
-                  <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 140px 110px auto', gap: 6, marginBottom: 8, alignItems: 'center' }}>
-                    <select className="form-select" value={it.equipmentId} onChange={e => updateItem(idx, { equipmentId: e.target.value })} required>
+                  <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 104px 140px 110px auto', gap: 6, marginBottom: 8, alignItems: 'center' }}>
+                    <select className="form-select" value={it.equipmentId} onChange={e => elegirEquipoEnFila(idx, e.target.value)} required>
                       <option value="">Equipo...</option>
                       {options.map(e => <option key={e.id} value={e.id}>{e.name} ({e.serialNumber})</option>)}
+                    </select>
+                    <select className="form-select" value={it.period || 'mensual'} onChange={e => elegirPeriodoEnFila(idx, e.target.value)} title="Periodo">
+                      <option value="mensual">Mensual</option>
+                      <option value="quincenal">15 dias</option>
                     </select>
                     <input type="date" className="form-input" value={it.endDate} onChange={e => updateItem(idx, { endDate: e.target.value })} title="Vencimiento" />
                     <input type="number" className="form-input" placeholder="Precio" value={it.price} onChange={e => updateItem(idx, { price: e.target.value })} />
@@ -1827,10 +1935,14 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
                 const usedIds = items.filter((_, i) => i !== idx).map(x => x.equipmentId).filter(Boolean);
                 const options = equipment.filter(e => !rentedEquipIds.has(e.id) && !usedIds.includes(e.id) && e.id !== form.equipmentId);
                 return (
-                  <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 140px 110px auto', gap: 6, marginBottom: 8, alignItems: 'center' }}>
-                    <select className="form-select" value={it.equipmentId} onChange={e => updateItem(idx, { equipmentId: e.target.value })}>
+                  <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 104px 140px 110px auto', gap: 6, marginBottom: 8, alignItems: 'center' }}>
+                    <select className="form-select" value={it.equipmentId} onChange={e => elegirEquipoEnFila(idx, e.target.value)}>
                       <option value="">Equipo...</option>
                       {options.map(e => <option key={e.id} value={e.id}>{e.name} ({e.serialNumber})</option>)}
+                    </select>
+                    <select className="form-select" value={it.period || 'mensual'} onChange={e => elegirPeriodoEnFila(idx, e.target.value)} title="Periodo">
+                      <option value="mensual">Mensual</option>
+                      <option value="quincenal">15 dias</option>
                     </select>
                     <input type="date" className="form-input" value={it.endDate} onChange={e => updateItem(idx, { endDate: e.target.value })} title="Vencimiento" />
                     <input type="number" className="form-input" placeholder="Precio" value={it.price} onChange={e => updateItem(idx, { price: e.target.value })} />
@@ -1969,9 +2081,11 @@ function EquipmentPage({ data, updateData }) {
                     <span style={{ color: '#43A047', fontWeight: 600, fontSize: 13 }}>Disponible</span>
                   </div>
                 )}
-                {equip.rentalPrice > 0 && (
+                {(equip.rentalPrice > 0 || equip.rentalPrice15 > 0) && (
                   <div style={{ fontSize: 12, color: '#1E5AA8', fontWeight: 600, marginBottom: 6 }}>
-                    Alquiler: {formatCurrency(equip.rentalPrice)}/mes
+                    {equip.rentalPrice > 0 && <span>Alquiler: {formatCurrency(equip.rentalPrice)}/mes</span>}
+                    {equip.rentalPrice > 0 && equip.rentalPrice15 > 0 && <span> · </span>}
+                    {equip.rentalPrice15 > 0 && <span>{formatCurrency(equip.rentalPrice15)}/15 dias</span>}
                   </div>
                 )}
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
@@ -1993,7 +2107,7 @@ function EquipmentPage({ data, updateData }) {
 }
 
 function EquipmentModal({ equipment, onSave, onClose }) {
-  const [form, setForm] = useState(equipment || { name: '', serialNumber: '', type: 'otro', status: 'disponible', description: '', available: true, imageUrl: '', ownership: 'propio', rentalPrice: '' });
+  const [form, setForm] = useState(equipment || { name: '', serialNumber: '', type: 'otro', status: 'disponible', description: '', available: true, imageUrl: '', ownership: 'propio', rentalPrice: '', rentalPrice15: '' });
   // Cada registro de Equipos es UNA unidad fisica. Por eso la cantidad solo aplica al alta:
   // se crean N equipos, uno por cada numero de serie.
   const [cantidad, setCantidad] = useState(1);
@@ -2032,7 +2146,7 @@ function EquipmentModal({ equipment, onSave, onClose }) {
       return;
     }
     if (new Set(series).size !== series.length) { alert('Hay numeros de serie repetidos. Cada unidad tiene que tener el suyo.'); return; }
-    const base = { ...form, rentalPrice: Number(form.rentalPrice) || 0 };
+    const base = { ...form, rentalPrice: Number(form.rentalPrice) || 0, rentalPrice15: Number(form.rentalPrice15) || 0 };
     if (!equipment && series.length > 1) {
       onSave(series.map(s => ({ ...base, serialNumber: s })));
       return;
@@ -2089,9 +2203,15 @@ function EquipmentModal({ equipment, onSave, onClose }) {
             </select>
           </div>
 
-          <div className="form-group">
-            <label className="form-label">Precio de alquiler mensual $</label>
-            <input type="number" className="form-input" placeholder="0" min="0" value={form.rentalPrice || ''} onChange={e => setForm({...form, rentalPrice: e.target.value})} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="form-group">
+              <label className="form-label">Precio de alquiler mensual $</label>
+              <input type="number" className="form-input" placeholder="0" min="0" value={form.rentalPrice || ''} onChange={e => setForm({...form, rentalPrice: e.target.value})} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Precio 15 dias $</label>
+              <input type="number" className="form-input" placeholder="0" min="0" value={form.rentalPrice15 || ''} onChange={e => setForm({...form, rentalPrice15: e.target.value})} />
+            </div>
           </div>
 
           <div className="form-group">
@@ -3011,12 +3131,11 @@ function ContabilidadPage({ data, updateData }) {
   // Baja: finalizedAt es lo correcto, pero el campo se agrego despues y falta en
   // varios; se cae a endDate. Los que no tienen ninguna fecha quedan sin mes.
   const mesDeBaja = (r) => String(r.finalizedAt || r.endDate || '').slice(0, 7);
-  const cobradoEnMes = (r, mk) => isRentalPaidForMonth(r, mk)
-    || (arrancaEnMes(r, mk) && (mk !== mesActual || r.status !== 'finalizado'));
+  // Un quincenal puede cobrar dos periodos en el mismo mes: se cuenta por periodos.
+  const cobradoEnMes = (r, mk) => periodosCobradosEnMes(r, mk) > 0;
 
   const alquilerCobradoDeMes = (mk) => rentals
-    .filter(r => cobradoEnMes(r, mk))
-    .reduce((s, r) => s + (Number(r.price) || 0), 0);
+    .reduce((s, r) => s + montoCobradoEnMes(r, mk), 0);
   // Vigente en el mes: arranco antes o durante y todavia no habia terminado. Si se
   // cobro ese mes, estaba vigente por definicion. El mes de la baja solo cuenta si
   // efectivamente se cobro, para no inventar deuda de un alquiler que ya termino.
@@ -3032,7 +3151,7 @@ function ContabilidadPage({ data, updateData }) {
   };
   const alquilerContratadoDeMes = (mk) => rentals
     .filter(r => vigenteEnMes(r, mk))
-    .reduce((s, r) => s + (Number(r.price) || 0), 0);
+    .reduce((s, r) => s + (Number(r.price) || 0) * periodosContratadosEnMes(r, mk), 0);
   const entregasDeMes = (mk) => rentals.filter(r => arrancaEnMes(r, mk)).length;
   const bajasDeMes = (mk) => rentals.filter(r => r.status === 'finalizado' && mesDeBaja(r) === mk).length;
   const activosDeMes = (mk) => rentals.filter(r => vigenteEnMes(r, mk)).length;

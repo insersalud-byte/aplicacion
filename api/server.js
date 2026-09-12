@@ -75,6 +75,10 @@ async function handleVencimientos(req, res) {
       numero_serie: e?.serialNumber || '',
       fecha_inicio: r.startDate || '',
       fecha_vencimiento: r.endDate || '',
+      // periodo: 'mensual' o 'quincenal' (15 dias). precio_mensual se conserva por compatibilidad;
+      // precio_periodo es el que se cobra por cada periodo del alquiler.
+      periodo: r.period === 'quincenal' ? 'quincenal' : 'mensual',
+      precio_periodo: Number(r.price) || 0,
       precio_mensual: Number(r.price) || 0,
       estado: r.status || '',
       dias: diasEntre(hoy, r.endDate), // negativo = dias vencido, positivo = dias restantes
