@@ -13,6 +13,9 @@ const itemLiviano = (it) => ({ ...it, imageUrl: sinFotoPesada(it.imageUrl) });
 const serieDe = (it) => (it && it.serialNumber ? String(it.serialNumber).trim() : '');
 const etiquetaSerie = (it) => { const s = serieDe(it); return s ? `N° serie: ${s}` : ''; };
 const nombreConSerie = (it) => { const s = serieDe(it); return s ? `${it.name} (N° de serie: ${s})` : it.name; };
+// Stock de lo que se vende. Los equipos de alquiler no tienen stock (son unidades), no se muestra.
+const stockDe = (it) => (it && it._cat !== 'equipos' && it.stock !== undefined && it.stock !== null ? Number(it.stock) || 0 : null);
+const etiquetaStock = (it) => { const s = stockDe(it); return s === null ? '' : (s > 0 ? `Stock: ${s}` : 'Sin stock'); };
 
 // Los mas nuevos SIEMPRE primero, en listas y en desplegables.
 // Desempata por id: los ids se generan con timestamp, asi que el mayor es el
@@ -724,9 +727,9 @@ function QuickDocGenerator({ data, updateData }) {
 
   const catalogos = {
     equipos: { label: 'Equipos', items: equipment.map(e => ({ id: e.id, name: e.name, detail: etiquetaSerie(e), serialNumber: e.serialNumber || '', price: equipPrice(e), imageUrl: e.imageUrl || '', _cat: 'equipos' })) },
-    mascarillas: { label: 'Mascarillas', items: mascaras.map(m => ({ id: m.id, name: m.name, detail: m.talle ? `Talle ${m.talle}` : '', price: Number(m.precio) || 0, imageUrl: m.imageUrl || '', _cat: 'mascarillas' })) },
-    equiposNuevos: { label: 'Equipos Nuevos', items: equiposNuevos.map(e => ({ id: e.id, name: e.name, detail: etiquetaSerie(e), serialNumber: e.serialNumber || '', price: Number(e.price) || 0, imageUrl: e.imageUrl || '', _cat: 'equiposNuevos' })) },
-    descartables: { label: 'Descartables', items: descartables.map(d => ({ id: d.id, name: d.name, detail: d.unit || '', price: Number(d.price) || 0, imageUrl: '', _cat: 'descartables' })) },
+    mascarillas: { label: 'Mascarillas', items: mascaras.map(m => ({ id: m.id, name: m.name, detail: [m.talle ? `Talle ${m.talle}` : '', etiquetaStock({ ...m, _cat: 'mascarillas' })].filter(Boolean).join(' · '), stock: m.stock, price: Number(m.precio) || 0, imageUrl: m.imageUrl || '', _cat: 'mascarillas' })) },
+    equiposNuevos: { label: 'Equipos Nuevos', items: equiposNuevos.map(e => ({ id: e.id, name: e.name, detail: [etiquetaSerie(e), etiquetaStock({ ...e, _cat: 'equiposNuevos' })].filter(Boolean).join(' · '), serialNumber: e.serialNumber || '', stock: e.stock, price: Number(e.price) || 0, imageUrl: e.imageUrl || '', _cat: 'equiposNuevos' })) },
+    descartables: { label: 'Descartables', items: descartables.map(d => ({ id: d.id, name: d.name, detail: [d.unit || '', etiquetaStock({ ...d, _cat: 'descartables' })].filter(Boolean).join(' · '), stock: d.stock, price: Number(d.price) || 0, imageUrl: '', _cat: 'descartables' })) },
   };
 
   const resultados = category && category !== 'libre' && search
@@ -2860,6 +2863,7 @@ function SalesCartPage({ data, updateData, pageType }) {
               <div style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</div>
               {serieDe(p) && <div style={{ fontSize: 11, color: '#1E5AA8', fontWeight: 600 }}>{etiquetaSerie(p)}</div>}
               <div style={{ fontSize: 11, color: '#5A6978' }}>{p._label}</div>
+              {stockDe(p) !== null && <div style={{ fontSize: 11, fontWeight: 700, color: stockDe(p) > 0 ? '#2E7D32' : '#E53935' }}>{etiquetaStock(p)}</div>}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
                 <span style={{ color: '#1E5AA8', fontWeight: 700 }}>{formatCurrency(p.price)}</span>
                 <button className="btn btn-primary btn-sm" onClick={() => addToCart(p)} style={{ padding: '2px 8px', fontSize: 12 }}>+</button>
