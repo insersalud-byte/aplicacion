@@ -1770,7 +1770,15 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
     }
     if (isEditing) {
       if (!form.equipmentId) { alert('Selecciona un equipo'); return; }
+      // Un equipo solo puede tener UN alquiler sin finalizar. Sin este chequeo, reactivar un alquiler
+      // finalizado (o cambiarle el equipo) dejaba dos alquileres sobre la misma unidad.
+      if (form.status !== 'finalizado') {
+        const choque = ocupadoPorOtro(form.equipmentId, form.id);
+        if (choque) { alert(`Ese equipo ya tiene un alquiler vigente con ${nombrePaciente(choque.patientId)}. Finaliza ese alquiler o elegi otro equipo.`); return; }
+      }
       const validExtra = items.filter(it => it.equipmentId);
+      const extraChoque = validExtra.map(it => ocupadoPorOtro(it.equipmentId, null)).find(Boolean);
+      if (extraChoque) { alert(`El equipo agregado ya tiene un alquiler vigente con ${nombrePaciente(extraChoque.patientId)}.`); return; }
       if (validExtra.length > 0) {
         const extraRentals = validExtra.map(it => ({
           patientId: form.patientId,
@@ -1812,6 +1820,8 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
 
   // Equipo ocupado = tiene un alquiler no finalizado (activo o vencido). Evita reasignar un equipo que sigue afuera.
   const rentedEquipIds = new Set((rentals || []).filter(r => r.status !== 'finalizado').map(r => r.equipmentId));
+  const ocupadoPorOtro = (equipId, rentalId) => (rentals || []).find(r => r.equipmentId === equipId && r.id !== rentalId && r.status !== 'finalizado');
+  const nombrePaciente = (pid) => (patients || []).find(p => p.id === pid)?.name || 'otro paciente';
   const availableEquipment = isEditing ? equipment : equipment.filter(e => !rentedEquipIds.has(e.id));
 
   const handleAddNewPatient = () => {
@@ -3087,7 +3097,7 @@ const mesAnterior = (mk) => {
 };
 
 function ContabilidadPage({ data, updateData }) {
-  const { invoices = [], rentals = [], equipment = [], settings = {} } = data;
+  const { invoices = [], rentals = [], equipment = [], settings = {}, patients = [] } = data;
   const mesActual = getToday().slice(0, 7);
   const [mes, setMes] = useState(mesActual);
   const [alcanceVentas, setAlcanceVentas] = useState('mes');
@@ -3250,6 +3260,23 @@ function ContabilidadPage({ data, updateData }) {
     return Object.values(mapa).sort((a, b) => b.total - a.total);
   })();
 
+  // Equipos con mas de un alquiler sin finalizar: el parque los cuenta UNA vez pero Alquileres muestra dos.
+  // Es un error de carga (dos pacientes no pueden tener la misma unidad); se avisa para que se corrija.
+  const equiposDuplicados = (() => {
+    const porEquipo = {};
+    rentals.filter(r => r.status !== 'finalizado').forEach(r => { (porEquipo[r.equipmentId] = porEquipo[r.equipmentId] || []).push(r); });
+    return Object.entries(porEquipo)
+      .filter(([, rs]) => rs.length > 1)
+      .map(([eid, rs]) => {
+        const e = equipment.find(x => x.id === eid);
+        return {
+          id: eid,
+          nombre: e ? `${e.name}${serieDe(e) ? ` (serie ${serieDe(e)})` : ''}` : 'Equipo eliminado',
+          pacientes: rs.map(r => (patients.find(p => p.id === r.patientId)?.name || 'sin paciente').trim()),
+        };
+      });
+  })();
+
   // ---- Indicadores ----
   const activos = rentals.filter(r => r.status !== 'finalizado');
   const mrr = activos.reduce((s, r) => s + (Number(r.price) || 0), 0);
@@ -3391,6 +3418,15 @@ function ContabilidadPage({ data, updateData }) {
       <div className="card" style={{ marginBottom: 16 }}>
         <h3 className="card-title">Parque de equipos por categoria</h3>
         <p style={{ fontSize: 12, color: '#5A6978', marginTop: 0 }}>Cada equipo cuenta como alquilado mientras tenga un alquiler sin finalizar.</p>
+        {equiposDuplicados.length > 0 && (
+          <div style={{ background: '#FFF3E0', border: '1px solid #FFB74D', borderRadius: 8, padding: '10px 12px', marginBottom: 12, fontSize: 13 }}>
+            <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}>⚠️ {equiposDuplicados.length === 1 ? 'Hay 1 equipo' : `Hay ${equiposDuplicados.length} equipos`} con mas de un alquiler vigente</div>
+            <div style={{ color: '#5A6978', marginBottom: 6 }}>Aca se cuentan una sola vez, pero en Alquileres figuran dos veces. Corregilo en Alquileres: cambiale el equipo a uno de los dos pacientes (o finaliza el que ya no esta).</div>
+            {equiposDuplicados.map(d => (
+              <div key={d.id} style={{ marginTop: 2 }}><b>{d.nombre}</b>: {d.pacientes.join(' y ')}</div>
+            ))}
+          </div>
+        )}
         {porCategoria.map(c => {
           const pct = c.total ? Math.round((c.alquilados / c.total) * 100) : 0;
           return (
