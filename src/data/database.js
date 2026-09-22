@@ -731,7 +731,7 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
     doc.setTextColor(120, 120, 120);
     doc.setFontSize(7.5);
     doc.setFont(undefined, 'normal');
-    doc.text('Documento no válido como factura', width / 2, y, { align: 'center' });
+    doc.text('Documento sin validez fiscal', width / 2, y, { align: 'center' });
     y += 5;
   } else {
     y += 10;
