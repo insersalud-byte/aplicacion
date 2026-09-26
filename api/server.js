@@ -6,6 +6,12 @@
 //  2) API de vencimientos para integraciones (Hermes):
 //     GET /api/server?vencimientos=1&key=<clave generada en Configuracion>
 //     La clave se valida contra settings.apiKey guardada en Supabase.
+//  3) API de precios: GET /api/server?precios=1&key=<clave>
+//  4) API contable de SOLO LECTURA para el agente contador de Santi (Hermes):
+//     GET /api/server?contabilidad=1&key=<clave>
+//     Devuelve facturas, cotizaciones, alquileres con su cobranza, parque de equipos,
+//     catalogo de venta (con costo USD si esta cargado), mascaras, descartables y los
+//     parametros de la pestaña Contabilidad. Nunca escribe en la base.
 
 const ALLOWED_HOSTS = new Set([
   'cdn.zyrosite.com',
@@ -167,6 +173,121 @@ async function handlePrecios(req, res) {
   res.status(200).json(out);
 }
 
+// Datos contables normalizados, sin calculos: los indicadores (cobrado, contratado,
+// ganancia, MRR, ocupacion) los calcula el agente con las MISMAS reglas que la pestaña
+// Contabilidad de la app (periodosCobradosEnMes, vigenteEnMes, resumenDeMes en App.jsx).
+async function handleContabilidad(req, res) {
+  const data = await getAuthorizedData(req, res);
+  if (!data) return;
+
+  const num = (v) => Number(v) || 0;
+  const txt = (v) => String(v ?? '').trim();
+  const patients = data.patients || [];
+  const equipment = data.equipment || [];
+  const rentals = data.rentals || [];
+
+  const fechaDoc = (d) => txt(d.date || d.createdAt).slice(0, 10);
+  const itemsDoc = (d) => (d.items || []).map((it) => ({
+    nombre: txt(it.name),
+    precio: num(it.price),
+    cantidad: num(it.quantity) || 1,
+  }));
+  const doc = (d) => ({
+    numero: txt(d.invoiceNumber),
+    fecha: fechaDoc(d),
+    cliente: txt(d.clientName || d.customerName),
+    telefono: txt(d.clientPhone || d.customerPhone),
+    total: num(d.total),
+    notas: txt(d.notes),
+    items: itemsDoc(d),
+  });
+
+  const alquileres = rentals.map((r) => {
+    const p = patients.find((x) => x.id === r.patientId);
+    const e = equipment.find((x) => x.id === r.equipmentId);
+    return {
+      id: r.id,
+      paciente: p?.name || 'Sin paciente',
+      telefono: p?.phone || '',
+      equipo_id: r.equipmentId || '',
+      equipo: e?.name || 'Sin equipo',
+      serie: e?.serialNumber || '',
+      propiedad: e?.ownership || 'propio',
+      periodo: r.period === 'quincenal' ? 'quincenal' : 'mensual',
+      precio: num(r.price),
+      inicio: txt(r.startDate),
+      vencimiento: txt(r.endDate),
+      estado: txt(r.status),
+      baja: txt(r.finalizedAt).slice(0, 10),
+      pagos: r.paymentStatusByMonth || {},
+      notas: txt(r.notes),
+    };
+  });
+
+  const equipos = equipment.map((e) => ({
+    id: e.id,
+    nombre: txt(e.name),
+    serie: txt(e.serialNumber),
+    tipo: txt(e.type),
+    estado: txt(e.status),
+    propiedad: e.ownership || 'propio',
+    precio_mensual: num(e.rentalPrice),
+    precio_quincenal: num(e.rentalPrice15),
+  }));
+
+  // En la app "Precio USD" (priceUsd) es el costo y "Venta USD" (priceVentaUsd) el precio de venta.
+  const venta = (data.equiposNuevos || []).map((e) => ({
+    nombre: txt(e.name),
+    precio: num(e.price),
+    costo_usd: num(e.priceUsd),
+    venta_usd: num(e.priceVentaUsd),
+    stock: num(e.stock),
+  }));
+  const mascaras = (data.mascaras || []).map((m) => ({
+    nombre: txt(m.name),
+    precio: num(m.precio || m.price),
+    stock: num(m.stock),
+    stock_minimo: num(m.minStock),
+    talle: txt(m.talle),
+  }));
+  const descartables = (data.descartables || []).map((d) => ({
+    nombre: txt(d.name),
+    precio: num(d.price),
+    stock: num(d.stock),
+    stock_minimo: num(d.minStock),
+  }));
+
+  const c = data.settings?.contabilidad || {};
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).json({
+    generado: new Date().toISOString(),
+    hoy: hoyArgentina(),
+    parametros: {
+      margen_bruto_pct: c.margenBruto ?? 30,
+      margen_neto_pct: c.margenNeto ?? 20,
+      gasto_entrega: num(c.gastoEntrega),
+    },
+    resumen: {
+      facturas: (data.invoices || []).length,
+      cotizaciones: (data.quotations || []).length,
+      remitos: (data.remitos || []).length,
+      alquileres: alquileres.length,
+      equipos: equipos.length,
+      venta: venta.length,
+      mascaras: mascaras.length,
+      descartables: descartables.length,
+    },
+    facturas: (data.invoices || []).map(doc),
+    cotizaciones: (data.quotations || []).map(doc),
+    alquileres,
+    equipos,
+    venta,
+    mascaras,
+    descartables,
+  });
+}
+
 async function handleImageProxy(req, res) {
   const img = req.query?.img;
   let target;
@@ -220,9 +341,17 @@ export default async function handler(req, res) {
     }
     return;
   }
+  if (req.query?.contabilidad) {
+    try {
+      await handleContabilidad(req, res);
+    } catch (e) {
+      res.status(500).json({ error: 'Error interno', detail: String(e?.message || e) });
+    }
+    return;
+  }
   if (req.query?.img) {
     await handleImageProxy(req, res);
     return;
   }
-  res.status(400).json({ error: 'Parametro requerido: img, vencimientos o precios' });
+  res.status(400).json({ error: 'Parametro requerido: img, vencimientos, precios o contabilidad' });
 }
