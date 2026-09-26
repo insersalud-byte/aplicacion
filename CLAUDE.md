@@ -24,3 +24,7 @@ editar src/ -> `npm run build` -> `git add` (codigo fuente) -> commit -> `git pu
 ## Estilo
 - Conciso en la salida, exhaustivo en el razonamiento. Sin emojis ni em-dashes. Sin adulacion.
 - Leer los archivos antes de editarlos. No re-leer salvo que hayan cambiado.
+
+## API de solo lectura para Santi (Hermes) - api/server.js
+- `GET /api/server?vencimientos=1&key=` (alquileres vencidos/por vencer), `?precios=1&key=` (lista de precios) y, desde el 26-sept-2026 (commit 54fe5d8), `?contabilidad=1&key=` (facturas, cotizaciones, alquileres con `pagos` = paymentStatusByMonth, parque de equipos con ownership y precios, catalogo de venta con `costo_usd` = priceUsd y `venta_usd` = priceVentaUsd, mascaras, descartables y `parametros` = settings.contabilidad). La clave es settings.apiKey (se genera en Configuracion). Ninguno escribe.
+- La API devuelve datos normalizados SIN calculos: los indicadores (cobrado, contratado, ganancia, MRR, ocupacion) los recalcula el agente contador de Santi (`~/.hermes/plugins/inser/contabilidad.py` en el VPS) copiando las reglas de ContabilidadPage (periodosCobradosEnMes, periodosContratadosEnMes, vigenteEnMes, resumenDeMes, periodosImpagos, CATEGORIAS_*). **Si se cambia una de esas reglas en App.jsx, avisar: hay que replicarla en contabilidad.py** o los numeros de Santi dejan de coincidir con la pestaña.
