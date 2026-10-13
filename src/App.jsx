@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, onSyncStatus, onDataChange, syncIfRemoteChanged, login, logout, getSessionToken, onAuthRequired, hayCambiosSinSubir, cambiarClave } from './data/database';
+import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, onSyncStatus, getSyncStatus, onDataChange, syncIfRemoteChanged, login, logout, getSessionToken, onAuthRequired, hayCambiosSinSubir, cambiarClave } from './data/database';
+import { Icon, EquipoFoto, Avatar } from './ui';
 import './App.css';
 
 // Los documentos guardados (cotizaciones, remitos, facturas) NO deben llevar
@@ -240,8 +241,39 @@ function getRentalCollectedAmount(rental, referenceMonthKey) {
   return getRentalCollectedMonths(rental, referenceMonthKey) * Number(rental.price || 0);
 }
 
-function SyncIndicator() {
-  const [status, setStatus] = useState({ state: 'idle', lastSync: null, error: null });
+// Menu: secciones agrupadas. En celular, la barra inferior muestra las 4 mas
+// usadas y "Mas" abre el menu completo.
+const NAV = [
+  { titulo: 'Principal', items: [
+    { page: 'home', label: 'Inicio', icon: 'home' },
+    { page: 'rentals', label: 'Alquileres', icon: 'clipboard' },
+    { page: 'patients', label: 'Pacientes', icon: 'users' },
+    { page: 'calendar', label: 'Calendario', icon: 'calendar' },
+  ] },
+  { titulo: 'Inventario', items: [
+    { page: 'equipment', label: 'Equipos', icon: 'device' },
+    { page: 'equiposNuevos', label: 'Equipos nuevos', icon: 'tag' },
+    { page: 'mascaras', label: 'Mascarillas', icon: 'mask' },
+    { page: 'descartables', label: 'Descartables', icon: 'box' },
+  ] },
+  { titulo: 'Ventas', items: [
+    { page: 'quotations', label: 'Cotización / Remito', icon: 'file' },
+    { page: 'facturacion', label: 'Facturación', icon: 'cart' },
+    { page: 'contabilidad', label: 'Contabilidad', icon: 'chart' },
+  ] },
+  { titulo: 'Sistema', items: [
+    { page: 'settings', label: 'Configuración', icon: 'settings' },
+  ] },
+];
+const NAV_INFERIOR = [
+  { page: 'home', label: 'Inicio', icon: 'home' },
+  { page: 'rentals', label: 'Alquileres', icon: 'clipboard' },
+  { page: 'patients', label: 'Pacientes', icon: 'users' },
+  { page: 'equipment', label: 'Equipos', icon: 'device' },
+];
+
+function SyncIndicator({ compacto = false }) {
+  const [status, setStatus] = useState(() => getSyncStatus());
 
   useEffect(() => {
     return onSyncStatus(setStatus);
@@ -251,16 +283,19 @@ function SyncIndicator() {
     : status.state === 'saving' || status.state === 'loading' ? 'Sincronizando...'
     : status.state === 'error' ? 'Sin conexion'
     : '';
-  const color = status.state === 'ok' ? '#4ade80'
-    : status.state === 'error' ? '#f87171'
-    : status.state === 'saving' || status.state === 'loading' ? '#facc15'
+  const color = status.state === 'ok' ? '#10B981'
+    : status.state === 'error' ? '#EF4444'
+    : status.state === 'saving' || status.state === 'loading' ? '#F59E0B'
     : '#94a3b8';
 
+  if (compacto) {
+    return <span title={label + (status.error ? ': ' + status.error : '')} style={{ width: 10, height: 10, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0, margin: '0 8px' }} />;
+  }
   return (
-    <div style={{ padding: '8px 16px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 6, opacity: 0.85 }}
+    <div style={{ padding: '8px 12px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}
       title={status.error || ''}>
       <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }} />
-      <span style={{ color: '#cbd5e1' }}>{label}</span>
+      <span style={{ color: 'var(--muted)', fontWeight: 600 }}>{label}</span>
     </div>
   );
 }
@@ -288,23 +323,30 @@ function LoginPage({ onLogin }) {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F0F6FC', padding: 16 }}>
-      <form onSubmit={handleSubmit} className="card" style={{ width: '100%', maxWidth: 360, padding: 28 }}>
-        <div style={{ textAlign: 'center', marginBottom: 20 }}>
-          <img src="/logo.jpg" alt="" style={{ width: 72, height: 72, borderRadius: 12, objectFit: 'cover' }} onError={e => { e.currentTarget.style.display = 'none'; }} />
-          <h1 style={{ fontSize: 22, color: '#1E5AA8', margin: '10px 0 4px' }}>Inser Salud</h1>
-          <p style={{ color: '#5A6978', fontSize: 14, margin: 0 }}>Gestión de Equipos Respiratorios</p>
+    <div className="login-wrap">
+      <div className="login-foto">
+        <div className="login-foto-texto">
+          <strong>Equipos respiratorios en casa, bajo control.</strong>
+          <span>Alquileres, vencimientos y cobranzas de Inser Salud.</span>
         </div>
+      </div>
+      <div className="login-panel">
+      <form onSubmit={handleSubmit} className="login-card">
+        <img className="login-logo" src="/logo.jpg" alt="Inser Salud" onError={e => { e.currentTarget.style.display = 'none'; }} />
+        <h1>Gestión de equipos</h1>
+        <p className="sub">Ingresá con la contraseña de la app</p>
         <div className="form-group">
           <label className="form-label" htmlFor="app-password">Contraseña</label>
           <input id="app-password" type="password" className="form-input" autoComplete="current-password" autoFocus
             value={password} onChange={e => setPassword(e.target.value)} />
         </div>
-        {error && <div role="alert" style={{ color: '#C62828', fontSize: 13, marginBottom: 12 }}>{error}</div>}
-        <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={enviando || !password}>
+        {error && <div role="alert" className="alert alert-error" style={{ fontSize: 13.5, padding: '10px 12px' }}><Icon name="alert" size={18} />{error}</div>}
+        <button type="submit" className="btn btn-primary btn-block" disabled={enviando || !password}>
+          <Icon name="lock" size={18} />
           {enviando ? 'Ingresando...' : 'Ingresar'}
         </button>
       </form>
+      </div>
     </div>
   );
 }
@@ -312,6 +354,7 @@ function LoginPage({ onLogin }) {
 function App() {
   const [authed, setAuthed] = useState(() => Boolean(getSessionToken()));
   const [currentPage, setCurrentPage] = useState('home');
+  const [menuOpen, setMenuOpen] = useState(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -398,7 +441,12 @@ function App() {
   }
 
   if (loading || !data) {
-    return <div className="app-container"><div className="main-content">Cargando...</div></div>;
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: 'var(--muted)' }}>
+        <img src="/img/marca.png" alt="" style={{ width: 34 }} />
+        <span style={{ fontWeight: 600 }}>Cargando datos...</span>
+      </div>
+    );
   }
 
   const renderPage = () => {
@@ -420,83 +468,73 @@ function App() {
     }
   };
 
+  const irA = (page) => {
+    setCurrentPage(page);
+    setMenuOpen(false);
+    window.scrollTo(0, 0);
+  };
+  const tituloActual = (NAV.flatMap(g => g.items).find(i => i.page === currentPage) || {}).label || 'Inicio';
+
   return (
     <div className="app-container">
-      <nav className="sidebar">
-        <div className="sidebar-logo">Inser Salud</div>
-        <div className="sidebar-subtitle">Gestión de Equipos Respiratorios</div>
-        
-        <div className={`nav-item ${currentPage === 'home' ? 'active' : ''}`} onClick={() => setCurrentPage('home')}>
-          <span className="nav-icon">🏠</span>
-          <span className="nav-label">Inicio</span>
-        </div>
-        
-        <div className={`nav-item ${currentPage === 'patients' ? 'active' : ''}`} onClick={() => setCurrentPage('patients')}>
-          <span className="nav-icon">👤</span>
-          <span className="nav-label">Pacientes</span>
-        </div>
-        
-        <div className={`nav-item ${currentPage === 'rentals' ? 'active' : ''}`} onClick={() => setCurrentPage('rentals')}>
-          <span className="nav-icon">📋</span>
-          <span className="nav-label">Alquileres</span>
-        </div>
-        
-        <div className={`nav-item ${currentPage === 'equipment' ? 'active' : ''}`} onClick={() => setCurrentPage('equipment')}>
-          <span className="nav-icon">🔧</span>
-          <span className="nav-label">Equipos</span>
+      <header className="topbar">
+        <button className="topbar-btn" onClick={() => setMenuOpen(true)} aria-label="Abrir menu"><Icon name="menu" size={22} /></button>
+        <img src="/img/marca.png" alt="" />
+        <div className="topbar-title">{currentPage === 'home' ? 'Inser Salud' : tituloActual}</div>
+        <SyncIndicator compacto />
+      </header>
+
+      <div className={`drawer-backdrop ${menuOpen ? 'open' : ''}`} onClick={() => setMenuOpen(false)} />
+
+      <nav className={`sidebar ${menuOpen ? 'open' : ''}`} aria-label="Menu principal">
+        <div className="sidebar-brand">
+          <img src="/img/marca.png" alt="" />
+          <div>
+            <div className="sidebar-logo">Inser Salud</div>
+            <div className="sidebar-subtitle">Gestión de equipos respiratorios</div>
+          </div>
+          <button className="sidebar-close" onClick={() => setMenuOpen(false)} aria-label="Cerrar menu"><Icon name="x" /></button>
         </div>
 
-        <div className={`nav-item ${currentPage === 'mascaras' ? 'active' : ''}`} onClick={() => setCurrentPage('mascaras')}>
-          <span className="nav-icon">😷</span>
-          <span className="nav-label">Mascarillas</span>
-        </div>
+        {NAV.map(grupo => (
+          <div key={grupo.titulo}>
+            <div className="nav-section">{grupo.titulo}</div>
+            {grupo.items.map(it => (
+              <div key={it.page} className={`nav-item ${currentPage === it.page ? 'active' : ''}`} onClick={() => irA(it.page)}>
+                <span className="nav-icon"><Icon name={it.icon} /></span>
+                <span className="nav-label">{it.label}</span>
+              </div>
+            ))}
+          </div>
+        ))}
 
-        <div className={`nav-item ${currentPage === 'equiposNuevos' ? 'active' : ''}`} onClick={() => setCurrentPage('equiposNuevos')}>
-          <span className="nav-icon">🆕</span>
-          <span className="nav-label">Equipos Nuevos</span>
-        </div>
-
-        <div className={`nav-item ${currentPage === 'quotations' ? 'active' : ''}`} onClick={() => setCurrentPage('quotations')}>
-          <span className="nav-icon">💰</span>
-          <span className="nav-label">Cotiz./Remito</span>
-        </div>
-        
-        <div className={`nav-item ${currentPage === 'calendar' ? 'active' : ''}`} onClick={() => setCurrentPage('calendar')}>
-          <span className="nav-icon">📅</span>
-          <span className="nav-label">Calendario</span>
-        </div>
-        
-        <div className={`nav-item ${currentPage === 'descartables' ? 'active' : ''}`} onClick={() => setCurrentPage('descartables')}>
-          <span className="nav-icon">🧤</span>
-          <span className="nav-label">Descartables</span>
-        </div>
-        
-        <div className={`nav-item ${currentPage === 'facturacion' ? 'active' : ''}`} onClick={() => setCurrentPage('facturacion')}>
-          <span className="nav-icon">🛒</span>
-          <span className="nav-label">Facturación</span>
-        </div>
-        <div className={`nav-item ${currentPage === 'contabilidad' ? 'active' : ''}`} onClick={() => setCurrentPage('contabilidad')}>
-          <span className="nav-icon">📊</span>
-          <span className="nav-label">Contabilidad</span>
-        </div>
-        
-        <div className={`nav-item ${currentPage === 'settings' ? 'active' : ''}`} onClick={() => setCurrentPage('settings')}>
-          <span className="nav-icon">⚙️</span>
-          <span className="nav-label">Configuración</span>
-        </div>
-
-        <div style={{ marginTop: 'auto' }}>
+        <div style={{ marginTop: 'auto', paddingTop: 12 }}>
           <div className="nav-item" onClick={handleLogout} title="Cerrar sesion en este navegador">
-            <span className="nav-icon">🔒</span>
+            <span className="nav-icon"><Icon name="logout" /></span>
             <span className="nav-label">Cerrar sesión</span>
           </div>
           <SyncIndicator />
         </div>
       </nav>
-      
+
       <main className="main-content">
-        {renderPage()}
+        <div className="page-inner">
+          {renderPage()}
+        </div>
       </main>
+
+      <nav className="bottom-nav" aria-label="Accesos rapidos">
+        {NAV_INFERIOR.map(it => (
+          <button key={it.page} className={currentPage === it.page ? 'active' : ''} onClick={() => irA(it.page)}>
+            <Icon name={it.icon} size={22} />
+            {it.label}
+          </button>
+        ))}
+        <button className={menuOpen ? 'active' : ''} onClick={() => setMenuOpen(true)}>
+          <Icon name="menu" size={22} />
+          Más
+        </button>
+      </nav>
     </div>
   );
 }
@@ -578,38 +616,60 @@ function HomePage({ data, updateData }) {
 
   const [activeFilter, setActiveFilter] = useState(null);
 
+  const hora = new Date().getHours();
+  const saludo = hora < 12 ? 'Buen día' : hora < 20 ? 'Buenas tardes' : 'Buenas noches';
+  const fechaLarga = new Date().toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' });
+  const vencenHoy = rentals.filter(r => r.status !== 'finalizado' && r.endDate === today).length;
+  const abrirLista = (filtro) => {
+    setActiveFilter(filtro);
+    setTimeout(() => document.getElementById('lista-inicio')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  };
+
   return (
     <div>
-      <div className="page-header">
-        <h1 className="page-title">Inser Salud</h1>
-        <p className="page-subtitle">Gestión de Equipos Respiratorios</p>
-      </div>
+      <section className="hero">
+        <div className="hero-text">
+          <div className="hero-kicker">{fechaLarga}</div>
+          <div className="hero-title">{saludo}</div>
+          <div className="hero-sub">
+            {expiredRentals.length === 0 && expiringRentals.length === 0
+              ? 'Todo al día: no hay alquileres vencidos ni por vencer esta semana.'
+              : 'Esto es lo que necesita atención hoy.'}
+          </div>
+          <div className="hero-chips">
+            <button className="hero-chip" onClick={() => abrirLista('vencidos')}><span className="dot" style={{ background: '#FCA5A5' }} />{expiredRentals.length} vencidos</button>
+            {vencenHoy > 0 && <button className="hero-chip" onClick={() => abrirLista('vencidos')}><span className="dot" style={{ background: '#FDBA74' }} />{vencenHoy} vencen hoy</button>}
+            <button className="hero-chip" onClick={() => abrirLista('porVencer')}><span className="dot" style={{ background: '#FDE68A' }} />{expiringRentals.length} en los próximos {DIAS_AVISO} días</button>
+          </div>
+        </div>
+        <div className="hero-img" aria-hidden="true" />
+      </section>
 
       <div className="stats-grid">
-        <div className="stat-card" style={{ cursor: 'pointer', outline: activeFilter === 'activos' ? '3px solid #1E5AA8' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'activos' ? null : 'activos')}>
-          <div className="stat-icon">📋</div>
+        <div className="stat-card" style={{ cursor: 'pointer', outline: activeFilter === 'activos' ? '3px solid #1D5FBF' : 'none' }} onClick={() => setActiveFilter(activeFilter === 'activos' ? null : 'activos')}>
+          <div className="stat-icon"><Icon name="clipboard" size={22} /></div>
           <div className="stat-value">{activeRentals.length}</div>
-          <div className="stat-label">Alquileres Activos</div>
+          <div className="stat-label">Alquileres activos</div>
         </div>
-        <div className="stat-card warning" style={{ cursor: 'pointer', outline: activeFilter === 'porVencer' ? '3px solid #F9A825' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'porVencer' ? null : 'porVencer')}>
-          <div className="stat-icon">⚠️</div>
+        <div className="stat-card warning" style={{ cursor: 'pointer', outline: activeFilter === 'porVencer' ? '3px solid #F59E0B' : 'none' }} onClick={() => setActiveFilter(activeFilter === 'porVencer' ? null : 'porVencer')}>
+          <div className="stat-icon"><Icon name="clock" size={22} /></div>
           <div className="stat-value">{expiringRentals.length}</div>
-          <div className="stat-label">Por Vencer ({DIAS_AVISO} días)</div>
+          <div className="stat-label">Por vencer ({DIAS_AVISO} días)</div>
         </div>
-        <div className="stat-card error" style={{ cursor: 'pointer', outline: activeFilter === 'vencidos' ? '3px solid #E53935' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'vencidos' ? null : 'vencidos')}>
-          <div className="stat-icon">❌</div>
+        <div className="stat-card error" style={{ cursor: 'pointer', outline: activeFilter === 'vencidos' ? '3px solid #EF4444' : 'none' }} onClick={() => setActiveFilter(activeFilter === 'vencidos' ? null : 'vencidos')}>
+          <div className="stat-icon"><Icon name="alert" size={22} /></div>
           <div className="stat-value">{expiredRentals.length}</div>
           <div className="stat-label">Vencidos</div>
         </div>
-        <div className="stat-card success" style={{ cursor: 'pointer', outline: activeFilter === 'cobrados' ? '3px solid #2E7D32' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'cobrados' ? null : 'cobrados')}>
-          <div className="stat-icon">💵</div>
+        <div className="stat-card success" style={{ cursor: 'pointer', outline: activeFilter === 'cobrados' ? '3px solid #10B981' : 'none' }} onClick={() => setActiveFilter(activeFilter === 'cobrados' ? null : 'cobrados')}>
+          <div className="stat-icon"><Icon name="cash" size={22} /></div>
           <div className="stat-value">{collectedRentals.length}</div>
-          <div className="stat-label">Alquileres Cobrados</div>
+          <div className="stat-label">Cobrados del mes</div>
         </div>
         <div className="stat-card success">
-          <div className="stat-icon">✓</div>
+          <div className="stat-icon"><Icon name="check" size={22} /></div>
           <div className="stat-value">{availableEquipment.length}</div>
-          <div className="stat-label">Equipos Disponibles</div>
+          <div className="stat-label">Equipos disponibles</div>
         </div>
       </div>
 
@@ -685,8 +745,11 @@ function HomePage({ data, updateData }) {
         };
 
         return list.length > 0 ? (
-          <div className="card" style={{ borderTop: `3px solid ${color}` }}>
-            <h3 className="card-title" style={{ color }}>{title} ({list.length})</h3>
+          <div className="card" id="lista-inicio" style={{ borderTop: `3px solid ${color}`, scrollMarginTop: 70 }}>
+            <div className="card-header">
+              <h3 className="card-title" style={{ color }}>{title} ({list.length})</h3>
+              <button className="btn btn-sm btn-secondary btn-icon" onClick={() => setActiveFilter(null)} aria-label="Cerrar lista"><Icon name="x" size={16} /></button>
+            </div>
             {isCobrados && (
               <div style={{ background: '#E8F5E9', border: '1px solid #A5D6A7', borderRadius: 8, padding: '10px 14px', marginBottom: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontWeight: 600, color: '#2E7D32' }}>Total cobrado</span>
@@ -698,14 +761,14 @@ function HomePage({ data, updateData }) {
               const eq = equipment.find(e => e.id === r.equipmentId);
               const unpaid = isVencidos ? getUnpaidMonths(r) : [];
               return (
-                <div key={r.id} style={{ padding: '10px 0', borderBottom: '1px solid #E3F2FD' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <div style={{ fontWeight: 600 }}>
-                        {pat?.name || 'Sin paciente'}
-                        {pat?.phone && <span style={{ fontWeight: 400, color: '#1E5AA8', fontSize: 13 }}> · 📞 {pat.phone}</span>}
-                      </div>
-                      <div style={{ fontSize: 13, color: '#5A6978' }}>{eq?.name || 'Sin equipo'}</div>
+                <div key={r.id} className="fila-alquiler">
+                  <EquipoFoto equipo={eq} size={52} />
+                  <div className="fila-cuerpo">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700 }}>{pat?.name || 'Sin paciente'}</div>
+                      <div style={{ fontSize: 13, color: 'var(--muted)' }}>{eq?.name || 'Sin equipo'}</div>
+                      {pat?.phone && <a href={`tel:${pat.phone}`} style={{ fontSize: 13, color: 'var(--brand)', display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none', marginTop: 2 }}><Icon name="phone" size={13} />{pat.phone}</a>}
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <div style={{ fontWeight: 600, color }}>{formatCurrency(r.price)}{periodoDe(r) === 'quincenal' ? '/15 dias' : '/mes'}</div>
@@ -716,20 +779,21 @@ function HomePage({ data, updateData }) {
                     </div>
                   </div>
                   {isVencidos && (
-                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                      <button className="btn btn-sm" style={{ background: '#FB8C00', color: '#fff', fontSize: 11, padding: '4px 8px' }} onClick={() => handleReminder(r)}>
-                        📲 Recordatorio
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+                      <button className="btn btn-sm" style={{ background: '#16A34A', color: '#fff' }} onClick={() => handleReminder(r)}>
+                        <Icon name="whatsapp" size={15} /> Recordatorio
                       </button>
                       {unpaid.map(mk => (
-                        <button key={mk} className="btn btn-sm btn-success" onClick={() => handlePayMonth(r.id, mk)} style={{ fontSize: 11, padding: '4px 8px' }}>
-                          Pagar {etiquetaPeriodo(mk)}
+                        <button key={mk} className="btn btn-sm btn-primary" onClick={() => handlePayMonth(r.id, mk)}>
+                          <Icon name="check" size={15} /> Pagar {etiquetaPeriodo(mk)}
                         </button>
                       ))}
-                      <button className="btn btn-sm btn-danger" style={{ fontSize: 11, padding: '4px 8px' }} title="Dar de baja: genera remito de retiro y libera el equipo" onClick={() => handleCese(r)}>
-                        🛑 Cese alquiler
+                      <button className="btn btn-sm btn-danger" title="Dar de baja: genera remito de retiro y libera el equipo" onClick={() => handleCese(r)}>
+                        <Icon name="stop" size={15} /> Cese alquiler
                       </button>
                     </div>
                   )}
+                  </div>
                 </div>
               );
             })}
@@ -770,21 +834,30 @@ function HomePage({ data, updateData }) {
 
       </div>
 
-      {expiringRentals.length > 0 && (
+      {expiringRentals.length > 0 && activeFilter !== 'porVencer' && (
         <div className="card">
           <div className="card-header">
-            <h3 className="card-title">Próximos a Vencer</h3>
+            <h3 className="card-title"><Icon name="clock" size={18} /> Próximos vencimientos ({DIAS_AVISO} días)</h3>
+            {expiringRentals.length > 6 && <button className="btn btn-sm btn-secondary" onClick={() => abrirLista('porVencer')}>Ver los {expiringRentals.length}</button>}
           </div>
-          <div className="monthly-summary-grid">
-            <div className="monthly-summary-item warning">
-              <span className="monthly-summary-label">Alquileres por vencer</span>
-              <strong className="monthly-summary-value">{expiringRentals.length}</strong>
-            </div>
-            <div className="monthly-summary-item">
-              <span className="monthly-summary-label">Ver detalle completo</span>
-              <strong className="monthly-summary-value">Entrá a Alquileres</strong>
-            </div>
-          </div>
+          {expiringRentals.slice(0, 6).map(r => {
+            const pat = patients.find(p => p.id === r.patientId);
+            const eq = equipment.find(e => e.id === r.equipmentId);
+            const dias = getDaysUntilEnd(r.endDate);
+            return (
+              <div key={r.id} className="fila-alquiler" style={{ alignItems: 'center' }}>
+                <EquipoFoto equipo={eq} size={46} />
+                <div className="fila-cuerpo">
+                  <div style={{ fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pat?.name || 'Sin paciente'}</div>
+                  <div style={{ fontSize: 13, color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{eq?.name || 'Sin equipo'}</div>
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontWeight: 800, color: dias <= 2 ? 'var(--bad)' : 'var(--warn)', fontSize: 13.5 }}>{textoDias(r.endDate)}</div>
+                  <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>{formatDate(r.endDate)}</div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -917,11 +990,11 @@ function QuickDocGenerator({ data, updateData }) {
   return (
     <div className="card">
       <div className="card-header">
-        <h3 className="card-title">⚡ Generador rápido</h3>
+        <h3 className="card-title"><Icon name="zap" size={18} /> Generador rápido</h3>
       </div>
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
-        {[['factura', '🧾 Factura'], ['remito', '📝 Remito'], ['cotizacion', '💰 Cotización']].map(([v, lbl]) => (
+        {[['factura', 'Factura'], ['remito', 'Remito'], ['cotizacion', 'Cotización']].map(([v, lbl]) => (
           <button key={v} className={`filter-btn ${docType === v ? 'active' : ''}`} onClick={() => cambiarDocType(v)}>{lbl}</button>
         ))}
         {docType === 'factura' && <span style={{ fontSize: 12, color: '#5A6978', alignSelf: 'center' }}>La factura descuenta stock</span>}
@@ -945,11 +1018,11 @@ function QuickDocGenerator({ data, updateData }) {
         <label className="form-label">Agregar producto</label>
         <select className="form-select" value={category} onChange={e => { setCategory(e.target.value); setSearch(''); }}>
           <option value="">Elegir categoría...</option>
-          {docType === 'remito' && <option value="equipos">🔧 Equipos (alquiler)</option>}
-          <option value="mascarillas">😷 Mascarillas</option>
-          <option value="equiposNuevos">🆕 Equipos Nuevos</option>
-          <option value="descartables">🧤 Descartables</option>
-          <option value="libre">✏️ Item libre</option>
+          {docType === 'remito' && <option value="equipos">Equipos (alquiler)</option>}
+          <option value="mascarillas">Mascarillas</option>
+          <option value="equiposNuevos">Equipos nuevos</option>
+          <option value="descartables">Descartables</option>
+          <option value="libre">Ítem libre</option>
         </select>
       </div>
 
@@ -992,9 +1065,9 @@ function QuickDocGenerator({ data, updateData }) {
                 <div style={{ fontSize: 12, color: '#5A6978' }}>{formatCurrency(it.price)} c/u</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <button className="btn btn-sm" onClick={() => cambiarCantidad(idx, -1)}>➖</button>
+                <button className="btn btn-sm" onClick={() => cambiarCantidad(idx, -1)} aria-label="Restar"><Icon name="minus" size={16} /></button>
                 <span style={{ minWidth: 22, textAlign: 'center', fontWeight: 700 }}>{it.quantity}</span>
-                <button className="btn btn-sm" onClick={() => cambiarCantidad(idx, 1)}>➕</button>
+                <button className="btn btn-sm" onClick={() => cambiarCantidad(idx, 1)} aria-label="Sumar"><Icon name="plus" size={16} /></button>
                 <button className="btn btn-sm btn-danger" onClick={() => setItems(items.filter((_, i) => i !== idx))}>×</button>
               </div>
             </div>
@@ -1007,7 +1080,7 @@ function QuickDocGenerator({ data, updateData }) {
       )}
 
       <button className="btn btn-primary btn-block" onClick={handleGenerar}>
-        📄 Generar
+        <Icon name="file" size={16} /> Generar
       </button>
     </div>
   );
@@ -1209,7 +1282,7 @@ function PatientsPage({ data, updateData }) {
       </div>
 
       <div className="search-box">
-        <span>🔍</span>
+        <Icon name="search" size={18} />
         <input type="text" className="search-input" placeholder="Buscar por nombre, teléfono, DNI, dirección, equipo..." value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
 
@@ -1219,23 +1292,23 @@ function PatientsPage({ data, updateData }) {
 
       {filteredPatients.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-icon">👤</div>
+          <div className="empty-icon"><Icon name="users" size={28} /></div>
           <div className="empty-title">Sin Pacientes</div>
           <div className="empty-message">Agrega tu primer paciente</div>
         </div>
       ) : (
         filteredPatients.map(patient => (
           <div key={patient.id} className="patient-card" onClick={() => { setEditingPatient(patient); setShowModal(true); }}>
-            <div className="patient-avatar">{patient.name.charAt(0)}</div>
+            <Avatar nombre={patient.name} size={44} />
             <div className="patient-info">
               <div className="patient-name">{patient.name}</div>
-              <div className="patient-detail">DNI: {patient.dni} • 📞 {patient.phone}</div>
+              <div className="patient-detail">{patient.dni && <span>DNI {patient.dni}</span>}{patient.phone && <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><Icon name="phone" size={13} />{patient.phone}</span>}</div>
               <div className="patient-detail">{patient.address}</div>
             </div>
-            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-              <button className="btn btn-sm" style={{ background: '#00838F', color: '#fff' }} title="Historial de pagos" onClick={(e) => { e.stopPropagation(); setHistorialPatient(patient); }}>📋 Historial</button>
-              <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditingPatient(patient); setShowModal(true); }}>✏️</button>
-              <button className="btn btn-sm btn-danger" onClick={(e) => { e.stopPropagation(); handleDelete(patient.id); }}>🗑️</button>
+            <div className="patient-actions">
+              <button className="btn btn-sm btn-secondary" title="Historial de pagos" onClick={(e) => { e.stopPropagation(); setHistorialPatient(patient); }}><Icon name="clipboard" size={15} /> Historial</button>
+              <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setEditingPatient(patient); setShowModal(true); }} title="Editar" aria-label="Editar"><Icon name="edit" size={16} /></button>
+              <button className="btn btn-sm btn-danger" onClick={(e) => { e.stopPropagation(); handleDelete(patient.id); }} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
             </div>
           </div>
         ))
@@ -1614,10 +1687,10 @@ function RentalsPage({ data, updateData }) {
       </div>
 
       {expiringToday.length > 0 && (
-        <div style={{ background: '#FFEBEE', border: '2px solid #EF5350', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, color: '#C62828', marginBottom: 4 }}>🔴 Vencen HOY ({expiringToday.length})</div>
+        <div className="aviso aviso-hoy">
+          <div className="aviso-titulo"><span className="dot dot-rojo" /> Vencen hoy ({expiringToday.length})</div>
           {expiringToday.map(r => (
-            <div key={r.id} style={{ fontSize: 13, color: '#B71C1C', marginTop: 2 }}>
+            <div key={r.id} style={{ fontSize: 13.5, marginTop: 2 }}>
               • {getPatientName(r.patientId)} — {getEquipmentName(r.equipmentId)} — vence {formatDate(r.endDate)}
             </div>
           ))}
@@ -1625,10 +1698,10 @@ function RentalsPage({ data, updateData }) {
       )}
 
       {expiringSoon.length > 0 && (
-        <div style={{ background: '#FFF3E0', border: '2px solid #FFA726', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}>🟠 Por vencer en los proximos {DIAS_AVISO} dias ({expiringSoon.length})</div>
+        <div className="aviso aviso-pronto">
+          <div className="aviso-titulo"><span className="dot dot-naranja" /> Por vencer en los próximos {DIAS_AVISO} días ({expiringSoon.length})</div>
           {expiringSoon.map(r => (
-            <div key={r.id} style={{ fontSize: 13, color: '#BF360C', marginTop: 2 }}>
+            <div key={r.id} style={{ fontSize: 13.5, marginTop: 2 }}>
               • {getPatientName(r.patientId)} — {getEquipmentName(r.equipmentId)} — vence {formatDate(r.endDate)} ({textoDias(r.endDate)})
             </div>
           ))}
@@ -1652,19 +1725,19 @@ function RentalsPage({ data, updateData }) {
           + Agregar Alquiler
         </button>
         <button className="btn btn-secondary" onClick={handleUnificarVencimientos} title="Establece el vencimiento a 1 mes de la fecha de inicio, avanzando mes a mes hasta el proximo vencimiento">
-          📅 Normalizar Vencimientos
+          <Icon name="calendar" size={16} /> Normalizar vencimientos
         </button>
       </div>
 
       {filteredRentals.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-icon">📋</div>
+          <div className="empty-icon"><Icon name="clipboard" size={28} /></div>
           <div className="empty-title">Sin Alquileres</div>
         </div>
       ) : (
-        <div className="card" style={{ overflowX: 'auto', padding: 0 }}>
+        <div className="card card-tabla" style={{ overflowX: 'auto', padding: 0 }}>
           <div style={{ overflowX: 'auto', width: '100%' }}>
-            <table className="table">
+            <table className="table table-alquileres">
               <thead>
                 <tr>
                   <th>Paciente</th>
@@ -1681,22 +1754,22 @@ function RentalsPage({ data, updateData }) {
                   const status = isRentalExpired(rental) ? 'vencido' : rental.status;
                   return (
                     <tr key={rental.id}>
-                      <td>{getPatientName(rental.patientId)}</td>
-                      <td>{getEquipmentName(rental.equipmentId)}</td>
-                      <td>{formatDate(rental.startDate)}</td>
-                      <td>{formatDate(rental.endDate)}</td>
-                      <td>{formatCurrency(rental.price)}<div style={{ fontSize: 11, color: periodoDe(rental) === 'quincenal' ? '#F57C00' : '#5A6978', fontWeight: 600 }}>{PERIODO_LABEL[periodoDe(rental)]}</div></td>
-                      <td><span className={`badge badge-${status}`}>{status}</span></td>
-                      <td>
-                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-                          <button className="btn btn-sm btn-secondary" onClick={() => { setEditingRental(rental); setShowModal(true); }}>✏️</button>
-                          <button className="btn btn-sm btn-secondary" title={rental.status === 'finalizado' ? 'Generar remito de retiro' : 'Generar remito de entrega'} onClick={() => handleRemitoManual(rental)}>📄 Remito</button>
-                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(rental.id)}>🗑️</button>
+                      <td className="td-paciente">{getPatientName(rental.patientId)}</td>
+                      <td className="td-equipo"><div className="celda-equipo"><EquipoFoto equipo={equipment.find(e => e.id === rental.equipmentId)} size={36} /><span className="txt">{getEquipmentName(rental.equipmentId)}</span></div></td>
+                      <td data-label="Inicio">{formatDate(rental.startDate)}</td>
+                      <td data-label="Vence">{formatDate(rental.endDate)}</td>
+                      <td data-label="Precio"><span>{formatCurrency(rental.price)}<span className="periodo" style={{ fontSize: 11.5, color: periodoDe(rental) === 'quincenal' ? 'var(--warn)' : 'var(--muted)', fontWeight: 700 }}>{PERIODO_LABEL[periodoDe(rental)]}</span></span></td>
+                      <td data-label="Estado"><span className={`badge badge-${status}`}>{status}</span></td>
+                      <td className="td-acciones">
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <button className="btn btn-sm btn-secondary" onClick={() => { setEditingRental(rental); setShowModal(true); }} title="Editar" aria-label="Editar"><Icon name="edit" size={16} /></button>
+                          <button className="btn btn-sm btn-secondary" title={rental.status === 'finalizado' ? 'Generar remito de retiro' : 'Generar remito de entrega'} onClick={() => handleRemitoManual(rental)}><Icon name="file" size={15} /><span className="btn-txt">Remito</span></button>
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(rental.id)} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
                           {esNuevoParaResena(rental) && (
-                            <button className="btn btn-sm btn-success" title="Pedir reseña en Google" onClick={() => handleReview(rental)}>⭐ Reseña</button>
+                            <button className="btn btn-sm btn-success" title="Pedir reseña en Google" onClick={() => handleReview(rental)}><Icon name="star" size={15} /><span className="btn-txt">Reseña</span></button>
                           )}
                           {status === 'vencido' && (
-                            <button className="btn btn-sm" style={{ background: '#FB8C00', color: '#fff' }} title="Enviar recordatorio de vencimiento por WhatsApp" onClick={() => handleReminder(rental)}>📲 Recordatorio</button>
+                            <button className="btn btn-sm" style={{ background: '#16A34A', color: '#fff' }} title="Enviar recordatorio de vencimiento por WhatsApp" onClick={() => handleReminder(rental)}><Icon name="whatsapp" size={15} /><span className="btn-txt">Recordatorio</span></button>
                           )}
                         </div>
                       </td>
@@ -1958,7 +2031,7 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
                 <option value="">Seleccionar...</option>
                 {ordenNuevosPrimero(patients).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
-              <button type="button" className="btn" onClick={() => setShowNewPatient(!showNewPatient)}>➕</button>
+              <button type="button" className="btn" onClick={() => setShowNewPatient(!showNewPatient)} aria-label="Sumar"><Icon name="plus" size={16} /></button>
             </div>
           </div>
 
@@ -2159,7 +2232,7 @@ function EquipmentPage({ data, updateData }) {
       <div className="filters">
         {['todos', 'disponible', 'alquilado', 'mantenimiento'].map(f => (
           <button key={f} className={`filter-btn ${filter === f ? 'active' : ''}`} onClick={() => setFilter(f)}>
-            {f === 'disponible' ? '🟢 Disponible' : f === 'alquilado' ? '🔴 Alquilado' : f.charAt(0).toUpperCase() + f.slice(1)}
+            {f === 'disponible' ? <><span className="dot dot-verde" />Disponible</> : f === 'alquilado' ? <><span className="dot dot-rojo" />Alquilado</> : f.charAt(0).toUpperCase() + f.slice(1)}
           </button>
         ))}
       </div>
@@ -2170,7 +2243,7 @@ function EquipmentPage({ data, updateData }) {
 
       {filteredEquipment.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-icon">🔧</div>
+          <div className="empty-icon"><Icon name="device" size={28} /></div>
           <div className="empty-title">Sin Equipos</div>
         </div>
       ) : (
@@ -2179,26 +2252,18 @@ function EquipmentPage({ data, updateData }) {
             const currentPatient = getCurrentPatient(equip.id);
             const isRented = !!currentPatient;
             return (
-              <div key={equip.id} className="card" style={{ padding: 14, borderLeft: isRented ? '4px solid #E53935' : '4px solid #43A047' }}>
-                <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
-                  {equip.imageUrl ? (
-                    <img src={equip.imageUrl} alt={equip.name} style={{ width: 48, height: 48, objectFit: 'cover', borderRadius: 6, flexShrink: 0 }} />
-                  ) : (
-                    <div style={{ width: 48, height: 48, borderRadius: 6, background: '#f0f0f0', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: 22 }}>🔧</div>
-                  )}
+              <div key={equip.id} className="card" style={{ padding: 14, marginBottom: 0 }}>
+                <div style={{ display: 'flex', gap: 12, marginBottom: 10, alignItems: 'center' }}>
+                  <EquipoFoto equipo={equip} size={64} />
                   <div style={{ minWidth: 0 }}>
-                    <div title={equip.name} style={{ fontWeight: 700, fontSize: 14, color: isRented ? '#E53935' : '#1a1a1a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', cursor: 'default' }}>{equip.name}</div>
-                    <div style={{ fontSize: 12, color: '#666' }}>Serie: {equip.serialNumber}</div>
+                    <div title={equip.name} style={{ fontWeight: 700, fontSize: 14.5, color: 'var(--ink)', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{equip.name}</div>
+                    <div style={{ fontSize: 12.5, color: 'var(--muted)' }}>Serie: {equip.serialNumber}</div>
                   </div>
                 </div>
                 {isRented ? (
-                  <div style={{ background: '#FFEBEE', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
-                    <span style={{ color: '#E53935', fontWeight: 600, fontSize: 13 }}>Alquilado a: {currentPatient.name}</span>
-                  </div>
+                  <div style={{ marginBottom: 8 }}><span className="badge badge-alquilado" style={{ textTransform: 'none', maxWidth: '100%' }}>Alquilado a {currentPatient.name}</span></div>
                 ) : (
-                  <div style={{ background: '#E8F5E9', borderRadius: 6, padding: '6px 10px', marginBottom: 8 }}>
-                    <span style={{ color: '#43A047', fontWeight: 600, fontSize: 13 }}>Disponible</span>
-                  </div>
+                  <div style={{ marginBottom: 8 }}><span className="badge badge-disponible">Disponible</span></div>
                 )}
                 {(equip.rentalPrice > 0 || equip.rentalPrice15 > 0) && (
                   <div style={{ fontSize: 12, color: '#1E5AA8', fontWeight: 600, marginBottom: 6 }}>
@@ -2208,9 +2273,9 @@ function EquipmentPage({ data, updateData }) {
                   </div>
                 )}
                 <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                  <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment({ ...equip, id: null, serialNumber: equip.serialNumber + '-COPY' }); setShowModal(true); }}>📋</button>
-                  <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment(equip); setShowModal(true); }}>✏️</button>
-                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(equip.id)}>🗑️</button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment({ ...equip, id: null, serialNumber: equip.serialNumber + '-COPY' }); setShowModal(true); }} aria-label="Duplicar" title="Duplicar"><Icon name="copy" size={16} /></button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => { setEditingEquipment(equip); setShowModal(true); }} title="Editar" aria-label="Editar"><Icon name="edit" size={16} /></button>
+                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(equip.id)} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
                 </div>
               </div>
             );
@@ -2336,8 +2401,8 @@ function EquipmentModal({ equipment, onSave, onClose }) {
           <div className="form-group">
             <label className="form-label">Ownership</label>
             <select className="form-select" value={form.ownership} onChange={e => setForm({...form, ownership: e.target.value})}>
-              <option value="propio">🏠 Propio</option>
-              <option value="alquilado">📋 Alquilado (tercero)</option>
+              <option value="propio">Propio</option>
+              <option value="alquilado">Alquilado (tercero)</option>
             </select>
           </div>
           
@@ -2420,12 +2485,12 @@ function EquiposNuevosPage({ data, updateData }) {
       </div>
       <button className="btn btn-primary btn-block" onClick={() => { setEditing(null); setShowModal(true); }} style={{ marginBottom: 20 }}>+ Agregar Equipo Nuevo</button>
       {filtered.length === 0 ? (
-        <div className="empty-state"><div className="empty-icon">🆕</div><div className="empty-title">Sin equipos nuevos</div></div>
+        <div className="empty-state"><div className="empty-icon"><Icon name="tag" size={28} /></div><div className="empty-title">Sin equipos nuevos</div></div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {filtered.map(eq => (
             <div key={eq.id} className="card" style={{ padding: 14 }}>
-              {eq.imageUrl && <img src={eq.imageUrl} alt={eq.name} style={{ width: '100%', height: 160, objectFit: 'cover', borderRadius: 8, marginBottom: 10 }} />}
+              {eq.imageUrl && <div style={{ background: '#fff', border: '1px solid var(--line)', borderRadius: 12, marginBottom: 10, height: 170, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}><img src={eq.imageUrl} alt={eq.name} loading="lazy" decoding="async" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /></div>}
               <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>{eq.name}</div>
               {eq.description && <div style={{ fontSize: 13, color: '#5A6978', marginBottom: 4 }}>{eq.description}</div>}
               {eq.serialNumber && <div style={{ fontSize: 12, color: '#5A6978', marginBottom: 4 }}>N° serie: {eq.serialNumber}</div>}
@@ -2434,9 +2499,9 @@ function EquiposNuevosPage({ data, updateData }) {
               {eq.priceVentaUsd > 0 && <div style={{ fontSize: 12, color: '#5A6978' }}>Venta: USD {eq.priceVentaUsd}</div>}
               <div style={{ fontSize: 13, fontWeight: 600, color: Number(eq.stock) > 0 ? '#43A047' : '#E53935', marginBottom: 8 }}>Stock: {Number(eq.stock) || 0}</div>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button className="btn btn-sm btn-secondary" title="Otra unidad con distinto N° de serie" onClick={() => { setEditing({ ...eq, id: null, serialNumber: '', stock: 1 }); setShowModal(true); }}>📋</button>
-                <button className="btn btn-sm btn-secondary" onClick={() => { setEditing(eq); setShowModal(true); }}>✏️</button>
-                <button className="btn btn-sm btn-danger" onClick={() => handleDelete(eq.id)}>🗑️</button>
+                <button className="btn btn-sm btn-secondary" title="Otra unidad con distinto N° de serie" onClick={() => { setEditing({ ...eq, id: null, serialNumber: '', stock: 1 }); setShowModal(true); }} aria-label="Duplicar" title="Duplicar"><Icon name="copy" size={16} /></button>
+                <button className="btn btn-sm btn-secondary" onClick={() => { setEditing(eq); setShowModal(true); }} title="Editar" aria-label="Editar"><Icon name="edit" size={16} /></button>
+                <button className="btn btn-sm btn-danger" onClick={() => handleDelete(eq.id)} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
               </div>
             </div>
           ))}
@@ -2622,12 +2687,12 @@ function MascarasPage({ data, updateData }) {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">😷 Mascarillas y Consumibles</h1>
+        <h1 className="page-title">Mascarillas y consumibles</h1>
         <p className="page-subtitle">{mascaras.length} productos</p>
       </div>
 
       <div className="search-box">
-        <span>🔍</span>
+        <Icon name="search" size={18} />
         <input type="text" className="search-input" placeholder="Buscar por nombre, tipo o descripción..." value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
 
@@ -2645,28 +2710,28 @@ function MascarasPage({ data, updateData }) {
 
       {filteredMascaras.length === 0 ? (
         <div className="empty-state">
-          <div className="empty-icon">😷</div>
+          <div className="empty-icon"><Icon name="mask" size={28} /></div>
           <div className="empty-title">Sin Productos</div>
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 20 }}>
           {filteredMascaras.map(mascara => (
             <div key={mascara.id} className="card" style={{ padding: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-              <div style={{ width: '100%', height: 200, background: '#f0f4f8', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+              <div style={{ width: '100%', height: 190, background: '#fff', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
                 {mascara.imageUrl ? (
-                  <img src={mascara.imageUrl} alt={mascara.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <img src={mascara.imageUrl} alt={mascara.name} loading="lazy" decoding="async" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} />
                 ) : (
-                  <span style={{ fontSize: 64 }}>😷</span>
+                  <img src="/img/equipos/mascara.webp" alt="" style={{ width: '55%', height: 'auto', opacity: 0.8 }} />
                 )}
               </div>
               <div style={{ padding: '16px', flex: 1, display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div>
                   <strong style={{ fontSize: 16 }}>{mascara.name}</strong>
                   <div style={{ fontSize: 12, color: '#5A6978', marginTop: 2 }}>{mascara.type}</div>
-                  {mascara.description && <div style={{ fontSize: 12, color: '#5A6978', marginTop: 4 }}>{mascara.description}</div>}
+                  {mascara.description && <div title={mascara.description} style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 4, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{mascara.description}</div>}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                  <button className="btn btn-sm" onClick={() => updateStock(mascara.id, -1)}>➖</button>
+                  <button className="btn btn-sm" onClick={() => updateStock(mascara.id, -1)} aria-label="Restar"><Icon name="minus" size={16} /></button>
                   <span style={{
                     minWidth: 44,
                     textAlign: 'center',
@@ -2676,16 +2741,16 @@ function MascarasPage({ data, updateData }) {
                   }}>
                     {mascara.stock}
                   </span>
-                  <button className="btn btn-sm" onClick={() => updateStock(mascara.id, 1)}>➕</button>
+                  <button className="btn btn-sm" onClick={() => updateStock(mascara.id, 1)} aria-label="Sumar"><Icon name="plus" size={16} /></button>
                   <span style={{ fontSize: 11, color: '#9AA5B4', marginLeft: 4 }}>min: {mascara.minStock}</span>
                 </div>
                 {mascara.precio > 0 && (
                   <div style={{ fontSize: 13, color: '#1565C0', fontWeight: 'bold' }}>{formatCurrency(mascara.precio)}</div>
                 )}
                 <div style={{ display: 'flex', gap: 6, marginTop: 'auto', paddingTop: 8 }}>
-                  <button className="btn btn-sm btn-secondary" style={{ flex: 1 }} onClick={() => { setEditingMascara(mascara); setShowModal(true); }}>✏️ Editar</button>
-                  <button className="btn btn-sm btn-secondary" onClick={() => handleDuplicate(mascara)}>📋</button>
-                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(mascara.id)}>🗑️</button>
+                  <button className="btn btn-sm btn-secondary" style={{ flex: 1 }} onClick={() => { setEditingMascara(mascara); setShowModal(true); }}><Icon name="edit" size={15} /> Editar</button>
+                  <button className="btn btn-sm btn-secondary" onClick={() => handleDuplicate(mascara)} aria-label="Duplicar" title="Duplicar"><Icon name="copy" size={16} /></button>
+                  <button className="btn btn-sm btn-danger" onClick={() => handleDelete(mascara.id)} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
                 </div>
               </div>
             </div>
@@ -2711,12 +2776,24 @@ function MascaraModal({ mascara, onSave, onClose }) {
     imageUrl: ''
   });
 
+  // La foto se achica antes de guardarla (antes se guardaba tal cual: cada foto
+  // de mascarilla pesaba 50-100 KB y se bajaba entera en cada ingreso a la app).
   const handleImageUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
       const reader = new FileReader();
       reader.onloadend = () => {
-        setForm({ ...form, imageUrl: reader.result });
+        const img = new Image();
+        img.onload = () => {
+          const MAX = 480;
+          const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(img.width * ratio);
+          canvas.height = Math.round(img.height * ratio);
+          canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          setForm(f => ({ ...f, imageUrl: canvas.toDataURL('image/jpeg', 0.72) }));
+        };
+        img.src = reader.result;
       };
       reader.readAsDataURL(file);
     }
@@ -2836,10 +2913,10 @@ function SalesCartPage({ data, updateData, pageType }) {
   const categories = [
     { value: 'todos', label: 'Todos' },
     // Los equipos son solo de alquiler: no se venden, asi que no van en factura ni cotizacion.
-    ...(isRemito ? [{ value: 'equipos', label: '🔧 Equipos (alquiler)' }] : []),
-    { value: 'equiposNuevos', label: '🆕 Equipos Nuevos' },
-    { value: 'mascarillas', label: '😷 Mascarillas' },
-    { value: 'descartables', label: '🧤 Descartables' }
+    ...(isRemito ? [{ value: 'equipos', label: 'Equipos (alquiler)' }] : []),
+    { value: 'equiposNuevos', label: 'Equipos nuevos' },
+    { value: 'mascarillas', label: 'Mascarillas' },
+    { value: 'descartables', label: 'Descartables' }
   ];
 
   const allProducts = [
@@ -2962,7 +3039,7 @@ function SalesCartPage({ data, updateData, pageType }) {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">{isRemito ? '📝' : (isCotizacion ? '💰' : '🛒')} {title}</h1>
+        <h1 className="page-title">{title}</h1>
       </div>
 
       <div className="card">
@@ -3081,9 +3158,9 @@ function SalesCartPage({ data, updateData, pageType }) {
         )}
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
-          <button className="btn btn-success" style={{ flex: 1 }} onClick={handlePDF}>📄 {isRemito ? 'Remito' : (isCotizacion ? 'Cotizacion' : 'Factura')} PDF</button>
-          <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleWhatsApp}>📱 WhatsApp</button>
-          <button className="btn btn-danger" onClick={clearCart}>🗑️</button>
+          <button className="btn btn-success" style={{ flex: 1 }} onClick={handlePDF}><Icon name="file" size={16} /> {isRemito ? 'Remito' : (isCotizacion ? 'Cotizacion' : 'Factura')} PDF</button>
+          <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleWhatsApp}><Icon name="whatsapp" size={16} /> WhatsApp</button>
+          <button className="btn btn-danger" onClick={clearCart} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
         </div>
       </div>
 
@@ -3098,8 +3175,8 @@ function SalesCartPage({ data, updateData, pageType }) {
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span style={{ fontWeight: 700, color: '#1E5AA8' }}>{formatCurrency(s.total)}</span>
-                <button className="btn btn-sm btn-secondary" onClick={() => handleEditSaved(s)}>✏️ Editar</button>
-                <button className="btn btn-sm btn-danger" onClick={() => handleDeleteSaved(s.id)}>🗑️</button>
+                <button className="btn btn-sm btn-secondary" onClick={() => handleEditSaved(s)}><Icon name="edit" size={15} /> Editar</button>
+                <button className="btn btn-sm btn-danger" onClick={() => handleDeleteSaved(s.id)} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
               </div>
             </div>
           ))}
@@ -3403,7 +3480,7 @@ function ContabilidadPage({ data, updateData }) {
 
   const Tarjeta = ({ icono, etiqueta, valor, detalle, color }) => (
     <div className="card" style={{ padding: 16, borderTop: `4px solid ${color}` }}>
-      <div style={{ fontSize: 22 }}>{icono}</div>
+      <div style={{ color, display: 'flex' }}>{icono}</div>
       <div style={{ fontSize: 12, color: '#5A6978', fontWeight: 600, marginTop: 2 }}>{etiqueta}</div>
       <div style={{ fontSize: 22, fontWeight: 800, color, lineHeight: 1.2, marginTop: 2, wordBreak: 'break-word' }}>{valor}</div>
       {detalle && <div style={{ fontSize: 11, color: '#5A6978', marginTop: 4 }}>{detalle}</div>}
@@ -3424,7 +3501,7 @@ function ContabilidadPage({ data, updateData }) {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">📊 Contabilidad</h1>
+        <h1 className="page-title">Contabilidad</h1>
         <p className="page-subtitle">Ventas, alquileres, ganancia y parque de equipos en un solo lugar</p>
       </div>
 
@@ -3439,16 +3516,16 @@ function ContabilidadPage({ data, updateData }) {
 
       {/* KPIs */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 12, marginBottom: 16 }}>
-        <Tarjeta icono="🛒" etiqueta="Ventas facturadas" color="#1E5AA8"
+        <Tarjeta icono={<Icon name="cart" size={22} />} etiqueta="Ventas facturadas" color="#1E5AA8"
           valor={formatCurrency(act.ventas)}
           detalle={`${cantVentasDeMes(mes)} factura(s) · ${variacion(act.ventas, ant.ventas).txt} vs mes anterior`} />
-        <Tarjeta icono="📋" etiqueta="Alquileres cobrados" color="#00897B"
+        <Tarjeta icono={<Icon name="clipboard" size={22} />} etiqueta="Alquileres cobrados" color="#00897B"
           valor={formatCurrency(act.alquiler)}
           detalle={`${cobranza}% de lo contratado · ${variacion(act.alquiler, ant.alquiler).txt} vs mes anterior`} />
-        <Tarjeta icono="💵" etiqueta="Ingreso total" color="#5E35B1"
+        <Tarjeta icono={<Icon name="cash" size={22} />} etiqueta="Ingreso total" color="#5E35B1"
           valor={formatCurrency(act.ingreso)}
           detalle={`${100 - mixAlquiler}% venta · ${mixAlquiler}% alquiler`} />
-        <Tarjeta icono="📈" etiqueta="Ganancia estimada" color="#2E7D32"
+        <Tarjeta icono={<Icon name="trend" size={22} />} etiqueta="Ganancia estimada" color="#2E7D32"
           valor={formatCurrency(act.ganancia)}
           detalle={`${margenSobreIngreso}% del ingreso · ${variacion(act.ganancia, ant.ganancia).txt} vs mes anterior`} />
       </div>
@@ -3510,13 +3587,13 @@ function ContabilidadPage({ data, updateData }) {
 
       {/* Indicadores */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 16 }}>
-        <Tarjeta icono="🔁" etiqueta="Ingreso recurrente mensual" color="#00897B"
+        <Tarjeta icono={<Icon name="refresh" size={22} />} etiqueta="Ingreso recurrente mensual" color="#00897B"
           valor={formatCurrency(mrr)} detalle={`${activos.length} alquiler(es) vigentes`} />
-        <Tarjeta icono="🎟️" etiqueta="Ticket promedio de venta" color="#1E5AA8"
+        <Tarjeta icono={<Icon name="tag" size={22} />} etiqueta="Ticket promedio de venta" color="#1E5AA8"
           valor={formatCurrency(ticketVenta)} detalle={`sobre ${cantVentasDeMes(mes)} factura(s) del mes`} />
-        <Tarjeta icono="🔧" etiqueta="Ocupacion del parque" color="#5E35B1"
+        <Tarjeta icono={<Icon name="device" size={22} />} etiqueta="Ocupacion del parque" color="#5E35B1"
           valor={`${ocupacion}%`} detalle={`${alquilados.length} alquilados · ${libres.length} libres`} />
-        <Tarjeta icono="📦" etiqueta="Equipos libres" color="#F57C00"
+        <Tarjeta icono={<Icon name="box" size={22} />} etiqueta="Equipos libres" color="#F57C00"
           valor={String(libres.length)} detalle={enMantenimiento.length ? `${enMantenimiento.length} en mantenimiento aparte` : 'listos para colocar'} />
       </div>
 
@@ -3526,7 +3603,7 @@ function ContabilidadPage({ data, updateData }) {
         <p style={{ fontSize: 12, color: '#5A6978', marginTop: 0 }}>Cada equipo cuenta como alquilado mientras tenga un alquiler sin finalizar.</p>
         {equiposDuplicados.length > 0 && (
           <div style={{ background: '#FFF3E0', border: '1px solid #FFB74D', borderRadius: 8, padding: '10px 12px', marginBottom: 12, fontSize: 13 }}>
-            <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}>⚠️ {equiposDuplicados.length === 1 ? 'Hay 1 equipo' : `Hay ${equiposDuplicados.length} equipos`} con mas de un alquiler vigente</div>
+            <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}><Icon name="alert" size={16} /> {equiposDuplicados.length === 1 ? 'Hay 1 equipo' : `Hay ${equiposDuplicados.length} equipos`} con mas de un alquiler vigente</div>
             <div style={{ color: '#5A6978', marginBottom: 6 }}>Aca se cuentan una sola vez, pero en Alquileres figuran dos veces. Corregilo en Alquileres: cambiale el equipo a uno de los dos pacientes (o finaliza el que ya no esta).</div>
             {equiposDuplicados.map(d => (
               <div key={d.id} style={{ marginTop: 2 }}><b>{d.nombre}</b>: {d.pacientes.join(' y ')}</div>
@@ -3857,7 +3934,7 @@ function CalendarPage({ data }) {
         <div className="card">
           <h3 className="card-title">{selectedDate.toLocaleDateString('es-AR', { weekday: 'long', day: 'numeric', month: 'long' })}</h3>
 
-          <h4 style={{ color: '#E53935', margin: '8px 0 4px' }}>🔴 Vencen este día ({selectedDayExpiring.length})</h4>
+          <h4 style={{ color: '#E53935', margin: '8px 0 4px' }}><span className="dot dot-rojo" /> Vencen este día ({selectedDayExpiring.length})</h4>
           {selectedDayExpiring.length === 0 ? (
             <p style={{ color: '#5A6978' }}>Sin vencimientos este día</p>
           ) : (
@@ -3926,7 +4003,7 @@ function CambiarClaveCard() {
 
   return (
     <form className="card" onSubmit={handleSubmit}>
-      <h3 className="card-title">🔒 Contraseña de ingreso</h3>
+      <h3 className="card-title"><Icon name="lock" size={18} /> Contraseña de ingreso</h3>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
         <div className="form-group">
           <label className="form-label">Contraseña actual</label>
@@ -4094,28 +4171,28 @@ function SettingsPage({ data, updateData }) {
       <CambiarClaveCard />
 
       <div className="card">
-        <h3 className="card-title">💾 Backup y Restauración</h3>
+        <h3 className="card-title"><Icon name="download" size={18} /> Copia de seguridad</h3>
         <p style={{ color: '#5A6978', marginBottom: 16 }}>Guardá una copia de todos tus datos o restaurá desde un backup anterior.</p>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <button className="btn btn-primary" onClick={handleBackup}>
-            ⬇️ Descargar Backup
+            <Icon name="download" size={16} /> Descargar copia
           </button>
           <label className="btn btn-secondary" style={{ cursor: 'pointer' }}>
-            ⬆️ Restaurar Backup
+            <Icon name="upload" size={16} /> Restaurar copia
             <input type="file" accept=".json" onChange={handleRestore} style={{ display: 'none' }} />
           </label>
         </div>
       </div>
 
       <div className="card">
-        <h3 className="card-title">📁 Importar desde Excel</h3>
+        <h3 className="card-title"><Icon name="upload" size={18} /> Importar desde Excel</h3>
         <p style={{ color: '#5A6978', marginBottom: 16 }}>Importa pacientes, equipos y alquileres desde un archivo Excel (.xlsx)</p>
         <input type="file" accept=".xlsx,.xls" onChange={handleImport} disabled={importing} />
         {importing && <p>Importando...</p>}
       </div>
 
       <div className="card">
-        <h3 className="card-title">🔌 API de Vencimientos (Hermes)</h3>
+        <h3 className="card-title"><Icon name="plug" size={18} /> API de vencimientos (Santi)</h3>
         <p style={{ color: '#5A6978', marginBottom: 12 }}>
           Generá un enlace seguro para que Hermes (u otro sistema) consulte los vencimientos de alquileres en tiempo real: vencidos, vencen hoy y próximos 7 días.
         </p>
@@ -4130,21 +4207,21 @@ function SettingsPage({ data, updateData }) {
               <input type="text" className="form-input" readOnly value={apiUrlPrecios} onFocus={e => e.target.select()} style={{ fontSize: 12 }} />
             </div>
             <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-              <button className="btn btn-primary" onClick={() => handleCopyApiUrl(apiUrl)}>📋 Copiar vencimientos</button>
-              <button className="btn btn-primary" onClick={() => handleCopyApiUrl(apiUrlPrecios)}>📋 Copiar precios</button>
-              <button className="btn btn-secondary" onClick={handleGenerateApiKey}>♻️ Regenerar clave</button>
+              <button className="btn btn-primary" onClick={() => handleCopyApiUrl(apiUrl)}><Icon name="copy" size={16} /> Copiar vencimientos</button>
+              <button className="btn btn-primary" onClick={() => handleCopyApiUrl(apiUrlPrecios)}><Icon name="copy" size={16} /> Copiar precios</button>
+              <button className="btn btn-secondary" onClick={handleGenerateApiKey}><Icon name="refresh" size={16} /> Regenerar clave</button>
             </div>
             <p style={{ color: '#9AA5B4', fontSize: 12, marginTop: 10 }}>
               Cualquiera con este enlace puede ver los vencimientos. Si se filtró, regenerá la clave y el enlace viejo deja de funcionar.
             </p>
           </>
         ) : (
-          <button className="btn btn-primary" onClick={handleGenerateApiKey}>🔑 Generar clave API</button>
+          <button className="btn btn-primary" onClick={handleGenerateApiKey}><Icon name="key" size={16} /> Generar clave API</button>
         )}
       </div>
 
       <div className="card">
-        <h3 className="card-title">🏥 Datos de la Empresa</h3>
+        <h3 className="card-title"><Icon name="building" size={18} /> Datos de la empresa</h3>
         
         <div className="form-group">
           <label className="form-label">Nombre</label>
@@ -4165,7 +4242,7 @@ function SettingsPage({ data, updateData }) {
       </div>
 
       <div className="card">
-        <h3 className="card-title">💰 Precios por Defecto</h3>
+        <h3 className="card-title"><Icon name="tag" size={18} /> Precios por defecto</h3>
         
         <div className="form-group">
           <label className="form-label">Alquiler mensual ($)</label>
@@ -4179,7 +4256,7 @@ function SettingsPage({ data, updateData }) {
       </div>
 
       <div className="card">
-        <h3 className="card-title">📊 Estadísticas</h3>
+        <h3 className="card-title"><Icon name="bars" size={18} /> Estadísticas</h3>
         <div className="grid-3">
           <div className="stat-card">
             <div className="stat-value">{patients.length}</div>
@@ -4196,7 +4273,7 @@ function SettingsPage({ data, updateData }) {
         </div>
       </div>
 
-      <button className="btn btn-danger btn-block" onClick={handleClear}>🗑️ Borrar Todos los Datos</button>
+      <button className="btn btn-danger btn-block" onClick={handleClear}><Icon name="trash" size={16} /> Borrar todos los datos</button>
     </div>
   );
 }
@@ -4395,12 +4472,12 @@ function DescartablesPage({ data, updateData }) {
   const [form, setForm] = useState(defaultItem);
 
   const categories = [
-    { value: 'consumibles', label: '🧤 Consumibles' },
-    { value: 'filtros', label: '🔍 Filtros' },
-    { value: 'mascarillas', label: '😷 Mascarillas' },
-    { value: 'tubuladuras', label: '🫁 Tubuladuras' },
-    { value: 'cables', label: '🔌 Cables' },
-    { value: 'otros', label: '📦 Otros' }
+    { value: 'consumibles', label: 'Consumibles' },
+    { value: 'filtros', label: 'Filtros' },
+    { value: 'mascarillas', label: 'Mascarillas' },
+    { value: 'tubuladuras', label: 'Tubuladuras' },
+    { value: 'cables', label: 'Cables' },
+    { value: 'otros', label: 'Otros' }
   ];
 
   const filteredItems = descartables.filter(item => {
@@ -4440,7 +4517,7 @@ function DescartablesPage({ data, updateData }) {
   return (
     <div>
       <div className="page-header">
-        <h1 className="page-title">🧤 Descartables</h1>
+        <h1 className="page-title">Descartables</h1>
         <button className="btn btn-primary" onClick={() => { setForm(defaultItem); setShowForm(true); setEditing(null); }}>
           + Nuevo Producto
         </button>
@@ -4448,7 +4525,7 @@ function DescartablesPage({ data, updateData }) {
 
       {lowStockItems.length > 0 && (
         <div className="card" style={{ background: '#FFF3E0', border: '1px solid #FF9800', marginBottom: 20 }}>
-          <h3 className="card-title">⚠️ Stock Bajo</h3>
+          <h3 className="card-title"><Icon name="alert" size={18} /> Stock bajo</h3>
           <p>{lowStockItems.length} productos con stock bajo mínimo</p>
         </div>
       )}
@@ -4503,8 +4580,8 @@ function DescartablesPage({ data, updateData }) {
                     </td>
                     <td>{formatCurrency(item.price)}</td>
                     <td>
-                      <button className="btn btn-sm" onClick={() => handleEdit(item)}>✏️</button>
-                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(item.id)}>🗑️</button>
+                      <button className="btn btn-sm" onClick={() => handleEdit(item)} title="Editar" aria-label="Editar"><Icon name="edit" size={16} /></button>
+                      <button className="btn btn-sm btn-danger" onClick={() => handleDelete(item.id)} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
                     </td>
                   </tr>
                 ))
@@ -4669,7 +4746,7 @@ function FacturacionReportes({ data }) {
       </div>
 
       <button className="btn btn-primary btn-block" style={{ marginTop: 12 }} onClick={() => setShowFacturados(!showFacturados)}>
-        📄 Facturados del período ({facturadosPeriodo.length}) — {formatCurrency(totalFacturadoPeriodo)}
+        <Icon name="file" size={16} /> Facturados del período ({facturadosPeriodo.length}) — {formatCurrency(totalFacturadoPeriodo)}
       </button>
 
       {showFacturados && (
@@ -4693,7 +4770,7 @@ function FacturacionReportes({ data }) {
       )}
 
       <div className="card" style={{ marginTop: 12 }}>
-        <h3 className="card-title">📊 Alquilado vs Ventas {meses.length > 1 ? 'por mes' : 'del mes'}</h3>
+        <h3 className="card-title"><Icon name="bars" size={18} /> Alquilado vs ventas {meses.length > 1 ? 'por mes' : 'del mes'}</h3>
         <div style={{ display: 'flex', gap: 16, marginBottom: 8, fontSize: 13 }}>
           <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#1E5AA8', borderRadius: 2, marginRight: 5 }} />Alquilado</span>
           <span><span style={{ display: 'inline-block', width: 12, height: 12, background: '#2E7D32', borderRadius: 2, marginRight: 5 }} />Ventas</span>
@@ -4717,7 +4794,7 @@ function FacturacionReportes({ data }) {
       </div>
 
       <div className="card" style={{ marginTop: 12 }}>
-        <h3 className="card-title">📈 Comparativa mes a mes</h3>
+        <h3 className="card-title"><Icon name="trend" size={18} /> Comparativa mes a mes</h3>
         <p className="page-subtitle" style={{ marginBottom: 12 }}>{formatMonthLabel(act.mk)} vs {formatMonthLabel(ant.mk)}</p>
         <div className="monthly-summary-grid">
           <div className="monthly-summary-item">

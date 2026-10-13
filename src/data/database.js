@@ -354,7 +354,9 @@ function quitarFotosDeDocumentos(data) {
 }
 
 // 2) Comprime una foto base64 con canvas (mismo criterio que usa la app al subir).
-function comprimirFotoBase64(dataUrl, maxW = 900, quality = 0.8) {
+// 480 px alcanza para las tarjetas (~260 px) y para los PDF (fotos de 17 mm).
+// Con 900 px las 14 fotos de mascarillas sumaban 957 KB de los 1,16 MB del blob.
+function comprimirFotoBase64(dataUrl, maxW = 480, quality = 0.72) {
   return new Promise((resolve) => {
     try {
       const img = new Image();
@@ -383,7 +385,7 @@ async function comprimirFotosDeProductos(data) {
     for (const it of data[col]) {
       const u = it?.imageUrl;
       // Solo fotos base64 grandes (las chicas ya estan bien).
-      if (typeof u === 'string' && u.startsWith('data:image') && u.length > 60000) {
+      if (typeof u === 'string' && u.startsWith('data:image') && u.length > 40000) {
         const out = await comprimirFotoBase64(u);
         if (out !== u) { comprimidas++; nuevos.push({ ...it, imageUrl: out }); continue; }
       }
@@ -395,7 +397,11 @@ async function comprimirFotosDeProductos(data) {
 }
 
 // Corre las migraciones y devuelve true si hubo cambios que convenga guardar.
+// Solo corre en la app publicada: ni en local ni en las vistas previas de Vercel
+// (usan la base real y no deben reescribir datos solo por abrirlas para probar).
+const HOSTS_PRODUCCION = ['aplicacion-beta.vercel.app', 'app.insersalud.com'];
 async function aligerarDatos(data) {
+  if (import.meta.env.DEV || !HOSTS_PRODUCCION.includes(window.location.hostname)) return false;
   const quitadas = quitarFotosDeDocumentos(data);
   const comprimidas = await comprimirFotosDeProductos(data);
   if (quitadas || comprimidas) {
