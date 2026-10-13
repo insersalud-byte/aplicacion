@@ -37,28 +37,65 @@ function diasEntre(desde, hasta) {
 }
 
 // Lee la base validando la clave API. Devuelve el objeto data o null (y ya
-// respondio el error en res).
+// respondio el error en res). La tabla no se puede leer con la clave publica:
+// la funcion app_api_data de la base compara la clave contra settings.apiKey y
+// solo entonces devuelve los datos.
 async function getAuthorizedData(req, res) {
   const key = req.query?.key;
   if (!key) {
     res.status(401).json({ error: 'Falta la clave API (parametro key)' });
     return null;
   }
-  const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1&select=data`, {
-    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` },
+  const dbRes = await fetch(`${SUPABASE_URL}/rest/v1/rpc/app_api_data`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_key: String(key) }),
   });
+  if (dbRes.status === 401 || dbRes.status === 403) {
+    res.status(403).json({ error: 'Clave API invalida' });
+    return null;
+  }
   if (!dbRes.ok) {
     res.status(502).json({ error: 'No se pudo leer la base de datos' });
     return null;
   }
-  const rows = await dbRes.json();
-  const data = rows?.[0]?.data || {};
-  const apiKey = data.settings?.apiKey;
-  if (!apiKey || key !== apiKey) {
-    res.status(403).json({ error: 'Clave API invalida' });
-    return null;
+  return (await dbRes.json()) || {};
+}
+
+// Mismo criterio que la app (primerVencimientoImpago en App.jsx): el pago de un
+// periodo se registra con la clave del periodo que vence (mensual = YYYY-MM del
+// vencimiento, quincenal = la fecha). Si el vencimiento guardado ya esta pago
+// (la app todavia no se abrio para actualizarlo), el vencimiento real es el
+// primer periodo sin pagar. Asi Santi no reporta como vencido a quien ya pago.
+function sumarDias(fecha, dias) {
+  const d = new Date(`${fecha}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + dias);
+  return d.toISOString().slice(0, 10);
+}
+
+function mesSiguiente(fecha, diaInicio) {
+  let [y, m] = fecha.split('-').map(Number);
+  m += 1;
+  if (m > 12) { m = 1; y += 1; }
+  const ultimo = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const dia = Math.min(diaInicio, ultimo);
+  return `${y}-${String(m).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+}
+
+function vencimientoEfectivo(r, hoy) {
+  let d = r.endDate || '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const quincenal = r.period === 'quincenal';
+  const pagos = r.paymentStatusByMonth || {};
+  const diaInicio = Number(String(r.startDate || '').slice(8, 10)) || Number(d.slice(8, 10));
+  let guard = 0;
+  while (d <= hoy && guard < 400) {
+    const clave = quincenal ? d : d.slice(0, 7);
+    if (!pagos[clave]?.paid) break;
+    d = quincenal ? sumarDias(d, 15) : mesSiguiente(d, diaInicio);
+    guard++;
   }
-  return data;
+  return d;
 }
 
 async function handleVencimientos(req, res) {
@@ -68,7 +105,11 @@ async function handleVencimientos(req, res) {
   const hoy = hoyArgentina();
   const patients = data.patients || [];
   const equipment = data.equipment || [];
-  const rentals = data.rentals || [];
+  const rentals = (data.rentals || []).map((r) => {
+    if (r.status === 'finalizado' || !r.endDate) return r;
+    const endDate = vencimientoEfectivo(r, hoy);
+    return { ...r, endDate, status: endDate <= hoy ? 'vencido' : 'activo' };
+  });
 
   const item = (r) => {
     const p = patients.find((x) => x.id === r.patientId);

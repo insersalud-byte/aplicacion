@@ -4,8 +4,107 @@ const STORAGE_KEY = 'insersalud_db';
 const STORAGE_TS_KEY = 'insersalud_db_ts';
 const DIRTY_KEY = 'insersalud_dirty';   // hay cambios locales que todavia no llegaron a la base
 const BASE_KEY = 'insersalud_base';     // ultimo estado sincronizado (base del merge si se cierra offline)
+const SESSION_KEY = 'insersalud_session'; // token de sesion (no la contraseña)
 const SUPABASE_URL = 'https://gvharyztavhugqiaihjq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_wTO5X4JfeoHP0zg7qq4azQ_OJ3jxfwL';
+
+// ============================================================================
+// ACCESO CON CONTRASEÑA
+// La tabla inser_app_data ya NO se puede leer ni escribir con la clave publica.
+// Todo pasa por funciones de la base (app_login, app_load, app_ts, app_save) que
+// exigen un token de sesion. El token se obtiene con la contraseña, dura 30 dias
+// desde el ultimo uso y se guarda en este navegador. La contraseña nunca se guarda.
+// ============================================================================
+
+const _authListeners = new Set();
+// La app se suscribe para volver a la pantalla de ingreso si la sesion vence.
+export function onAuthRequired(fn) {
+  _authListeners.add(fn);
+  return () => _authListeners.delete(fn);
+}
+
+export function getSessionToken() {
+  try { return localStorage.getItem(SESSION_KEY) || ''; } catch { return ''; }
+}
+
+function setSessionToken(token) {
+  try {
+    if (token) localStorage.setItem(SESSION_KEY, token);
+    else localStorage.removeItem(SESSION_KEY);
+  } catch { /* sin localStorage: la sesion dura lo que la pestaña */ }
+}
+
+class AuthError extends Error {
+  constructor() { super('Sesion vencida: hay que ingresar la contraseña'); this.code = 'AUTH'; }
+}
+
+async function rpc(fn, args) {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+    method: 'POST',
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(args),
+  });
+  if (response.status === 401 || response.status === 403) {
+    setSessionToken('');
+    queueMicrotask(() => _authListeners.forEach(f => f()));
+    throw new AuthError();
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Supabase ${fn} ${response.status}: ${text}`);
+  }
+  return response.json();
+}
+
+// Devuelve { ok: true } o { ok: false, error: 'clave_incorrecta' | 'demasiados_intentos' | 'sin_conexion' }.
+export async function login(password) {
+  try {
+    const res = await rpc('app_login', { p_password: password });
+    if (res && res.ok && res.token) {
+      setSessionToken(res.token);
+      return { ok: true };
+    }
+    return { ok: false, error: res?.error || 'clave_incorrecta' };
+  } catch (e) {
+    console.error('Login:', e);
+    return { ok: false, error: 'sin_conexion' };
+  }
+}
+
+// Cierra la sesion. Si quedaron cambios sin subir, no borra la copia local para
+// que se suban en el proximo ingreso.
+export async function logout() {
+  const token = getSessionToken();
+  setSessionToken('');
+  try { if (token) await rpc('app_logout', { p_token: token }); } catch { /* igual queda cerrada en este navegador */ }
+  try {
+    if (localStorage.getItem(DIRTY_KEY) !== '1') {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(STORAGE_TS_KEY);
+      localStorage.removeItem(BASE_KEY);
+    }
+  } catch { /* noop */ }
+  _baseState = null;
+  _pendingLocal = null;
+  _lastRemoteTs = null;
+}
+
+export function hayCambiosSinSubir() {
+  try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch { return false; }
+}
+
+// Devuelve { ok } o { ok: false, error: 'clave_actual_incorrecta' | 'clave_muy_corta' | ... }.
+export async function cambiarClave(actual, nueva) {
+  try {
+    return await rpc('app_cambiar_clave', { p_token: getSessionToken(), p_actual: actual, p_nueva: nueva });
+  } catch (e) {
+    return { ok: false, error: e.code === 'AUTH' ? 'sesion_vencida' : 'sin_conexion' };
+  }
+}
 
 let _syncStatus = { state: 'idle', lastSync: null, error: null };
 const _syncListeners = new Set();
@@ -90,49 +189,26 @@ function loadLocalData() {
 // ============================================================================
 
 async function loadRemoteData() {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1&select=data,updated_at`, {
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-    }
-  });
-  if (!response.ok) throw new Error(`Supabase GET ${response.status}`);
-  const rows = await response.json();
-  if (!rows || rows.length === 0) return { exists: false, data: normalizeData({}), updatedAt: null };
+  const res = await rpc('app_load', { p_token: getSessionToken() });
+  if (!res) return { exists: false, data: normalizeData({}), updatedAt: null };
   return {
     exists: true,
-    data: normalizeData(rows[0].data || {}),
-    updatedAt: rows[0].updated_at || null
+    data: normalizeData(res.data || {}),
+    updatedAt: res.updated_at || null
   };
 }
 
+// Devuelve el updated_at que puso la base. Es el MISMO formato que devuelve
+// fetchRemoteTs: antes se guardaba un timestamp armado en el navegador ("...Z")
+// que nunca coincidia con el de la base ("...+00:00"), y despues de cada guardado
+// propio el latido creia que otro dispositivo habia cambiado algo y bajaba todo.
 async function saveRemoteData(data) {
-  const ts = new Date().toISOString();
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1`, {
-    method: 'PATCH',
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=minimal',
-    },
-    body: JSON.stringify({ data, updated_at: ts }),
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Supabase PATCH ${response.status}: ${text}`);
-  }
-  return ts;
+  return rpc('app_save', { p_token: getSessionToken(), p_data: data });
 }
 
-// GET liviano: solo el timestamp. Sirve para detectar cambios sin bajar todo el blob.
+// Liviano: solo el timestamp. Sirve para detectar cambios sin bajar todo el blob.
 async function fetchRemoteTs() {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/inser_app_data?id=eq.1&select=updated_at`, {
-    headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
-  });
-  if (!response.ok) throw new Error(`Supabase TS ${response.status}`);
-  const rows = await response.json();
-  return rows && rows[0] ? rows[0].updated_at : null;
+  return rpc('app_ts', { p_token: getSessionToken() });
 }
 
 function cacheLocal(data) {
@@ -247,6 +323,7 @@ async function flushDirtyLocal(remoteData) {
   const merged = mergeStates(base, mine, remoteData);
   _lastRemoteTs = await saveRemoteData(merged); // si falla, lanza y se mantiene dirty
   _baseState = merged;
+  _pendingLocal = null; // ya subido: no reintentar con una copia vieja
   try { localStorage.removeItem(DIRTY_KEY); localStorage.removeItem(BASE_KEY); } catch (e) { /* noop */ }
   cacheLocal(merged);
   setSyncStatus('ok');
@@ -345,6 +422,7 @@ export async function loadData() {
       const recovered = await flushDirtyLocal(data);
       if (recovered) return recovered;
 
+      _pendingLocal = null;
       _baseState = data;
       _lastRemoteTs = remote.updatedAt;
       cacheLocal(data);
@@ -373,6 +451,11 @@ export async function loadData() {
     setSyncStatus('ok');
     return localData;
   } catch (e) {
+    // Sesion vencida o sin contraseña: no mostrar datos, volver al ingreso.
+    if (e.code === 'AUTH') {
+      setSyncStatus('error', e.message);
+      throw e;
+    }
     // Sin conexion a Supabase: usar cache local para no quedar sin datos.
     console.error('Sync error on load (usando cache local):', e);
     setSyncStatus('error', e.message);
@@ -406,9 +489,17 @@ async function _commit(mine) {
   try {
     setSyncStatus('saving');
     // Leer lo ultimo de la base y fusionar antes de escribir (anti-clobber).
-    const remote = await loadRemoteData();
-    const base = _baseState || remote.data;
-    const merged = mergeStates(base, mine, remote.data);
+    // Si el timestamp no cambio desde la ultima vez, nadie mas guardo: lo remoto
+    // es igual a la base conocida y no hace falta bajar el blob entero (~1 MB).
+    let remoteData;
+    const ts = _baseState ? await fetchRemoteTs() : null;
+    if (_baseState && ts && ts === _lastRemoteTs) {
+      remoteData = _baseState;
+    } else {
+      remoteData = (await loadRemoteData()).data;
+    }
+    const base = _baseState || remoteData;
+    const merged = mergeStates(base, mine, remoteData);
 
     _lastRemoteTs = await saveRemoteData(merged);
     _baseState = merged;

@@ -15,6 +15,18 @@
 - URL: https://gvharyztavhugqiaihjq.supabase.co
 - `loadData()` lee SIEMPRE de Supabase; localStorage es solo cache offline.
 - `saveData()` escribe a Supabase y luego cachea local.
+
+### Acceso con contraseña (desde 13-oct-2026)
+- La tabla `inser_app_data` NO tiene acceso anonimo (se quito la politica `anon_full_access`): con la clave publica no se lee ni se escribe. NUNCA volver a abrirla ni leerla/escribirla con `fetch` directo a `/rest/v1/inser_app_data`.
+- Todo pasa por funciones SECURITY DEFINER de la base: `app_login(p_password)` -> token de sesion (30 dias desde el ultimo uso, se guarda en localStorage `insersalud_session`), `app_load(p_token)`, `app_ts(p_token)`, `app_save(p_token, p_data)`, `app_logout`, `app_cambiar_clave`. La API de Santi (api/server.js) usa `app_api_data(p_key)` validando contra settings.apiKey.
+- El hash bcrypt de la contraseña y las sesiones viven en el esquema `app_private` (no expuesto por la API). La contraseña se cambia desde Configuracion. Limite anti fuerza bruta: 8 fallos por IP / 40 globales cada 15 min.
+- `app_save` rechaza un guardado que deje sin pacientes o sin alquileres de golpe.
+
+### Vencimientos (regla unica)
+- Un periodo se paga con la clave del periodo que VENCE: mensual = `YYYY-MM` del vencimiento, quincenal = la fecha. `periodosImpagos` recorre vencimientos (no meses calendario) desde endDate hasta hoy; `primerVencimientoImpago` lleva endDate al primer periodo sin pagar.
+- "Por vencer" = vencen en los proximos `DIAS_AVISO` (7) dias, igual que el reporte de Santi. Vencer hoy = vencido.
+- "Normalizar Vencimientos" NO adelanta alquileres con periodos impagos.
+- El agente contador de Santi (`contabilidad.py`) replica `periodosImpagos`: si se cambia, actualizarlo tambien.
 - NO volver a meter logica de "merge local+remoto": eso causaba que cada navegador tuviera datos distintos aunque el indicador dijera "Sincronizado".
 - `seedEquiposNuevos` (src/data/seedEquiposNuevos.js) son 42 equipos por defecto que se siembran solo si la base no tiene ninguno.
 

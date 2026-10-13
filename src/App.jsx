@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, onSyncStatus, onDataChange, refreshFromRemote, syncIfRemoteChanged } from './data/database';
+import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, onSyncStatus, onDataChange, syncIfRemoteChanged, login, logout, getSessionToken, onAuthRequired, hayCambiosSinSubir, cambiarClave } from './data/database';
 import './App.css';
 
 // Los documentos guardados (cotizaciones, remitos, facturas) NO deben llevar
@@ -125,29 +125,48 @@ function periodosContratadosEnMes(rental, monthKey) {
   return Math.max(1, cant);
 }
 
-// Periodos vencidos y sin pagar, desde el vencimiento actual hasta hoy.
+// Dias de anticipacion del aviso "Por vencer" (Inicio y Alquileres). Es el mismo
+// plazo que usa el reporte diario de Santi (proximos 7 dias).
+const DIAS_AVISO = 7;
+const textoDias = (fecha) => {
+  const n = getDaysUntilEnd(fecha);
+  return n <= 0 ? 'hoy' : n === 1 ? 'mañana' : `en ${n} días`;
+};
+
+// Periodos vencidos y sin pagar: cada vencimiento desde el actual hasta hoy
+// (hoy inclusive). El pago se registra con la clave del periodo que vence ese
+// dia (mensual = el mes del vencimiento, quincenal = la fecha). Un periodo cuyo
+// vencimiento todavia no llego NO es deuda.
+// Antes el mensual contaba meses calendario: el mes en curso figuraba impago
+// aunque su vencimiento fuera dias despues, y new Date('YYYY-MM-01') (UTC) caia
+// en el mes anterior en Argentina y sumaba un mes de mas.
 function periodosImpagos(rental) {
   if (!rental.endDate) return [];
+  const periodo = periodoDe(rental);
+  const hoy = getToday();
   const out = [];
-  if (periodoDe(rental) === 'quincenal') {
-    const hoy = getToday();
-    let d = rental.endDate;
-    let guard = 0;
-    while (d && d <= hoy && guard < 400) {
-      if (!isPaidKey(rental, d)) out.push(d);
-      d = addDaysStr(d, 15); guard++;
-    }
-    return out;
-  }
-  const end = new Date(rental.endDate);
-  const now = new Date();
-  let d = new Date(end.getFullYear(), end.getMonth(), 1);
-  while (d <= now) {
-    const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    if (!isPaidKey(rental, mk)) out.push(mk);
-    d.setMonth(d.getMonth() + 1);
+  let d = rental.endDate;
+  let guard = 0;
+  while (d && d <= hoy && guard < 400) {
+    const clave = claveDePeriodo(d, periodo);
+    if (!isPaidKey(rental, clave)) out.push(clave);
+    d = nextDueAfter(d, rental.startDate, periodo); guard++;
   }
   return out;
+}
+
+// Vencimiento real: el primer periodo SIN PAGAR a partir del vencimiento guardado.
+// Si se pago un periodo atrasado (ej: septiembre pagado en octubre), el
+// vencimiento pasa al siguiente en vez de quedar clavado en la fecha vieja.
+function primerVencimientoImpago(rental) {
+  const periodo = periodoDe(rental);
+  const hoy = getToday();
+  let d = rental.endDate;
+  let guard = 0;
+  while (d && d <= hoy && isPaidKey(rental, claveDePeriodo(d, periodo)) && guard < 400) {
+    d = nextDueAfter(d, rental.startDate, periodo); guard++;
+  }
+  return d;
 }
 
 // ---- Fuente de verdad unica para estado de alquileres y ocupacion de equipos ----
@@ -246,7 +265,52 @@ function SyncIndicator() {
   );
 }
 
+// Pantalla de ingreso. La contraseña se valida en la base (no en el navegador)
+// y solo se guarda un token de sesion de 30 dias.
+function LoginPage({ onLogin }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [enviando, setEnviando] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!password) return;
+    setEnviando(true);
+    setError('');
+    const res = await login(password);
+    setEnviando(false);
+    if (res.ok) { setPassword(''); onLogin(); return; }
+    setError(res.error === 'demasiados_intentos'
+      ? 'Demasiados intentos fallidos. Espera 15 minutos y volve a probar.'
+      : res.error === 'sin_conexion'
+        ? 'No hay conexion con la base de datos. Revisa internet y volve a intentar.'
+        : 'Contraseña incorrecta.');
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#F0F6FC', padding: 16 }}>
+      <form onSubmit={handleSubmit} className="card" style={{ width: '100%', maxWidth: 360, padding: 28 }}>
+        <div style={{ textAlign: 'center', marginBottom: 20 }}>
+          <img src="/logo.jpg" alt="" style={{ width: 72, height: 72, borderRadius: 12, objectFit: 'cover' }} onError={e => { e.currentTarget.style.display = 'none'; }} />
+          <h1 style={{ fontSize: 22, color: '#1E5AA8', margin: '10px 0 4px' }}>Inser Salud</h1>
+          <p style={{ color: '#5A6978', fontSize: 14, margin: 0 }}>Gestión de Equipos Respiratorios</p>
+        </div>
+        <div className="form-group">
+          <label className="form-label" htmlFor="app-password">Contraseña</label>
+          <input id="app-password" type="password" className="form-input" autoComplete="current-password" autoFocus
+            value={password} onChange={e => setPassword(e.target.value)} />
+        </div>
+        {error && <div role="alert" style={{ color: '#C62828', fontSize: 13, marginBottom: 12 }}>{error}</div>}
+        <button type="submit" className="btn btn-primary" style={{ width: '100%' }} disabled={enviando || !password}>
+          {enviando ? 'Ingresando...' : 'Ingresar'}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function App() {
+  const [authed, setAuthed] = useState(() => Boolean(getSessionToken()));
   const [currentPage, setCurrentPage] = useState('home');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -255,15 +319,27 @@ function App() {
   // hace setData (init, updateData, onDataChange), nunca durante el render.
   const dataRef = useRef(null);
 
+  // Si la sesion vence (o se cierra en otro lado), volver a pedir la contraseña.
+  useEffect(() => onAuthRequired(() => {
+    dataRef.current = null;
+    setData(null);
+    setAuthed(false);
+  }), []);
+
   useEffect(() => {
+    if (!authed) return;
     let active = true;
 
     const initializeData = async () => {
-      const loaded = await loadData();
-      if (!active) return;
-      dataRef.current = loaded;
-      setData(loaded);
-      setLoading(false);
+      try {
+        const loaded = await loadData();
+        if (!active) return;
+        dataRef.current = loaded;
+        setData(loaded);
+        setLoading(false);
+      } catch (e) {
+        if (active && e.code === 'AUTH') setAuthed(false);
+      }
     };
 
     initializeData();
@@ -271,7 +347,18 @@ function App() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [authed]);
+
+  const handleLogout = async () => {
+    const aviso = hayCambiosSinSubir()
+      ? 'Hay cambios que todavia no se subieron a la base. Se subiran la proxima vez que ingreses en este navegador. ¿Cerrar sesion igual?'
+      : '¿Cerrar sesion en este navegador?';
+    if (!confirm(aviso)) return;
+    await logout();
+    dataRef.current = null;
+    setData(null);
+    setAuthed(false);
+  };
 
   const updateData = useCallback((updater) => {
     const nextData = typeof updater === 'function' ? updater(dataRef.current) : updater;
@@ -283,27 +370,32 @@ function App() {
   // Mantener la app sincronizada con la base entre dispositivos:
   // - onDataChange: cuando llega un cambio de otro dispositivo, refresca la UI.
   // - heartbeat cada 5s (solo el timestamp, liviano): si la base cambio, baja todo.
-  // - focus / volver a la pestania / reconexion: refresco completo inmediato.
+  // - focus / volver a la pestania / reconexion: el mismo chequeo inmediato. Antes
+  //   bajaba el blob entero (~1 MB) cada vez que se volvia a la ventana, aunque
+  //   nada hubiera cambiado: consumo de egress de Supabase sin necesidad.
   useEffect(() => {
+    if (!authed) return;
     const unsub = onDataChange((incoming) => {
       dataRef.current = incoming;
       setData(incoming);
     });
-    const fullRefresh = () => { refreshFromRemote(); };
-    const heartbeat = () => { if (document.visibilityState === 'visible') syncIfRemoteChanged(); };
-    const onVis = () => { if (document.visibilityState === 'visible') fullRefresh(); };
-    window.addEventListener('focus', fullRefresh);
-    window.addEventListener('online', fullRefresh);
-    document.addEventListener('visibilitychange', onVis);
-    const iv = setInterval(heartbeat, 5000);
+    const check = () => { if (document.visibilityState === 'visible') syncIfRemoteChanged(); };
+    window.addEventListener('focus', check);
+    window.addEventListener('online', check);
+    document.addEventListener('visibilitychange', check);
+    const iv = setInterval(check, 5000);
     return () => {
       unsub();
-      window.removeEventListener('focus', fullRefresh);
-      window.removeEventListener('online', fullRefresh);
-      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', check);
+      window.removeEventListener('online', check);
+      document.removeEventListener('visibilitychange', check);
       clearInterval(iv);
     };
-  }, []);
+  }, [authed]);
+
+  if (!authed) {
+    return <LoginPage onLogin={() => { setLoading(true); setAuthed(true); }} />;
+  }
 
   if (loading || !data) {
     return <div className="app-container"><div className="main-content">Cargando...</div></div>;
@@ -394,6 +486,10 @@ function App() {
         </div>
 
         <div style={{ marginTop: 'auto' }}>
+          <div className="nav-item" onClick={handleLogout} title="Cerrar sesion en este navegador">
+            <span className="nav-icon">🔒</span>
+            <span className="nav-label">Cerrar sesión</span>
+          </div>
           <SyncIndicator />
         </div>
       </nav>
@@ -419,9 +515,8 @@ function HomePage({ data, updateData }) {
       if (!r.endDate) return true; // sin vencimiento -> hay que ponerlo automaticamente
       if (alignDueDay(r.endDate, r.startDate, periodoDe(r)) !== r.endDate) return true; // vencimiento no cae el dia de inicio
       if (cappedDueDate(r) !== r.endDate) return true; // vencimiento a mas de un mes del que corresponde
-      if (r.status === 'activo' && r.endDate <= todayStr) return true;
-      if (r.status === 'vencido' && r.endDate > todayStr) return true;
-      if (r.status === 'vencido' && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0) return true;
+      if (primerVencimientoImpago(r) !== r.endDate) return true; // el vencimiento guardado ya esta pago
+      if ((r.endDate <= todayStr ? 'vencido' : 'activo') !== r.status) return true;
       return false;
     });
     if (!needsUpdate) return;
@@ -439,13 +534,12 @@ function HomePage({ data, updateData }) {
         // 2) Tope: el vencimiento nunca a mas de un mes del que corresponde por inicio.
         const capped = cappedDueDate(r);
         if (capped !== r.endDate) r = { ...r, endDate: capped };
-        // 3) Estado segun la fecha ya normalizada.
-        if (r.status === 'activo' && r.endDate <= todayStr) return { ...r, status: 'vencido' };
-        if (r.status === 'vencido' && r.endDate > todayStr) return { ...r, status: 'activo' };
-        if (r.status === 'vencido' && r.endDate <= todayStr && getUnpaidMonthsForRental(r).length === 0) {
-          // Pago al dia: el proximo vencimiento es el periodo siguiente.
-          return { ...r, status: 'activo', endDate: nextDueAfter(r.endDate, r.startDate, periodoDe(r)) };
-        }
+        // 3) Periodos ya pagos: el vencimiento pasa al primero sin pagar.
+        const real = primerVencimientoImpago(r);
+        if (real !== r.endDate) r = { ...r, endDate: real };
+        // 4) Estado segun la fecha ya normalizada (vence hoy = vencido).
+        const estado = r.endDate <= todayStr ? 'vencido' : 'activo';
+        if (estado !== r.status) r = { ...r, status: estado };
         return r;
       });
       return { ...cur, rentals: updated };
@@ -453,11 +547,13 @@ function HomePage({ data, updateData }) {
   }, [rentals, today, updateData]);
 
   const activeRentals = rentals.filter(r => r.status === 'activo');
-  const expiringRentals = rentals.filter(r => {
-    if (r.status !== 'activo' || !r.endDate) return false;
-    const today = getToday();
-    return r.endDate >= today && r.endDate.substring(0, 7) === today.substring(0, 7);
-  });
+  // Por vencer = vencen en los proximos DIAS_AVISO dias (los de hoy ya cuentan como
+  // vencidos). Antes solo miraba el mes calendario: el 28 de octubre no avisaba de
+  // los que vencian el 1 o el 3 de noviembre, recien aparecian el mismo dia 1.
+  const limiteAviso = addDaysStr(today, DIAS_AVISO);
+  const expiringRentals = rentals
+    .filter(r => r.status !== 'finalizado' && r.endDate && r.endDate > today && r.endDate <= limiteAviso)
+    .sort((a, b) => a.endDate.localeCompare(b.endDate));
 
   // Tarjeta "Vencidos": vencidos (hoy inclusive) con meses sin pagar.
   const expiredRentals = rentals.filter(r => {
@@ -498,7 +594,7 @@ function HomePage({ data, updateData }) {
         <div className="stat-card warning" style={{ cursor: 'pointer', outline: activeFilter === 'porVencer' ? '3px solid #F9A825' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'porVencer' ? null : 'porVencer')}>
           <div className="stat-icon">⚠️</div>
           <div className="stat-value">{expiringRentals.length}</div>
-          <div className="stat-label">Por Vencer</div>
+          <div className="stat-label">Por Vencer ({DIAS_AVISO} días)</div>
         </div>
         <div className="stat-card error" style={{ cursor: 'pointer', outline: activeFilter === 'vencidos' ? '3px solid #E53935' : 'none', borderRadius: 12 }} onClick={() => setActiveFilter(activeFilter === 'vencidos' ? null : 'vencidos')}>
           <div className="stat-icon">❌</div>
@@ -535,12 +631,10 @@ function HomePage({ data, updateData }) {
             rentals: currentData.rentals.map(r => {
               if (r.id !== rentalId) return r;
               const updated = { ...r, paymentStatusByMonth: { ...(r.paymentStatusByMonth || {}), [mk]: { paid: true, updatedAt: new Date().toISOString() } } };
-              const remaining = getUnpaidMonths(updated).filter(m => m !== mk);
-              if (remaining.length === 0 && (r.status === 'vencido' || isRentalExpired(r))) {
-                // El proximo vencimiento es el periodo siguiente al vencimiento actual.
-                updated.status = 'activo';
-                updated.endDate = nextDueAfter(r.endDate, r.startDate, periodoDe(r));
-              }
+              // El vencimiento pasa al primer periodo que siga sin pagar. Si ese
+              // todavia no llego, el alquiler vuelve a activo.
+              updated.endDate = primerVencimientoImpago(updated);
+              updated.status = updated.endDate <= getToday() ? 'vencido' : 'activo';
               return updated;
             })
           }));
@@ -615,7 +709,7 @@ function HomePage({ data, updateData }) {
                     </div>
                     <div style={{ textAlign: 'right' }}>
                       <div style={{ fontWeight: 600, color }}>{formatCurrency(r.price)}{periodoDe(r) === 'quincenal' ? '/15 dias' : '/mes'}</div>
-                      <div style={{ fontSize: 12, color: '#5A6978' }}>Vence: {formatDate(r.endDate)}</div>
+                      <div style={{ fontSize: 12, color: '#5A6978' }}>Vence: {formatDate(r.endDate)}{activeFilter === 'porVencer' && ` (${textoDias(r.endDate)})`}</div>
                       {isVencidos && unpaid.length > 0 && (
                         <div style={{ fontSize: 12, fontWeight: 700, color: '#E53935', marginTop: 2 }}>{unpaid.length} {periodoDe(r) === 'quincenal' ? (unpaid.length === 1 ? 'quincena' : 'quincenas') : (unpaid.length === 1 ? 'mes' : 'meses')} sin pagar</div>
                       )}
@@ -1311,11 +1405,12 @@ function RentalsPage({ data, updateData }) {
   const coincideBusqueda = (r, texto) => coincideTexto(textoDelAlquiler(r), texto);
 
   const rentTodayStr = getToday();
-  const rentTodayParts = rentTodayStr.split('-').map(Number);
-  const rentIn2Date = new Date(rentTodayParts[0], rentTodayParts[1] - 1, rentTodayParts[2] + 2);
-  const rentIn2Str = `${rentIn2Date.getFullYear()}-${String(rentIn2Date.getMonth()+1).padStart(2,'0')}-${String(rentIn2Date.getDate()).padStart(2,'0')}`;
+  // Antes avisaba solo 2 dias antes: muy poco margen para coordinar cobro o retiro.
+  const rentLimiteAviso = addDaysStr(rentTodayStr, DIAS_AVISO);
   const expiringToday = rentals.filter(r => r.endDate === rentTodayStr && r.status !== 'finalizado');
-  const expiringSoon = rentals.filter(r => r.endDate && r.endDate > rentTodayStr && r.endDate <= rentIn2Str && r.status !== 'finalizado');
+  const expiringSoon = rentals
+    .filter(r => r.endDate && r.endDate > rentTodayStr && r.endDate <= rentLimiteAviso && r.status !== 'finalizado')
+    .sort((a, b) => a.endDate.localeCompare(b.endDate));
 
   const finalizadoKey = (r) => r.finalizedAt || (r.endDate ? r.endDate + 'T00:00:00' : '') || r.createdAt || '';
   const filteredRentals = rentals.filter(r => {
@@ -1463,14 +1558,25 @@ function RentalsPage({ data, updateData }) {
 
   const handleUnificarVencimientos = () => {
     const count = rentals.filter(r => r.status !== 'finalizado' && r.startDate).length;
-    if (!confirm(`¿Normalizar vencimientos de ${count} alquileres? Cada uno quedara a 1 mes de su fecha de inicio, avanzando mes a mes hasta el proximo vencimiento.`)) return;
+    if (!confirm(`¿Normalizar vencimientos de ${count} alquileres? Cada uno quedara a 1 mes de su fecha de inicio, avanzando mes a mes hasta el proximo vencimiento. Los que tienen periodos vencidos sin pagar conservan su vencimiento.`)) return;
     updateData(cur => ({
       ...cur,
       rentals: cur.rentals.map(r => {
         if (r.status === 'finalizado' || !r.startDate) return r;
-        const newEndDate = rollingDueDate(r.startDate, periodoDe(r));
-        if (!newEndDate) return r;
-        return { ...r, endDate: newEndDate };
+        const periodo = periodoDe(r);
+        // Con periodos vencidos sin pagar NO se adelanta: antes los saltaba al
+        // proximo mes, la deuda desaparecia de Vencidos y nunca llegaba el aviso.
+        // Solo se corrige el dia para que coincida con el de inicio.
+        if (r.endDate && periodosImpagos(r).length > 0) {
+          const aligned = alignDueDay(r.endDate, r.startDate, periodo);
+          return aligned !== r.endDate ? { ...r, endDate: aligned } : r;
+        }
+        const D = rollingDueDate(r.startDate, periodo);
+        if (!D) return r;
+        // Si el periodo que vence en D ya esta pago, el vencimiento es el siguiente
+        // (antes lo traia de vuelta a D y marcaba vencido un mes ya cobrado).
+        const newEndDate = isPaidKey(r, claveDePeriodo(D, periodo)) ? nextDueAfter(D, r.startDate, periodo) : D;
+        return newEndDate !== r.endDate ? { ...r, endDate: newEndDate } : r;
       })
     }));
   };
@@ -1520,10 +1626,10 @@ function RentalsPage({ data, updateData }) {
 
       {expiringSoon.length > 0 && (
         <div style={{ background: '#FFF3E0', border: '2px solid #FFA726', borderRadius: 10, padding: '10px 16px', marginBottom: 12 }}>
-          <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}>🟠 Por vencer en 2 dias ({expiringSoon.length})</div>
+          <div style={{ fontWeight: 700, color: '#E65100', marginBottom: 4 }}>🟠 Por vencer en los proximos {DIAS_AVISO} dias ({expiringSoon.length})</div>
           {expiringSoon.map(r => (
             <div key={r.id} style={{ fontSize: 13, color: '#BF360C', marginTop: 2 }}>
-              • {getPatientName(r.patientId)} — {getEquipmentName(r.equipmentId)} — vence {formatDate(r.endDate)}
+              • {getPatientName(r.patientId)} — {getEquipmentName(r.equipmentId)} — vence {formatDate(r.endDate)} ({textoDias(r.endDate)})
             </div>
           ))}
         </div>
@@ -3796,6 +3902,51 @@ function CalendarPage({ data }) {
   );
 }
 
+// Cambio de la contraseña de ingreso. Al cambiarla se cierran las sesiones de los
+// demas dispositivos (tendran que ingresar con la nueva).
+function CambiarClaveCard() {
+  const [actual, setActual] = useState('');
+  const [nueva, setNueva] = useState('');
+  const [repetir, setRepetir] = useState('');
+  const [msg, setMsg] = useState(null);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (nueva.length < 6) { setMsg({ error: true, text: 'La nueva contraseña debe tener al menos 6 caracteres.' }); return; }
+    if (nueva !== repetir) { setMsg({ error: true, text: 'Las contraseñas nuevas no coinciden.' }); return; }
+    if (!confirm('¿Cambiar la contraseña? Los demas dispositivos tendran que ingresar de nuevo.')) return;
+    const res = await cambiarClave(actual, nueva);
+    if (res?.ok) {
+      setActual(''); setNueva(''); setRepetir('');
+      setMsg({ error: false, text: 'Contraseña cambiada.' });
+    } else {
+      setMsg({ error: true, text: res?.error === 'clave_actual_incorrecta' ? 'La contraseña actual no es correcta.' : 'No se pudo cambiar la contraseña. Revisa la conexion.' });
+    }
+  };
+
+  return (
+    <form className="card" onSubmit={handleSubmit}>
+      <h3 className="card-title">🔒 Contraseña de ingreso</h3>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
+        <div className="form-group">
+          <label className="form-label">Contraseña actual</label>
+          <input type="password" className="form-input" autoComplete="current-password" value={actual} onChange={e => setActual(e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Nueva contraseña</label>
+          <input type="password" className="form-input" autoComplete="new-password" value={nueva} onChange={e => setNueva(e.target.value)} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">Repetir nueva</label>
+          <input type="password" className="form-input" autoComplete="new-password" value={repetir} onChange={e => setRepetir(e.target.value)} />
+        </div>
+      </div>
+      {msg && <p style={{ color: msg.error ? '#C62828' : '#2E7D32', fontSize: 13, margin: '0 0 10px' }}>{msg.text}</p>}
+      <button type="submit" className="btn btn-primary" disabled={!actual || !nueva || !repetir}>Cambiar contraseña</button>
+    </form>
+  );
+}
+
 function SettingsPage({ data, updateData }) {
   const { settings, patients, equipment, rentals } = data;
   const [form, setForm] = useState(settings);
@@ -3939,6 +4090,8 @@ function SettingsPage({ data, updateData }) {
       <div className="page-header">
         <h1 className="page-title">Configuración</h1>
       </div>
+
+      <CambiarClaveCard />
 
       <div className="card">
         <h3 className="card-title">💾 Backup y Restauración</h3>
