@@ -1,4 +1,4 @@
-/* global Buffer */
+/* global Buffer, process */
 // Funcion serverless de Vercel. vercel.json reescribe /api/* hacia aca.
 // Usos:
 //  1) Proxy de imagenes para los PDF: GET /api/server?img=<url>
@@ -12,6 +12,13 @@
 //     Devuelve facturas, cotizaciones, alquileres con su cobranza, parque de equipos,
 //     catalogo de venta (con costo USD si esta cargado), mascaras, descartables y los
 //     parametros de la pestaña Contabilidad. Nunca escribe en la base.
+//  5) Subida de fotos de productos a Cloudflare R2 (bucket inser-fotos):
+//     POST /api/server?subir_foto=1  { token, dataUrl, carpeta }
+//     Exige una sesion valida de la app (el mismo token del ingreso con contraseña).
+//     Las fotos salen de R2 (transferencia gratis) en vez de viajar dentro de los datos
+//     de Supabase en cada carga de la app. Claves solo en variables de entorno de Vercel.
+
+import crypto from 'node:crypto';
 
 const ALLOWED_HOSTS = new Set([
   'cdn.zyrosite.com',
@@ -19,6 +26,8 @@ const ALLOWED_HOSTS = new Set([
   'inser.ar',
   'www.insersalud.com',
   'insersalud.com',
+  // Fotos de productos en Cloudflare R2 (bucket inser-fotos): sin esto el PDF no las incluye.
+  'pub-30b7b8d5ca314306a0b70843d5d6757f.r2.dev',
 ]);
 
 const SUPABASE_URL = 'https://gvharyztavhugqiaihjq.supabase.co';
@@ -365,7 +374,107 @@ async function handleImageProxy(req, res) {
   }
 }
 
+// ── Cloudflare R2 (S3 compatible, firma AWS SigV4 con region "auto") ──────────
+function _sha256hex(data) {
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
+
+function _hmac(key, data) {
+  return crypto.createHmac('sha256', key).update(data).digest();
+}
+
+async function r2Put(key, body, contentType) {
+  const { R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET } = process.env;
+  const host = `${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`;
+  const path = `/${R2_BUCKET}/${key.split('/').map(encodeURIComponent).join('/')}`;
+  const amzDate = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
+  const fecha = amzDate.slice(0, 8);
+  const payloadHash = _sha256hex(body);
+  const cacheControl = 'public, max-age=31536000, immutable';
+  const headers = {
+    'cache-control': cacheControl,
+    'content-type': contentType,
+    host,
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+  };
+  const firmados = Object.keys(headers).sort();
+  const canonicalHeaders = firmados.map((h) => `${h}:${headers[h]}\n`).join('');
+  const signedHeaders = firmados.join(';');
+  const canonicalRequest = ['PUT', path, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const scope = `${fecha}/auto/s3/aws4_request`;
+  const stringToSign = ['AWS4-HMAC-SHA256', amzDate, scope, _sha256hex(canonicalRequest)].join('\n');
+  let k = _hmac(`AWS4${R2_SECRET_ACCESS_KEY}`, fecha);
+  k = _hmac(k, 'auto');
+  k = _hmac(k, 's3');
+  k = _hmac(k, 'aws4_request');
+  const signature = crypto.createHmac('sha256', k).update(stringToSign).digest('hex');
+  const r = await fetch(`https://${host}${path}`, {
+    method: 'PUT',
+    headers: {
+      'Cache-Control': cacheControl,
+      'Content-Type': contentType,
+      'x-amz-content-sha256': payloadHash,
+      'x-amz-date': amzDate,
+      Authorization: `AWS4-HMAC-SHA256 Credential=${R2_ACCESS_KEY_ID}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+    },
+    body,
+  });
+  if (!r.ok) throw new Error(`R2 respondio ${r.status}: ${(await r.text()).slice(0, 200)}`);
+}
+
+async function handleSubirFoto(req, res) {
+  if (req.method !== 'POST') {
+    res.status(405).json({ error: 'Usar POST' });
+    return;
+  }
+  const faltan = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET', 'R2_PUBLIC_URL']
+    .filter((k) => !process.env[k]);
+  if (faltan.length) {
+    res.status(500).json({ error: 'R2 no configurado en Vercel', faltan });
+    return;
+  }
+  const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
+  const { token, dataUrl, carpeta } = body;
+
+  // Solo con sesion valida de la app (la base rechaza tokens invalidos o vencidos).
+  const sesion = await fetch(`${SUPABASE_URL}/rest/v1/rpc/app_ts`, {
+    method: 'POST',
+    headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_token: String(token || '') }),
+  });
+  if (!sesion.ok) {
+    res.status(403).json({ error: 'Sesion invalida: volve a ingresar con la contraseña' });
+    return;
+  }
+
+  const m = /^data:(image\/(jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
+  if (!m) {
+    res.status(400).json({ error: 'Formato de foto no valido (JPG, PNG o WEBP)' });
+    return;
+  }
+  const buf = Buffer.from(m[3], 'base64');
+  if (buf.length > 3 * 1024 * 1024) {
+    res.status(413).json({ error: 'La foto pesa mas de 3 MB' });
+    return;
+  }
+  const ext = m[2] === 'jpeg' ? 'jpg' : m[2];
+  const sub = String(carpeta || 'general').toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 30) || 'general';
+  const key = `productos/${sub}/${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}.${ext}`;
+  await r2Put(key, buf, m[1]);
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).json({ url: `${process.env.R2_PUBLIC_URL.replace(/\/$/, '')}/${key}`, bytes: buf.length });
+}
+
 export default async function handler(req, res) {
+  if (req.query?.subir_foto) {
+    try {
+      await handleSubirFoto(req, res);
+    } catch (e) {
+      res.status(500).json({ error: 'No se pudo subir la foto', detail: String(e?.message || e) });
+    }
+    return;
+  }
   if (req.query?.vencimientos) {
     try {
       await handleVencimientos(req, res);

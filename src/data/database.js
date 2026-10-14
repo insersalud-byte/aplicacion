@@ -106,6 +106,21 @@ export async function cambiarClave(actual, nueva) {
   }
 }
 
+// Sube una foto (data URL ya comprimida) a Cloudflare R2 por la API de la app y
+// devuelve la URL publica. Asi la foto NO viaja dentro de los datos de Supabase en
+// cada carga (R2 no cobra la transferencia). Si falla, lanza y el formulario puede
+// quedarse con la foto en base64 como antes.
+export async function subirFoto(dataUrl, carpeta = 'general') {
+  const r = await fetch('/api/server?subir_foto=1', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: getSessionToken(), dataUrl, carpeta }),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.url) throw new Error(j.error || `Error ${r.status} al subir la foto`);
+  return j.url;
+}
+
 let _syncStatus = { state: 'idle', lastSync: null, error: null };
 const _syncListeners = new Set();
 

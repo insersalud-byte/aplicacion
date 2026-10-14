@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, onSyncStatus, getSyncStatus, onDataChange, syncIfRemoteChanged, login, logout, getSessionToken, onAuthRequired, hayCambiosSinSubir, cambiarClave } from './data/database';
+import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, subirFoto, onSyncStatus, getSyncStatus, onDataChange, syncIfRemoteChanged, login, logout, getSessionToken, onAuthRequired, hayCambiosSinSubir, cambiarClave } from './data/database';
 import { Icon, EquipoFoto, Avatar } from './ui';
 import './App.css';
 
@@ -2315,7 +2315,13 @@ function EquipmentModal({ equipment, onSave, onClose }) {
         canvas.width = Math.round(img.width * ratio);
         canvas.height = Math.round(img.height * ratio);
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        setForm(f => ({ ...f, imageUrl: canvas.toDataURL('image/jpeg', 0.75) }));
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+        setForm(f => ({ ...f, imageUrl: dataUrl })); // vista previa inmediata
+        // Se sube a Cloudflare R2 y queda solo la URL (no viaja en los datos de Supabase).
+        // Si falla (sin internet, etc.), queda la foto en base64 como antes.
+        subirFoto(dataUrl, 'equipos')
+          .then(url => setForm(f => (f.imageUrl === dataUrl ? { ...f, imageUrl: url } : f)))
+          .catch(err => console.warn('La foto quedo guardada localmente:', err.message));
       };
       img.src = reader.result;
     };
@@ -2543,7 +2549,13 @@ function EquiposNuevosPage({ data, updateData }) {
                 canvas.width = Math.round(img.width * ratio);
                 canvas.height = Math.round(img.height * ratio);
                 canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-                setForm(f => ({ ...f, imageUrl: canvas.toDataURL('image/jpeg', 0.75) }));
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+        setForm(f => ({ ...f, imageUrl: dataUrl })); // vista previa inmediata
+        // Se sube a Cloudflare R2 y queda solo la URL (no viaja en los datos de Supabase).
+        // Si falla (sin internet, etc.), queda la foto en base64 como antes.
+        subirFoto(dataUrl, 'equipos-nuevos')
+          .then(url => setForm(f => (f.imageUrl === dataUrl ? { ...f, imageUrl: url } : f)))
+          .catch(err => console.warn('La foto quedo guardada localmente:', err.message));
               };
               img.src = r.result;
             };
@@ -2791,7 +2803,13 @@ function MascaraModal({ mascara, onSave, onClose }) {
           canvas.width = Math.round(img.width * ratio);
           canvas.height = Math.round(img.height * ratio);
           canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-          setForm(f => ({ ...f, imageUrl: canvas.toDataURL('image/jpeg', 0.72) }));
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+        setForm(f => ({ ...f, imageUrl: dataUrl })); // vista previa inmediata
+        // Se sube a Cloudflare R2 y queda solo la URL (no viaja en los datos de Supabase).
+        // Si falla (sin internet, etc.), queda la foto en base64 como antes.
+        subirFoto(dataUrl, 'mascarillas')
+          .then(url => setForm(f => (f.imageUrl === dataUrl ? { ...f, imageUrl: url } : f)))
+          .catch(err => console.warn('La foto quedo guardada localmente:', err.message));
         };
         img.src = reader.result;
       };
