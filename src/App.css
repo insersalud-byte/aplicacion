@@ -305,14 +305,12 @@ button { font: inherit; }
 
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .dot-rojo { background: var(--bad); }
-.dot-naranja { background: var(--warn); }
 .dot-verde { background: var(--ok); }
 
 /* Avisos de vencimiento (pantalla Alquileres) */
 .aviso { border-radius: 12px; padding: 12px 16px; margin-bottom: 12px; border: 1px solid; }
 .aviso-titulo { font-weight: 800; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
 .aviso-hoy { background: var(--bad-50); border-color: #F5C7C7; color: #991B1B; }
-.aviso-pronto { background: var(--warn-50); border-color: #F8D9A8; color: #92400E; }
 
 /* ---------- Busqueda ---------- */
 .search-box {

@@ -36,6 +36,16 @@
 - NO volver a meter logica de "merge local+remoto": eso causaba que cada navegador tuviera datos distintos aunque el indicador dijera "Sincronizado".
 - `seedEquiposNuevos` (src/data/seedEquiposNuevos.js) son 42 equipos por defecto que se siembran solo si la base no tiene ninguno.
 
+### Bajas de alquiler y remito de retiro (17-oct-2026)
+- Causa del reclamo "di de baja y no hizo el remito": el boton de papelera (Eliminar) de Alquileres borra el alquiler sin remito y sin dejar rastro (dos alquileres activos de un paciente desaparecieron asi, ni siquiera como finalizados). Y "Cese alquiler" solo existia en la lista Vencidos de Inicio.
+- Ahora hay UNA accion, "Dar de baja", en Inicio (Activos, Por vencer, Vencidos) y en Alquileres. Logica pura y probada en `src/data/bajas.js` (tests en `tests/bajas.test.js`, correr con `npm test`); el armado del PDF y las ventanas estan en App.jsx (`darDeBajaAlquiler`, `emitirRemitoRetiro`, `RemitoListoModal`).
+- Marcas en el alquiler: `status: 'finalizado'`, `finalizedAt`, `remitoRetiroPendiente: true` hasta que el remito salga bien, y `remitoRetiro: { numero, fecha, equipos }`. Una copia (boton Remito de un finalizado) reutiliza numero, fecha y detalle del equipo. La lista muestra "Remito pendiente" cuando falta.
+- Siempre aparece una ventana con "Descargar PDF": Chrome puede bloquear en silencio la descarga automatica sin lanzar error y la app no lo detecta; el clic en el boton siempre funciona.
+- Reactivar un alquiler (Editar, estado distinto de Finalizado) borra `finalizedAt` y las marcas del remito: la proxima baja lleva fecha y numero nuevos.
+- "Eliminar" un alquiler en curso, o finalizado con remito pendiente, pide una confirmacion explicita. Se dejo a proposito (sirve para alquileres cargados por error).
+- `updateData` lanza un error claro si no hay datos cargados (sesion vencida) y no guarda si el updater devuelve el mismo estado.
+- En Alquileres se quito el bloque "Por vencer" de arriba (ocupaba mucho lugar); queda "Vencen hoy". Los por vencer se ven en Inicio.
+
 ### Flujo de deploy
 editar src/ -> `npm run build` -> `git add` (codigo fuente) -> commit -> `git push origin main` -> verificar en produccion con Ctrl+F5.
 

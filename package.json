@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "serve": "node server.cjs"
+    "serve": "node server.cjs",
+    "test": "node --test tests/bajas.test.js"
   },
   "dependencies": {
     "html2canvas": "^1.4.1",

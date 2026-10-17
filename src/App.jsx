@@ -1,7 +1,168 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, subirFoto, onSyncStatus, getSyncStatus, onDataChange, syncIfRemoteChanged, login, logout, getSessionToken, onAuthRequired, hayCambiosSinSubir, cambiarClave } from './data/database';
 import { Icon, EquipoFoto, Avatar } from './ui';
+import { aplicarBaja, marcarRemitoRetiro, sellarFinalizacion, estadoRemitoRetiro, datosRemitoRetiro } from './data/bajas';
+import { onRemitoListo, avisarRemitoListo } from './data/remitoAviso';
 import './App.css';
+
+// ── Remitos de alquiler (entrega / retiro) ──────────────────────────────────
+// Baja de un alquiler: finaliza, libera el equipo y emite el remito de retiro.
+// Antes habia dos copias de este codigo (Inicio y Alquileres) y el remito se
+// descargaba "a ciegas": si el navegador bloqueaba la descarga no pasaba nada.
+
+// Baja el PDF. Devuelve 'descargado', 'pestana' (se abrio en otra pestana) o 'fallo'.
+function descargarPDF(doc, nombre) {
+  try {
+    doc.save(nombre);
+    return 'descargado';
+  } catch (err) {
+    console.error('remito: fallo la descarga', err);
+    try {
+      const win = window.open(doc.output('bloburl'), '_blank');
+      if (win) return 'pestana';
+    } catch (err2) {
+      console.error('remito: fallo abrir en pestana', err2);
+    }
+    return 'fallo';
+  }
+}
+
+// Arma el PDF, lo baja y avisa con una ventana que tiene el boton Descargar.
+// Devuelve { ok: true, via } o { ok: false, error }.
+async function armarYEntregarRemito(datos, settings, { bajaNueva = false } = {}) {
+  let doc;
+  try {
+    doc = await generateRemitoEquipoPDF(datos, settings || {});
+  } catch (err) {
+    console.error('remito: fallo al armar el PDF', err);
+    return { ok: false, error: err };
+  }
+  const nombre = `Remito_${datos.tipo === 'retiro' ? 'Retiro' : 'Entrega'}_${datos.numero}.pdf`;
+  const via = descargarPDF(doc, nombre);
+  avisarRemitoListo({ tipo: datos.tipo, numero: datos.numero, paciente: datos.paciente, esCopia: Boolean(datos.esCopia), bajaNueva, doc, nombre, via });
+  return { ok: true, via };
+}
+
+// Remito de retiro de un alquiler ya finalizado. Si ya se habia emitido, reutiliza
+// el mismo numero y fecha. `rental` es el registro YA finalizado (con su fecha de baja);
+// `data` solo aporta paciente, equipo y datos de la empresa.
+// `bajaNueva`: la baja se registro recien (cambia el titulo del aviso y el texto del error).
+// Si el navegador no dejo bajar el PDF, el numero queda guardado pero el alquiler sigue
+// como "Remito pendiente" hasta que se descargue bien.
+// Alquileres con un remito de retiro armandose. Armar el PDF puede tardar unos segundos
+// (la primera vez carga la libreria): si se toca "Remito" justo entonces, saldria un
+// segundo numero para la misma baja.
+const remitosEnCurso = new Set();
+
+async function emitirRemitoRetiro(rental, data, updateData, { bajaNueva = false } = {}) {
+  if (remitosEnCurso.has(rental.id)) {
+    alert('El remito de este alquiler ya se está generando. Esperá unos segundos.');
+    return false;
+  }
+  remitosEnCurso.add(rental.id);
+  try {
+    const datos = datosRemitoRetiro(data, rental, { hoy: getToday(), generarNumero: generateDocNumber });
+    const res = await armarYEntregarRemito(datos, data.settings, { bajaNueva });
+    if (!res.ok) {
+      alert((bajaNueva ? 'La baja quedó registrada, pero NO se pudo armar el remito de retiro.' : 'NO se pudo armar el remito de retiro.')
+        + '\n\nMotivo: ' + (res.error && res.error.message ? res.error.message : res.error)
+        + '\n\nPodés reintentarlo con el botón "Remito" del alquiler (en Alquileres, filtro Finalizado).');
+      return false;
+    }
+    // Una copia de un remito ya emitido no cambia nada: el registro ya tiene su numero y fecha.
+    // Un remito sin equipo (el equipo ya no existe) tampoco es valido: queda pendiente.
+    if (!datos.esCopia) {
+      try {
+        updateData(cur => marcarRemitoRetiro(cur, rental.id, {
+          numero: datos.numero,
+          fecha: datos.fecha,
+          pendiente: res.via === 'fallo' || datos.faltaEquipo,
+          // Se guarda el detalle impreso, salvo el aviso de "equipo no encontrado".
+          equipos: datos.faltaEquipo ? undefined : datos.equipos,
+        }));
+      } catch (err) {
+        // La sesion vencio mientras se armaba el PDF: la baja ya estaba guardada y queda "pendiente".
+        console.error('remito: no se pudo anotar el numero', err);
+      }
+    }
+    if (datos.faltaEquipo) {
+      alert('El remito de retiro salió, pero el equipo de este alquiler ya no existe en el sistema: figura como "Equipo no encontrado". Revisalo antes de entregarlo.'
+        + (datos.esCopia ? '' : ' El alquiler queda con "Remito pendiente".'));
+    }
+    return true;
+  } finally {
+    remitosEnCurso.delete(rental.id);
+  }
+}
+
+// Da de baja un alquiler (finaliza + remito de retiro). Los pedidos de confirmacion
+// los hace quien llama. Devuelve false si no se pudo dar de baja.
+async function darDeBajaAlquiler(rental, data, updateData) {
+  let dadoDeBaja = null;
+  try {
+    updateData(cur => {
+      const siguiente = aplicarBaja(cur, rental.id, new Date().toISOString());
+      if (siguiente !== cur) dadoDeBaja = siguiente.rentals.find(r => r.id === rental.id);
+      return siguiente;
+    });
+  } catch (err) {
+    console.error('baja: sin datos cargados', err);
+    alert('No se dio de baja: la sesión venció. Ingresá de nuevo a la app y repetí la baja.');
+    return false;
+  }
+  if (!dadoDeBaja) {
+    alert('No se dio de baja: ese alquiler ya estaba dado de baja o ya no existe.');
+    return false;
+  }
+  // El remito se arma con el registro ya finalizado (fecha de baja de ahora, sin marcas viejas).
+  return emitirRemitoRetiro(dadoDeBaja, data, updateData, { bajaNueva: true });
+}
+
+// Ventana "remito listo": el clic en Descargar siempre puede bajar el PDF. Puede haber
+// mas de un remito a la vez (retiro del que se finaliza + entrega de equipos agregados).
+function RemitoListoModal({ items, onClose }) {
+  const unico = items.length === 1 ? items[0] : null;
+  const titulo = !unico ? 'Remitos generados'
+    : unico.tipo !== 'retiro' ? 'Remito de entrega generado'
+      : unico.bajaNueva ? 'Baja registrada'
+        : unico.esCopia ? 'Copia del remito de retiro' : 'Remito de retiro generado';
+  // Chrome bloquea en silencio las descargas automaticas que no nacen de un clic, y la app
+  // no puede detectarlo: por eso el texto no afirma que se haya descargado.
+  const mensajeDe = (via) => (via === 'pestana'
+    ? 'No se pudo descargar automáticamente y el remito se abrió en otra pestaña. También podés tocar "Descargar PDF".'
+    : via === 'fallo'
+      ? 'No se pudo descargar automáticamente. Tocá "Descargar PDF".'
+      : 'Se intentó descargar automáticamente. Si no aparece en tus descargas, tocá "Descargar PDF".');
+  const descargar = (info) => {
+    try { info.doc.save(info.nombre); } catch (e) { console.error(e); alert('No se pudo descargar: ' + (e && e.message ? e.message : e)); }
+  };
+  useEffect(() => {
+    const alTeclear = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', alTeclear);
+    return () => window.removeEventListener('keydown', alTeclear);
+  }, [onClose]);
+  return (
+    <div className="modal-overlay">
+      <div className="modal" style={{ maxWidth: 460 }} role="dialog" aria-modal="true" aria-label={titulo}>
+        <div className="modal-header">
+          <h3 className="modal-title">{titulo}</h3>
+          <button className="modal-close" onClick={onClose} aria-label="Cerrar">×</button>
+        </div>
+        {items.map((info, i) => (
+          <div key={info.numero + i} style={{ marginBottom: 16, paddingBottom: 14, borderBottom: i < items.length - 1 ? '1px solid var(--line)' : 'none' }}>
+            <p style={{ margin: '0 0 4px', fontWeight: 700 }}>{info.tipo === 'retiro' ? 'Remito de retiro' : 'Remito de entrega'} N° {info.numero}</p>
+            <p style={{ margin: '0 0 10px', color: 'var(--muted)' }}>{info.paciente}</p>
+            <p style={{ margin: '0 0 12px', fontSize: 14 }}>{mensajeDe(info.via)}</p>
+            <button className="btn btn-primary btn-block" autoFocus={i === 0} onClick={() => descargar(info)}>
+              <Icon name="file" size={16} /> Descargar PDF
+            </button>
+          </div>
+        ))}
+        <button className="btn btn-secondary btn-block" onClick={onClose}>Cerrar</button>
+      </div>
+    </div>
+  );
+}
 
 // Los documentos guardados (cotizaciones, remitos, facturas) NO deben llevar
 // las fotos en base64: cada documento copiaba ~130 KB por producto y el blob
@@ -357,6 +518,10 @@ function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [remitosListos, setRemitosListos] = useState([]);
+
+  // Ventana "remito listo" (con boton Descargar) cada vez que se arma un remito.
+  useEffect(() => onRemitoListo(info => setRemitosListos(prev => [...prev, info])), []);
 
   // dataRef refleja siempre el ultimo estado. Se actualiza en cada camino que
   // hace setData (init, updateData, onDataChange), nunca durante el render.
@@ -404,7 +569,15 @@ function App() {
   };
 
   const updateData = useCallback((updater) => {
+    // Sin datos cargados (la sesion vencio y se vacio la pantalla) no hay sobre que
+    // aplicar el cambio: se avisa con un error (los llamadores lo muestran) en vez de
+    // guardar un estado vacio encima de la base o de seguir en silencio.
+    if (typeof updater === 'function' && !dataRef.current) {
+      throw new Error('La sesión venció: ingresá de nuevo a la app. Este cambio no se guardó.');
+    }
     const nextData = typeof updater === 'function' ? updater(dataRef.current) : updater;
+    // El updater devolvio el mismo estado: no hubo cambio, no se vuelve a subir todo.
+    if (nextData === dataRef.current) return;
     dataRef.current = nextData;
     setData(nextData);
     saveData(nextData);
@@ -535,12 +708,14 @@ function App() {
           Más
         </button>
       </nav>
+
+      {remitosListos.length > 0 && <RemitoListoModal items={remitosListos} onClose={() => setRemitosListos([])} />}
     </div>
   );
 }
 
 function HomePage({ data, updateData }) {
-  const { patients, equipment, rentals, settings } = data;
+  const { patients, equipment, rentals } = data;
   const today = getToday();
   const currentMonthKey = getMonthKey(new Date());
 
@@ -700,9 +875,9 @@ function HomePage({ data, updateData }) {
           }));
         };
 
-        // Cese de alquiler: finaliza el alquiler (sale de vencidos y pasa a Finalizados),
+        // Baja de alquiler: finaliza el alquiler (sale de las listas y pasa a Finalizados),
         // libera el equipo para volver a alquilarlo y emite el remito de retiro.
-        const handleCese = async (r) => {
+        const handleBaja = (r) => {
           const p = patients.find(x => x.id === r.patientId);
           const eq = equipment.find(e => e.id === r.equipmentId);
           const msg = `¿Dar de baja el alquiler de ${p?.name || 'este paciente'}?\n\n`
@@ -711,29 +886,7 @@ function HomePage({ data, updateData }) {
             + `- El equipo vuelve al stock para alquilar\n`
             + `- El alquiler pasa a Finalizados`;
           if (!confirm(msg)) return;
-          updateData(currentData => ({
-            ...currentData,
-            rentals: currentData.rentals.map(x => x.id === r.id
-              ? { ...x, status: 'finalizado', finalizedAt: new Date().toISOString() }
-              : x)
-          }));
-          try {
-            const numero = generateDocNumber('RET', p?.name || '');
-            const doc = await generateRemitoEquipoPDF({
-              tipo: 'retiro',
-              paciente: p?.name || 'Sin paciente',
-              telefono: p?.phone || '',
-              direccion: p?.address || '',
-              dni: p?.dni || '',
-              equipos: eq ? [{ name: eq.name, serialNumber: eq.serialNumber }] : [],
-              fecha: getToday(),
-              numero,
-            }, settings || {});
-            doc.save(`Remito_Retiro_${numero}.pdf`);
-          } catch (err) {
-            console.error(err);
-            alert('El alquiler se dio de baja y el equipo quedo libre, pero no se pudo generar el remito.');
-          }
+          darDeBajaAlquiler(r, data, updateData);
         };
 
         const handleReminder = (r) => {
@@ -788,8 +941,15 @@ function HomePage({ data, updateData }) {
                           <Icon name="check" size={15} /> Pagar {etiquetaPeriodo(mk)}
                         </button>
                       ))}
-                      <button className="btn btn-sm btn-danger" title="Dar de baja: genera remito de retiro y libera el equipo" onClick={() => handleCese(r)}>
-                        <Icon name="stop" size={15} /> Cese alquiler
+                      <button className="btn btn-sm btn-danger" title="Dar de baja: genera remito de retiro y libera el equipo" onClick={() => handleBaja(r)}>
+                        <Icon name="stop" size={15} /> Dar de baja
+                      </button>
+                    </div>
+                  )}
+                  {!isVencidos && !isCobrados && (
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+                      <button className="btn btn-sm btn-danger" title="Dar de baja: genera remito de retiro y libera el equipo" onClick={() => handleBaja(r)}>
+                        <Icon name="stop" size={15} /> Dar de baja
                       </button>
                     </div>
                   )}
@@ -1478,12 +1638,9 @@ function RentalsPage({ data, updateData }) {
   const coincideBusqueda = (r, texto) => coincideTexto(textoDelAlquiler(r), texto);
 
   const rentTodayStr = getToday();
-  // Antes avisaba solo 2 dias antes: muy poco margen para coordinar cobro o retiro.
-  const rentLimiteAviso = addDaysStr(rentTodayStr, DIAS_AVISO);
+  // Solo "vencen hoy" arriba. Los "por vencer" (proximos DIAS_AVISO dias) ocupaban
+  // mucho lugar en esta pantalla: se ven en Inicio, en la tarjeta "Por vencer".
   const expiringToday = rentals.filter(r => r.endDate === rentTodayStr && r.status !== 'finalizado');
-  const expiringSoon = rentals
-    .filter(r => r.endDate && r.endDate > rentTodayStr && r.endDate <= rentLimiteAviso && r.status !== 'finalizado')
-    .sort((a, b) => a.endDate.localeCompare(b.endDate));
 
   const finalizadoKey = (r) => r.finalizedAt || (r.endDate ? r.endDate + 'T00:00:00' : '') || r.createdAt || '';
   const filteredRentals = rentals.filter(r => {
@@ -1499,73 +1656,58 @@ function RentalsPage({ data, updateData }) {
     return masNuevoPrimero(a, b);
   });
 
-  // Remito automatico: 'entrega' al crear el alquiler, 'retiro' al finalizarlo.
-  const emitirRemitoEquipo = async (tipo, patientId, equipmentIds) => {
+  // Remito de ENTREGA al crear el alquiler (o al agregarle equipos). El de retiro sale
+  // con la baja (emitirRemitoRetiro, mas arriba) y deja el numero guardado en el alquiler.
+  const emitirRemitoEntrega = async (patientId, equipmentIds) => {
     const p = patients.find(x => x.id === patientId);
-    // Cada entrada puede ser el id del equipo o { id, period }: el periodo del
-    // alquiler (mensual / 15 dias) sale escrito en el remito.
+    // Cada entrada es { id, period }: el periodo del alquiler (mensual / 15 dias)
+    // sale escrito en el remito.
     const equipos = equipmentIds
-      .map(x => (typeof x === 'string' ? { id: x } : (x || {})))
       .map(x => {
         const e = equipment.find(eq => eq.id === x.id);
         return e ? { name: e.name, serialNumber: e.serialNumber, periodo: x.period === 'quincenal' ? 'quincenal' : 'mensual' } : null;
       })
       .filter(Boolean);
-    // Antes salia en silencio y parecia que el remito no se habia intentado.
     if (equipos.length === 0) {
-      alert('No se pudo armar el remito: no se encontro el equipo del alquiler. Podes emitirlo despues con el boton Remito.');
+      alert('No se pudo armar el remito: no se encontró el equipo del alquiler. Podés emitirlo después con el botón Remito.');
       return;
     }
-    const prefix = tipo === 'retiro' ? 'RET' : 'ENT';
-    const numero = generateDocNumber(prefix, p?.name || '');
-    const nombreArchivo = `Remito_${tipo === 'retiro' ? 'Retiro' : 'Entrega'}_${numero}.pdf`;
-    const salto = String.fromCharCode(10) + String.fromCharCode(10);
-
-    // Paso 1: armar el PDF.
-    let doc;
-    try {
-      doc = await generateRemitoEquipoPDF({
-        tipo,
-        paciente: p?.name || 'Sin paciente',
-        telefono: p?.phone || '',
-        direccion: p?.address || '',
-        dni: p?.dni || '',
-        equipos,
-        fecha: getToday(),
-        numero,
-      }, settings || {});
-    } catch (err) {
-      console.error('remito: fallo al armar el PDF', err);
-      alert('No se pudo ARMAR el remito.' + salto + 'Motivo: ' + (err && err.message ? err.message : err)
-        + salto + 'Podes reintentar con el boton Remito del alquiler.');
-      return;
-    }
-
-    // Paso 2: bajarlo. En celulares el navegador puede bloquear la descarga
-    // automatica, asi que si falla se abre en una pestana para guardarlo a mano.
-    try {
-      doc.save(nombreArchivo);
-    } catch (err) {
-      console.error('remito: fallo la descarga', err);
-      try {
-        const url = doc.output('bloburl');
-        const win = window.open(url, '_blank');
-        if (!win) throw new Error('el navegador bloqueo la ventana');
-        alert('El remito se abrio en una pestana nueva porque el navegador bloqueo la descarga. Guardalo desde ahi.');
-      } catch (err2) {
-        alert('El remito se genero pero no se pudo DESCARGAR.' + salto
-          + 'Motivo: ' + (err && err.message ? err.message : err) + salto
-          + 'Segundo intento: ' + (err2 && err2.message ? err2.message : err2));
-      }
+    const res = await armarYEntregarRemito({
+      tipo: 'entrega',
+      paciente: p?.name || 'Sin paciente',
+      telefono: p?.phone || '',
+      direccion: p?.address || '',
+      dni: p?.dni || '',
+      equipos,
+      fecha: getToday(),
+      numero: generateDocNumber('ENT', p?.name || ''),
+    }, settings);
+    if (!res.ok) {
+      alert('No se pudo ARMAR el remito de entrega.\n\nMotivo: ' + (res.error && res.error.message ? res.error.message : res.error)
+        + '\n\nPodés reintentar con el botón Remito del alquiler.');
     }
   };
 
   // Emitir el remito a mano cuando el automatico no salio, o si hace falta otra copia.
+  // Las copias del remito de retiro conservan el numero y la fecha originales.
   const handleRemitoManual = (rental) => {
-    const tipo = rental.status === 'finalizado' ? 'retiro' : 'entrega';
+    const esRetiro = rental.status === 'finalizado';
     const quien = getPatientName(rental.patientId);
-    if (!confirm(`¿Generar el remito de ${tipo} de ${quien}?`)) return;
-    emitirRemitoEquipo(tipo, rental.patientId, [{ id: rental.equipmentId, period: rental.period }]);
+    if (!confirm(`¿Generar el remito de ${esRetiro ? 'retiro' : 'entrega'} de ${quien}?`)) return;
+    if (esRetiro) emitirRemitoRetiro(rental, data, updateData);
+    else emitirRemitoEntrega(rental.patientId, [{ id: rental.equipmentId, period: rental.period }]);
+  };
+
+  // Baja del alquiler desde esta lista: finaliza, libera el equipo y emite el remito de retiro.
+  const handleBaja = (rental) => {
+    const eq = equipment.find(e => e.id === rental.equipmentId);
+    const msg = `¿Dar de baja el alquiler de ${getPatientName(rental.patientId)}?\n\n`
+      + `Equipo: ${eq?.name || 'sin equipo'}\n\n`
+      + `- Se genera el remito de retiro (PDF)\n`
+      + `- El equipo vuelve al stock para alquilar\n`
+      + `- El alquiler pasa a Finalizados`;
+    if (!confirm(msg)) return;
+    darDeBajaAlquiler(rental, data, updateData);
   };
 
   const handleSave = (payload) => {
@@ -1576,30 +1718,30 @@ function RentalsPage({ data, updateData }) {
         : `¿Crear el alquiler de ${getPatientName(payload.patientId)}?`;
     if (!confirm(confirmMsg)) return;
 
-    // Detectar que remito corresponde emitir despues de guardar.
-    let remito = null;
+    // Detectar que remitos corresponde emitir despues de guardar. Pueden ser DOS a la
+    // vez (retiro del alquiler que se finaliza + entrega de equipos agregados): antes
+    // el de entrega pisaba al de retiro y la baja quedaba sin remito.
+    let retiro = null;   // alquiler (ya editado) que pasa a finalizado
+    let retiroFinal = null; // ese mismo alquiler tal como queda guardado (con fecha de baja y marcas)
+    let entrega = null;  // { patientId, equipmentIds }
     if (!editingRental) {
       const nuevos = Array.isArray(payload) ? payload : [payload];
-      remito = { tipo: 'entrega', patientId: nuevos[0]?.patientId, equipmentIds: nuevos.map(r => ({ id: r.equipmentId, period: r.period })) };
+      entrega = { patientId: nuevos[0]?.patientId, equipmentIds: nuevos.map(r => ({ id: r.equipmentId, period: r.period })) };
     } else {
       const actualizado = payload.update || payload;
       // Pasa a finalizado (antes no lo estaba) -> remito de retiro.
-      if (actualizado.status === 'finalizado' && editingRental.status !== 'finalizado') {
-        remito = { tipo: 'retiro', patientId: actualizado.patientId, equipmentIds: [{ id: actualizado.equipmentId, period: actualizado.period }] };
-      }
+      if (actualizado.status === 'finalizado' && editingRental.status !== 'finalizado') retiro = actualizado;
       // Equipos extra agregados al mismo paciente -> remito de entrega por esos.
       if (payload.create?.length) {
-        remito = { tipo: 'entrega', patientId: payload.create[0].patientId, equipmentIds: payload.create.map(r => ({ id: r.equipmentId, period: r.period })) };
+        entrega = { patientId: payload.create[0].patientId, equipmentIds: payload.create.map(r => ({ id: r.equipmentId, period: r.period })) };
       }
     }
     updateData(cur => {
-      // Sella la fecha de finalizacion cuando un alquiler pasa a "finalizado".
-      const stamp = (nr) => {
-        if (nr.status !== 'finalizado') return nr;
-        const old = cur.rentals.find(r => r.id === nr.id);
-        const finalizedAt = nr.finalizedAt || (old && old.status === 'finalizado' && old.finalizedAt) || new Date().toISOString();
-        return { ...nr, finalizedAt };
-      };
+      // Sella la fecha de finalizacion cuando un alquiler pasa a "finalizado" y lo deja
+      // marcado con el remito de retiro pendiente. Si vuelve a estar en curso, se
+      // limpia la marca del remito: la proxima baja genera uno nuevo.
+      const ahoraIso = new Date().toISOString();
+      const stamp = (nr) => sellarFinalizacion(cur.rentals.find(r => r.id === nr.id), nr, ahoraIso);
       let newRentals = [...cur.rentals];
       if (editingRental && payload.update) {
         newRentals = newRentals.map(r => r.id === payload.update.id ? stamp(payload.update) : r);
@@ -1615,18 +1757,33 @@ function RentalsPage({ data, updateData }) {
       } else {
         newRentals = [...newRentals, stamp({ ...payload, id: generateId(), createdAt: getToday() })];
       }
+      if (retiro) retiroFinal = newRentals.find(r => r.id === retiro.id) || null;
       return { ...cur, rentals: newRentals };
     });
     setShowModal(false);
     setEditingRental(null);
-    // Emitir el remito correspondiente (no bloquea el guardado).
-    if (remito) emitirRemitoEquipo(remito.tipo, remito.patientId, remito.equipmentIds);
+    // Emitir los remitos correspondientes (no bloquean el guardado).
+    if (retiroFinal) emitirRemitoRetiro(retiroFinal, data, updateData, { bajaNueva: true });
+    if (entrega) emitirRemitoEntrega(entrega.patientId, entrega.equipmentIds);
   };
 
   const handleDelete = (id) => {
-    if (confirm('¿Eliminar alquiler?')) {
-      updateData(cur => ({ ...cur, rentals: cur.rentals.filter(r => r.id !== id) }));
+    const rental = rentals.find(r => r.id === id);
+    if (rental && rental.status !== 'finalizado') {
+      // Borrar un alquiler en curso NO genera remito de retiro y no deja registro de
+      // la baja: asi se perdieron bajas reales. Para retirar un equipo esta "Dar de baja".
+      if (!confirm(`ATENCIÓN: "Eliminar" borra el alquiler de ${getPatientName(rental.patientId)} para siempre, SIN remito de retiro y sin dejar registro de la baja.\n\n`
+        + 'Si el equipo se retiró, cancelá y usá el botón "Dar de baja".\n\n'
+        + '¿Eliminar igual? (solo para un alquiler cargado por error)')) return;
+    } else if (estadoRemitoRetiro(rental) === 'pendiente') {
+      // La marca "Remito pendiente" es el unico rastro de que falta el remito de esa baja.
+      if (!confirm(`Este alquiler de ${getPatientName(rental.patientId)} todavía tiene el remito de retiro PENDIENTE. Si lo eliminás se pierde ese aviso.\n\n`
+        + 'Cancelá y usá el botón "Remito" para generarlo.\n\n'
+        + '¿Eliminar igual?')) return;
+    } else if (!confirm('¿Eliminar alquiler?')) {
+      return;
     }
+    updateData(cur => ({ ...cur, rentals: cur.rentals.filter(r => r.id !== id) }));
   };
 
   const handleUnificarVencimientos = () => {
@@ -1697,17 +1854,6 @@ function RentalsPage({ data, updateData }) {
         </div>
       )}
 
-      {expiringSoon.length > 0 && (
-        <div className="aviso aviso-pronto">
-          <div className="aviso-titulo"><span className="dot dot-naranja" /> Por vencer en los próximos {DIAS_AVISO} días ({expiringSoon.length})</div>
-          {expiringSoon.map(r => (
-            <div key={r.id} style={{ fontSize: 13.5, marginTop: 2 }}>
-              • {getPatientName(r.patientId)} — {getEquipmentName(r.equipmentId)} — vence {formatDate(r.endDate)} ({textoDias(r.endDate)})
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className="card" style={{ padding: 12, marginBottom: 15 }}>
         <input type="text" className="form-input" placeholder="Buscar por paciente, teléfono, equipo, serie, dirección, notas..." value={search} onChange={e => setSearch(e.target.value)} />
       </div>
@@ -1759,12 +1905,20 @@ function RentalsPage({ data, updateData }) {
                       <td data-label="Inicio">{formatDate(rental.startDate)}</td>
                       <td data-label="Vence">{formatDate(rental.endDate)}</td>
                       <td data-label="Precio"><span>{formatCurrency(rental.price)}<span className="periodo" style={{ fontSize: 11.5, color: periodoDe(rental) === 'quincenal' ? 'var(--warn)' : 'var(--muted)', fontWeight: 700 }}>{PERIODO_LABEL[periodoDe(rental)]}</span></span></td>
-                      <td data-label="Estado"><span className={`badge badge-${status}`}>{status}</span></td>
+                      <td data-label="Estado">
+                        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+                          <span className={`badge badge-${status}`}>{status}</span>
+                          {estadoRemitoRetiro(rental) === 'pendiente' && <span className="badge badge-por_vencer" title="La baja quedó registrada, pero el remito de retiro no se generó o no se pudo descargar. Usá el botón Remito.">Remito pendiente</span>}
+                        </div>
+                      </td>
                       <td className="td-acciones">
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                           <button className="btn btn-sm btn-secondary" onClick={() => { setEditingRental(rental); setShowModal(true); }} title="Editar" aria-label="Editar"><Icon name="edit" size={16} /></button>
-                          <button className="btn btn-sm btn-secondary" title={rental.status === 'finalizado' ? 'Generar remito de retiro' : 'Generar remito de entrega'} onClick={() => handleRemitoManual(rental)}><Icon name="file" size={15} /><span className="btn-txt">Remito</span></button>
-                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(rental.id)} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
+                          <button className="btn btn-sm btn-secondary" title={rental.status === 'finalizado' ? (estadoRemitoRetiro(rental) === 'emitido' ? 'Descargar otra copia del remito de retiro' : 'Generar remito de retiro') : 'Generar remito de entrega'} onClick={() => handleRemitoManual(rental)}><Icon name="file" size={15} /><span className="btn-txt">Remito</span></button>
+                          {rental.status !== 'finalizado' && (
+                            <button className="btn btn-sm btn-danger" onClick={() => handleBaja(rental)} title="Dar de baja: genera remito de retiro y libera el equipo" aria-label="Dar de baja"><Icon name="stop" size={15} /><span className="btn-txt">Dar de baja</span></button>
+                          )}
+                          <button className="btn btn-sm btn-danger" onClick={() => handleDelete(rental.id)} title={rental.status !== 'finalizado' ? 'Eliminar (borra sin remito ni registro; para retirar un equipo usa Dar de baja)' : 'Eliminar'} aria-label="Eliminar"><Icon name="trash" size={16} /></button>
                           {esNuevoParaResena(rental) && (
                             <button className="btn btn-sm btn-success" title="Pedir reseña en Google" onClick={() => handleReview(rental)}><Icon name="star" size={15} /><span className="btn-txt">Reseña</span></button>
                           )}
@@ -1966,7 +2120,9 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
           startDate: form.startDate,
           endDate: it.endDate,
           price: Number(it.price),
-          status: form.status || 'activo',
+          // Un equipo que se entrega ahora nace en curso, aunque el alquiler que se
+          // esta editando se finalice en este mismo guardado.
+          status: form.status && form.status !== 'finalizado' ? form.status : 'activo',
           notes: form.notes || '',
         }));
         onSave({ update: { ...form, price: Number(form.price) }, create: extraRentals });
