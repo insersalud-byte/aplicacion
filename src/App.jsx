@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, subirFoto, onSyncStatus, getSyncStatus, onDataChange, syncIfRemoteChanged, login, logout, getSessionToken, onAuthRequired, hayCambiosSinSubir, cambiarClave } from './data/database';
 import { Icon, EquipoFoto, Avatar } from './ui';
+import { periodoDe, addDaysStr, precioEquipoPorPeriodo, periodosCobradosEnMes, montoCobradoEnMes, periodosContratadosEnMes, mesDeBaja, vigenteEnMes, periodosImpagos, primerVencimientoImpago, nextMonthDate, alignDueDay, rollingDueDate, normalizarAlquiler } from './data/periodos';
+import { precioMensualEquipo, itemsADescontar, descontarStock, devolverStock, faltantesDeStock, CATS_STOCK } from './data/stock';
 import { aplicarBaja, marcarRemitoRetiro, sellarFinalizacion, estadoRemitoRetiro, datosRemitoRetiro } from './data/bajas';
 import { onRemitoListo, avisarRemitoListo } from './data/remitoAviso';
 import './App.css';
@@ -217,75 +219,8 @@ function formatMonthLabel(monthKey) {
   });
 }
 
-function isRentalInMonth(rental, monthKey) {
-  const [year, month] = monthKey.split('-').map(Number);
-  const monthStart = new Date(year, month - 1, 1);
-  const monthEnd = new Date(year, month, 0, 23, 59, 59, 999);
-  const rentalStart = rental.startDate ? new Date(`${rental.startDate}T00:00:00`) : null;
-  const rentalEnd = rental.endDate ? new Date(`${rental.endDate}T23:59:59`) : null;
-
-  if (!rentalStart) return false;
-  if (rental.status === 'finalizado') return false;
-
-  return rentalStart <= monthEnd && (!rentalEnd || rentalEnd >= monthStart);
-}
-
-// Pago registrado bajo una clave exacta (mes YYYY-MM o quincena YYYY-MM-DD).
-const isPaidKey = (rental, key) => Boolean(rental.paymentStatusByMonth?.[key]?.paid);
-
-function isRentalPaidForMonth(rental, monthKey) {
-  const p = rental.paymentStatusByMonth || {};
-  if (p[monthKey]?.paid) return true;
-  // Quincenal: las claves son fechas; el mes cuenta como cobrado si alguna quincena de ese mes esta paga.
-  return Object.entries(p).some(([k, v]) => v && v.paid && k.length === 10 && k.slice(0, 7) === monthKey);
-}
-
-// ---- Periodo del alquiler: mensual (por defecto) o quincenal (15 dias) ----
-// Los alquileres viejos no tienen el campo y se tratan como mensuales.
 const PERIODO_LABEL = { mensual: 'Mensual', quincenal: '15 dias' };
-const periodoDe = (r) => (r && r.period === 'quincenal' ? 'quincenal' : 'mensual');
-function addDaysStr(dateStr, dias) {
-  if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return '';
-  const [y, m, d] = dateStr.split('-').map(Number);
-  const dt = new Date(y, m - 1, d + dias);
-  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
-}
-// Clave con la que se registra el pago del periodo que vence en dueDate:
-// mensual = el mes (YYYY-MM), quincenal = la fecha exacta (YYYY-MM-DD).
-const claveDePeriodo = (dueDate, periodo) => (periodo === 'quincenal' ? (dueDate || '') : (dueDate || '').slice(0, 7));
-const mesDeClave = (k) => String(k || '').slice(0, 7);
 const etiquetaPeriodo = (k) => (String(k || '').length === 10 ? `quincena al ${formatDate(k)}` : formatMonthLabel(k));
-// Precio del equipo segun el periodo elegido.
-const precioEquipoPorPeriodo = (e, periodo) => (periodo === 'quincenal' ? (Number(e?.rentalPrice15) || 0) : (Number(e?.rentalPrice) || 0));
-
-// Cuantos periodos se cobraron en un mes: los tildados como pagos con clave de ese
-// mes, mas el primero (se cobra al iniciar) si el alquiler arranco ese mes. Un
-// alquiler ya finalizado solo suma el de alta en meses pasados. Mensual = maximo
-// uno por mes (hay datos viejos con el mes de alta tildado ademas).
-function periodosCobradosEnMes(rental, monthKey) {
-  const p = rental.paymentStatusByMonth || {};
-  let cant = Object.entries(p).filter(([k, v]) => v && v.paid && mesDeClave(k) === monthKey).length;
-  const mesActual = getToday().slice(0, 7);
-  const arranca = (rental.startDate || '').slice(0, 7) === monthKey;
-  if (arranca && (monthKey < mesActual || rental.status !== 'finalizado')) cant += 1;
-  if (periodoDe(rental) === 'mensual') cant = Math.min(cant, 1);
-  return cant;
-}
-const montoCobradoEnMes = (rental, monthKey) => periodosCobradosEnMes(rental, monthKey) * (Number(rental.price) || 0);
-
-// Cuantos periodos corresponde cobrar en un mes: mensual siempre 1; quincenal, el de
-// alta (si arranco ese mes) mas cada vencimiento de 15 dias que cae en el mes.
-function periodosContratadosEnMes(rental, monthKey) {
-  if (periodoDe(rental) !== 'quincenal') return 1;
-  let cant = (rental.startDate || '').slice(0, 7) === monthKey ? 1 : 0;
-  let d = addDaysStr(rental.startDate, 15);
-  let guard = 0;
-  while (d && d.slice(0, 7) <= monthKey && guard < 400) {
-    if (d.slice(0, 7) === monthKey) cant += 1;
-    d = addDaysStr(d, 15); guard++;
-  }
-  return Math.max(1, cant);
-}
 
 // Dias de anticipacion del aviso "Por vencer" (Inicio y Alquileres). Es el mismo
 // plazo que usa el reporte diario de Santi (proximos 7 dias).
@@ -294,42 +229,6 @@ const textoDias = (fecha) => {
   const n = getDaysUntilEnd(fecha);
   return n <= 0 ? 'hoy' : n === 1 ? 'mañana' : `en ${n} días`;
 };
-
-// Periodos vencidos y sin pagar: cada vencimiento desde el actual hasta hoy
-// (hoy inclusive). El pago se registra con la clave del periodo que vence ese
-// dia (mensual = el mes del vencimiento, quincenal = la fecha). Un periodo cuyo
-// vencimiento todavia no llego NO es deuda.
-// Antes el mensual contaba meses calendario: el mes en curso figuraba impago
-// aunque su vencimiento fuera dias despues, y new Date('YYYY-MM-01') (UTC) caia
-// en el mes anterior en Argentina y sumaba un mes de mas.
-function periodosImpagos(rental) {
-  if (!rental.endDate) return [];
-  const periodo = periodoDe(rental);
-  const hoy = getToday();
-  const out = [];
-  let d = rental.endDate;
-  let guard = 0;
-  while (d && d <= hoy && guard < 400) {
-    const clave = claveDePeriodo(d, periodo);
-    if (!isPaidKey(rental, clave)) out.push(clave);
-    d = nextDueAfter(d, rental.startDate, periodo); guard++;
-  }
-  return out;
-}
-
-// Vencimiento real: el primer periodo SIN PAGAR a partir del vencimiento guardado.
-// Si se pago un periodo atrasado (ej: septiembre pagado en octubre), el
-// vencimiento pasa al siguiente en vez de quedar clavado en la fecha vieja.
-function primerVencimientoImpago(rental) {
-  const periodo = periodoDe(rental);
-  const hoy = getToday();
-  let d = rental.endDate;
-  let guard = 0;
-  while (d && d <= hoy && isPaidKey(rental, claveDePeriodo(d, periodo)) && guard < 400) {
-    d = nextDueAfter(d, rental.startDate, periodo); guard++;
-  }
-  return d;
-}
 
 // ---- Fuente de verdad unica para estado de alquileres y ocupacion de equipos ----
 // Un alquiler ocupa fisicamente el equipo mientras no este finalizado (activo o vencido).
@@ -341,65 +240,8 @@ function getOccupyingRental(rentals, equipId) {
 // Vencido = no finalizado, con fecha de fin, y esa fecha es hoy o anterior (hoy inclusive).
 // Comparacion por string YYYY-MM-DD para evitar el desfase de zona horaria de new Date('YYYY-MM-DD').
 function isRentalExpired(rental, todayStr = getToday()) {
-  if (!rental || rental.status === 'finalizado' || !rental.endDate) return false;
+  if (!rental || rental.status === 'finalizado' || typeof rental.endDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rental.endDate)) return false;
   return rental.endDate <= todayStr;
-}
-
-function getMonthDateFromKey(monthKey) {
-  const [year, month] = monthKey.split('-').map(Number);
-  return new Date(year, month - 1, 1);
-}
-
-function getMonthDifferenceInclusive(startDate, endDate) {
-  if (!startDate || !endDate || startDate > endDate) return 0;
-
-  return (
-    (endDate.getFullYear() - startDate.getFullYear()) * 12 +
-    (endDate.getMonth() - startDate.getMonth()) +
-    1
-  );
-}
-
-function getRentalCoveredMonths(rental, referenceMonthKey) {
-  if (!rental.startDate) return 0;
-
-  const rentalStart = new Date(`${rental.startDate}T00:00:00`);
-  const startMonth = new Date(rentalStart.getFullYear(), rentalStart.getMonth(), 1);
-  const referenceMonth = getMonthDateFromKey(referenceMonthKey);
-  const rentalEnd = rental.endDate ? new Date(`${rental.endDate}T00:00:00`) : null;
-  const endMonth = rentalEnd
-    ? new Date(rentalEnd.getFullYear(), rentalEnd.getMonth(), 1)
-    : referenceMonth;
-  const effectiveEndMonth = endMonth < referenceMonth ? endMonth : referenceMonth;
-
-  return getMonthDifferenceInclusive(startMonth, effectiveEndMonth);
-}
-
-function getExplicitPaidMonthsCount(rental, referenceMonthKey) {
-  const referenceMonth = getMonthDateFromKey(referenceMonthKey);
-
-  return Object.entries(rental.paymentStatusByMonth || {}).filter(([monthKey, value]) => {
-    if (!value?.paid) return false;
-
-    const monthDate = getMonthDateFromKey(monthKey);
-    return isRentalInMonth(rental, monthKey) && monthDate <= referenceMonth;
-  }).length;
-}
-
-function getRentalCollectedMonths(rental, referenceMonthKey) {
-  const referenceMonth = getMonthDateFromKey(referenceMonthKey);
-  const rentalEnd = rental.endDate ? new Date(`${rental.endDate}T00:00:00`) : null;
-  const isUpToDate = rental.status === 'activo' && (!rentalEnd || rentalEnd >= referenceMonth);
-
-  if (isUpToDate || isRentalPaidForMonth(rental, referenceMonthKey)) {
-    return getRentalCoveredMonths(rental, referenceMonthKey);
-  }
-
-  return getExplicitPaidMonthsCount(rental, referenceMonthKey);
-}
-
-function getRentalCollectedAmount(rental, referenceMonthKey) {
-  return getRentalCollectedMonths(rental, referenceMonthKey) * Number(rental.price || 0);
 }
 
 // Menu: secciones agrupadas. En celular, la barra inferior muestra las 4 mas
@@ -575,12 +417,14 @@ function App() {
     if (typeof updater === 'function' && !dataRef.current) {
       throw new Error('La sesión venció: ingresá de nuevo a la app. Este cambio no se guardó.');
     }
-    const nextData = typeof updater === 'function' ? updater(dataRef.current) : updater;
+    const prevData = dataRef.current;
+    const nextData = typeof updater === 'function' ? updater(prevData) : updater;
     // El updater devolvio el mismo estado: no hubo cambio, no se vuelve a subir todo.
-    if (nextData === dataRef.current) return;
+    if (nextData === prevData) return;
     dataRef.current = nextData;
     setData(nextData);
-    saveData(nextData);
+    // prevData: el guardado sube solo lo que cambio entre prev y next (no pisa lo ajeno).
+    saveData(nextData, prevData);
   }, []);
 
   // Mantener la app sincronizada con la base entre dispositivos:
@@ -722,39 +566,14 @@ function HomePage({ data, updateData }) {
   const getUnpaidMonthsForRental = (rental) => periodosImpagos(rental);
 
   useEffect(() => {
+    // Normaliza vencimientos y estados (logica pura en data/periodos.js). Solo guarda si algo
+    // cambio: normalizarAlquiler devuelve el mismo objeto cuando no hay nada que tocar, y es
+    // idempotente, asi que no hay guardados en cadena.
     const todayStr = getToday();
-    const needsUpdate = rentals.some(r => {
-      if (r.status === 'finalizado' || !r.startDate) return false;
-      if (!r.endDate) return true; // sin vencimiento -> hay que ponerlo automaticamente
-      if (alignDueDay(r.endDate, r.startDate, periodoDe(r)) !== r.endDate) return true; // vencimiento no cae el dia de inicio
-      if (cappedDueDate(r) !== r.endDate) return true; // vencimiento a mas de un mes del que corresponde
-      if (primerVencimientoImpago(r) !== r.endDate) return true; // el vencimiento guardado ya esta pago
-      if ((r.endDate <= todayStr ? 'vencido' : 'activo') !== r.status) return true;
-      return false;
-    });
-    if (!needsUpdate) return;
-
+    if (rentals.every(r => normalizarAlquiler(r, todayStr) === r)) return;
     updateData(cur => {
-      const updated = cur.rentals.map(rental => {
-        if (rental.status === 'finalizado' || !rental.startDate) return rental;
-        let r = rental;
-        // 0) Si no tiene vencimiento, ponerlo automaticamente: dia de inicio, proximo vencimiento desde hoy.
-        if (!r.endDate) r = { ...r, endDate: rollingDueDate(r.startDate, periodoDe(r)) };
-        if (!r.endDate) return r; // startDate invalido: no se pudo calcular
-        // 1) El vencimiento SIEMPRE cae el dia de inicio (corrige desfases automaticamente).
-        const aligned = alignDueDay(r.endDate, r.startDate, periodoDe(r));
-        if (aligned !== r.endDate) r = { ...r, endDate: aligned };
-        // 2) Tope: el vencimiento nunca a mas de un mes del que corresponde por inicio.
-        const capped = cappedDueDate(r);
-        if (capped !== r.endDate) r = { ...r, endDate: capped };
-        // 3) Periodos ya pagos: el vencimiento pasa al primero sin pagar.
-        const real = primerVencimientoImpago(r);
-        if (real !== r.endDate) r = { ...r, endDate: real };
-        // 4) Estado segun la fecha ya normalizada (vence hoy = vencido).
-        const estado = r.endDate <= todayStr ? 'vencido' : 'activo';
-        if (estado !== r.status) r = { ...r, status: estado };
-        return r;
-      });
+      const updated = cur.rentals.map(r => normalizarAlquiler(r, todayStr));
+      if (updated.every((r, i) => r === cur.rentals[i])) return cur;
       return { ...cur, rentals: updated };
     });
   }, [rentals, today, updateData]);
@@ -780,7 +599,9 @@ function HomePage({ data, updateData }) {
   // Un quincenal puede cobrar dos periodos en el mismo mes: se suma por periodos.
   const isCollectedThisMonth = (r) => periodosCobradosEnMes(r, currentMonthKey) > 0;
 
-  const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, currentMonthKey));
+  // Misma regla que Contabilidad (vigenteEnMes): antes quedaban afuera los morosos (su
+  // vencimiento quedo en un mes anterior) y las bajas cobradas en el mes.
+  const monthlyRentals = rentals.filter(rental => vigenteEnMes(rental, currentMonthKey));
   const monthlyTotal = monthlyRentals.reduce((sum, rental) => sum + Number(rental.price || 0) * periodosContratadosEnMes(rental, currentMonthKey), 0);
   const monthlyCollected = monthlyRentals.reduce((sum, rental) => sum + montoCobradoEnMes(rental, currentMonthKey), 0);
   const monthlyPending = monthlyTotal - monthlyCollected;
@@ -1040,17 +861,7 @@ function QuickDocGenerator({ data, updateData }) {
   const [libre, setLibre] = useState({ name: '', price: '' });
   const [items, setItems] = useState([]);
 
-  // Precio de un equipo de alquiler: campo propio -> alquiler del equipo -> otro con el mismo nombre.
-  const equipPrice = (e) => {
-    if (Number(e.rentalPrice) > 0) return Number(e.rentalPrice);
-    const r = rentals.find(x => x.equipmentId === e.id && x.status !== 'finalizado' && Number(x.price) > 0);
-    if (r) return Number(r.price);
-    const r2 = rentals.find(x => {
-      const re = equipment.find(q => q.id === x.equipmentId);
-      return re && re.name === e.name && Number(x.price) > 0;
-    });
-    return r2 ? Number(r2.price) : 0;
-  };
+  const equipPrice = (e) => precioMensualEquipo(e, equipment, rentals);
 
   const catalogos = {
     equipos: { label: 'Equipos', items: equipment.map(e => ({ id: e.id, name: e.name, detail: etiquetaSerie(e), serialNumber: e.serialNumber || '', price: equipPrice(e), imageUrl: e.imageUrl || '', _cat: 'equipos' })) },
@@ -1103,9 +914,22 @@ function QuickDocGenerator({ data, updateData }) {
     if (match && match.phone) setClientPhone(match.phone);
   };
 
+  // Evita generar dos veces el mismo documento si se vuelve a tocar el boton mientras se arma
+  // el PDF (puede tardar por las fotos): eran dos facturas y el stock descontado dos veces.
+  const generandoRef = useRef(false);
+  const [generando, setGenerando] = useState(false);
   const handleGenerar = async () => {
+    if (generandoRef.current) return;
+    generandoRef.current = true; setGenerando(true);
+    try { await generarDoc(); } finally { generandoRef.current = false; setGenerando(false); }
+  };
+  const generarDoc = async () => {
     if (items.length === 0) { alert('Agregá al menos un item'); return; }
     const nombreDoc = docType === 'factura' ? 'factura' : docType === 'remito' ? 'remito' : 'cotizacion';
+    if (docType === 'factura') {
+      const faltantes = faltantesDeStock(data, items);
+      if (faltantes.length && !confirm(`Stock insuficiente:\n${faltantes.join('\n')}\n\n¿Facturar igual? El stock queda en 0.`)) return;
+    }
     if (!confirm(`¿Generar ${nombreDoc} para "${clientName || 'sin nombre'}" por ${formatCurrency(total)}?`)) return;
     const prefix = docType === 'factura' ? 'FAC' : docType === 'remito' ? 'REM' : 'COT';
     const number = generateDocNumber(prefix, clientName);
@@ -1126,18 +950,11 @@ function QuickDocGenerator({ data, updateData }) {
       downloadInvoicePDF(doc, number, nombreDoc);
       const record = { id: generateId(), ...invoiceData, items: invoiceData.items.map(itemLiviano), customerName: clientName, customerPhone: clientPhone, cartItems: items.map(itemLiviano), createdAt: getToday() };
       updateData(cur => {
-        const next = { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
-        // Solo la FACTURA descuenta stock (mascaras y descartables).
-        if (docType === 'factura') {
-          const descontar = (arr, cat) => (arr || []).map(x => {
-            const enItems = items.find(it => it.id === x.id && it._cat === cat);
-            if (!enItems) return x;
-            return { ...x, stock: Math.max(0, Number(x.stock || 0) - enItems.quantity) };
-          });
-          next.mascaras = descontar(cur.mascaras, 'mascarillas');
-          next.descartables = descontar(cur.descartables, 'descartables');
-        }
-        return next;
+        // Solo la FACTURA descuenta stock (mascaras, descartables y equipos nuevos) y anota en
+        // cada item cuanto desconto.
+        if (docType !== 'factura') return { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
+        const { next, items: conDescuento } = descontarStock(cur, items);
+        return { ...next, [collectionKey]: [...(cur[collectionKey] || []), { ...record, cartItems: conDescuento.map(itemLiviano) }] };
       });
       alert(`${nombreDoc.charAt(0).toUpperCase() + nombreDoc.slice(1)} ${number} generado`);
       setItems([]); setClientName(''); setClientPhone(''); setSearch(''); setCategory('');
@@ -1239,156 +1056,9 @@ function QuickDocGenerator({ data, updateData }) {
         </div>
       )}
 
-      <button className="btn btn-primary btn-block" onClick={handleGenerar}>
-        <Icon name="file" size={16} /> Generar
+      <button className="btn btn-primary btn-block" onClick={handleGenerar} disabled={generando}>
+        <Icon name="file" size={16} /> {generando ? 'Generando...' : 'Generar'}
       </button>
-    </div>
-  );
-}
-
-function MonthlySummaryModal({ rentals, patients, equipment, monthKey, viewMode, onChangeView, onTogglePayment, onClose }) {
-  const monthlyRentals = rentals.filter(rental => isRentalInMonth(rental, monthKey));
-  const totals = monthlyRentals.reduce((acc, rental) => {
-    const amount = Number(rental.price || 0);
-    const paid = isRentalPaidForMonth(rental, monthKey);
-    const collectedAmount = getRentalCollectedAmount(rental, monthKey);
-
-    acc.total += amount;
-    acc.collected += collectedAmount;
-    if (!paid) {
-      acc.pending += amount;
-    }
-
-    return acc;
-  }, { total: 0, collected: 0, pending: 0 });
-
-  const grouped = monthlyRentals.reduce((acc, rental) => {
-    const key = viewMode === 'patient' ? rental.patientId : rental.equipmentId;
-    const fallbackLabel = viewMode === 'patient' ? 'Sin paciente' : 'Sin equipo';
-    const source = viewMode === 'patient' ? patients : equipment;
-    const entity = source.find(item => item.id === key);
-    const label = entity?.name || fallbackLabel;
-    const amount = Number(rental.price || 0);
-    const paid = isRentalPaidForMonth(rental, monthKey);
-    const collectedAmount = getRentalCollectedAmount(rental, monthKey);
-    const collectedMonths = getRentalCollectedMonths(rental, monthKey);
-    const groupKey = key || fallbackLabel;
-
-    if (!acc[groupKey]) {
-      acc[groupKey] = {
-        id: groupKey,
-        label,
-        total: 0,
-        collected: 0,
-        collectedMonths: 0,
-        pending: 0,
-        rentals: []
-      };
-    }
-
-    acc[groupKey].total += amount;
-    acc[groupKey].collected += collectedAmount;
-    acc[groupKey].collectedMonths += collectedMonths;
-    if (!paid) {
-      acc[groupKey].pending += amount;
-    }
-    acc[groupKey].rentals.push(rental);
-
-    return acc;
-  }, {});
-
-  const groupedItems = Object.values(grouped).sort((a, b) => b.total - a.total);
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal monthly-modal" onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <div>
-            <h2 className="modal-title">Resumen mensual</h2>
-            <p className="page-subtitle">{formatMonthLabel(monthKey)}</p>
-          </div>
-          <span className="modal-close" onClick={onClose}>×</span>
-        </div>
-
-        <div className="monthly-summary-grid">
-          <div className="monthly-summary-item">
-            <span className="monthly-summary-label">Total del mes</span>
-            <strong className="monthly-summary-value">{formatCurrency(totals.total)}</strong>
-          </div>
-          <div className="monthly-summary-item success">
-            <span className="monthly-summary-label">Cobrado acumulado</span>
-            <strong className="monthly-summary-value">{formatCurrency(totals.collected)}</strong>
-          </div>
-          <div className="monthly-summary-item warning">
-            <span className="monthly-summary-label">Falta cobrar del mes</span>
-            <strong className="monthly-summary-value">{formatCurrency(totals.pending)}</strong>
-          </div>
-        </div>
-
-        <div className="summary-toggle">
-          <button type="button" className={`filter-btn ${viewMode === 'patient' ? 'active' : ''}`} onClick={() => onChangeView('patient')}>
-            Por paciente
-          </button>
-          <button type="button" className={`filter-btn ${viewMode === 'equipment' ? 'active' : ''}`} onClick={() => onChangeView('equipment')}>
-            Por equipo
-          </button>
-        </div>
-
-        {groupedItems.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-title">No hay alquileres para este mes</div>
-          </div>
-        ) : (
-          <div className="summary-groups">
-            {groupedItems.map(item => (
-              <div key={item.id} className="summary-group-card">
-                <div className="summary-group-header">
-                  <div>
-                    <h4>{viewMode === 'patient' ? 'Paciente' : 'Equipo'}</h4>
-                    <p className="page-subtitle">{item.rentals.length} alquiler(es)</p>
-                  </div>
-                  <div className="summary-group-totals">
-                    <strong>{formatCurrency(item.total)}</strong>
-                    <span className="summary-group-pending">Pendiente: {formatCurrency(item.pending)}</span>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
-                  <span>Cobrado acumulado: {formatCurrency(item.collected)}</span>
-                  <span>Meses cobrados: {item.collectedMonths}</span>
-                  <span>Pendiente del mes: {formatCurrency(item.pending)}</span>
-                </div>
-
-                {item.rentals.map(rental => {
-                  const paid = isRentalPaidForMonth(rental, monthKey);
-                  const collectedMonths = getRentalCollectedMonths(rental, monthKey);
-                  const collectedAmount = getRentalCollectedAmount(rental, monthKey);
-
-                  return (
-                    <div key={rental.id} className="summary-rental-row">
-                      <div>
-                        <div className="summary-rental-title">
-                          {viewMode === 'patient' ? 'Alquiler del paciente' : 'Alquiler del equipo'}
-                        </div>
-                        <div className="summary-rental-meta">
-                          {formatDate(rental.startDate)} | {formatCurrency(rental.price)} | {collectedMonths} mes(es) cobrados | {formatCurrency(collectedAmount)}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className={`btn btn-sm ${paid ? 'btn-success' : 'btn-outline'}`}
-                        onClick={() => onTogglePayment(rental.id)}
-                      >
-                        {paid ? 'Cobrado' : 'Marcar cobrado'}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
@@ -1429,7 +1099,18 @@ function PatientsPage({ data, updateData }) {
   };
 
   const handleDelete = (id) => {
-    if (confirm('¿Eliminar paciente?')) {
+    // Un paciente con un alquiler en curso no se puede borrar: el alquiler quedaba "Sin paciente"
+    // y el remito de retiro salia sin nombre, DNI ni direccion.
+    const enCurso = (data.rentals || []).filter(r => r.patientId === id && r.status !== 'finalizado');
+    if (enCurso.length) {
+      alert(`Este paciente tiene ${enCurso.length} alquiler(es) en curso. Primero dalos de baja.`);
+      return;
+    }
+    const conHistorial = (data.rentals || []).some(r => r.patientId === id);
+    const msg = conHistorial
+      ? '¿Eliminar paciente? Tiene alquileres finalizados en el historial: van a quedar sin nombre.'
+      : '¿Eliminar paciente?';
+    if (confirm(msg)) {
       updateData(cur => ({ ...cur, patients: cur.patients.filter(p => p.id !== id) }));
     }
   };
@@ -1500,6 +1181,20 @@ function PatientHistorialModal({ patient, rentals, equipment, onClose }) {
     .filter(r => r.patientId === patient.id)
     .forEach(r => {
       const meses = r.paymentStatusByMonth || {};
+      // El primer periodo se cobra al iniciar (no tiene clave tildada). Mismo criterio que
+      // periodosCobradosEnMes: en mensual, si el mes de alta tambien esta tildado, no se duplica.
+      const mesAlta = String(r.startDate || '').slice(0, 7);
+      const altaYaTildada = periodoDe(r) === 'mensual' && meses[mesAlta]?.paid;
+      if (r.startDate && !altaYaTildada) {
+        pagos.push({
+          mes: String(r.startDate),
+          alta: true,
+          periodo: periodoDe(r),
+          fechaPago: String(r.startDate),
+          equipo: equipName(r.equipmentId),
+          monto: Number(r.price) || 0,
+        });
+      }
       Object.keys(meses).forEach(mk => {
         if (!meses[mk]?.paid) return;
         pagos.push({
@@ -1512,7 +1207,7 @@ function PatientHistorialModal({ patient, rentals, equipment, onClose }) {
       });
     });
   // Mas recientes primero (por mes cobrado).
-  pagos.sort((a, b) => b.mes.localeCompare(a.mes));
+  pagos.sort((a, b) => String(b.mes).localeCompare(String(a.mes)));
   const total = pagos.reduce((s, p) => s + p.monto, 0);
 
   return (
@@ -1537,10 +1232,10 @@ function PatientHistorialModal({ patient, rentals, equipment, onClose }) {
             {pagos.map((p, i) => (
               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #E3F2FD' }}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, textTransform: 'capitalize' }}>{formatMonthLabel(p.mes)}</div>
+                  <div style={{ fontWeight: 600, textTransform: p.alta ? 'none' : 'capitalize' }}>{p.alta ? `Alta del ${formatDate(p.mes)} (primer periodo)` : etiquetaPeriodo(p.mes)}</div>
                   <div style={{ fontSize: 12, color: '#5A6978' }}>{p.equipo}</div>
                   <div style={{ fontSize: 12, color: '#5A6978' }}>
-                    Pagado el {p.fechaPago ? formatDate(p.fechaPago.slice(0, 10)) : 's/f'}
+                    Pagado el {p.fechaPago ? formatDate(String(p.fechaPago).slice(0, 10)) : 's/f'}
                   </div>
                 </div>
                 <strong style={{ color: '#2E7D32', whiteSpace: 'nowrap' }}>{formatCurrency(p.monto)}</strong>
@@ -1658,11 +1353,22 @@ function RentalsPage({ data, updateData }) {
 
   // Remito de ENTREGA al crear el alquiler (o al agregarle equipos). El de retiro sale
   // con la baja (emitirRemitoRetiro, mas arriba) y deja el numero guardado en el alquiler.
-  const emitirRemitoEntrega = async (patientId, equipmentIds) => {
+  // opciones.rental: reimpresion del remito de un alquiler ya entregado: sale con la fecha de
+  // la entrega (inicio) y siempre el mismo numero (se guarda en el alquiler la primera vez).
+  const emitirRemitoEntrega = async (patientId, equipmentIds, opciones = {}) => {
+    // Un solo remito por entrega a la vez (doble clic o copia mientras sale el automatico
+    // daban dos PDF con numeros distintos).
+    // Marca cada alquiler por separado: la copia de UNO de una entrega multiple tambien espera.
+    const clavesCurso = (opciones.rental ? [opciones.rental.id] : (opciones.idsNuevos || [])).map(id => 'ENT:' + id);
+    if (clavesCurso.some(k => remitosEnCurso.has(k))) return;
+    clavesCurso.forEach(k => remitosEnCurso.add(k));
+    try {
     const p = patients.find(x => x.id === patientId);
+    const guardado = opciones.rental?.remitoEntrega;
     // Cada entrada es { id, period }: el periodo del alquiler (mensual / 15 dias)
-    // sale escrito en el remito.
-    const equipos = equipmentIds
+    // sale escrito en el remito. Una copia usa el detalle guardado en la primera emision (con
+    // TODOS los equipos de esa entrega, mismo numero).
+    const equipos = guardado?.equipos?.length ? guardado.equipos : equipmentIds
       .map(x => {
         const e = equipment.find(eq => eq.id === x.id);
         return e ? { name: e.name, serialNumber: e.serialNumber, periodo: x.period === 'quincenal' ? 'quincenal' : 'mensual' } : null;
@@ -1672,6 +1378,7 @@ function RentalsPage({ data, updateData }) {
       alert('No se pudo armar el remito: no se encontró el equipo del alquiler. Podés emitirlo después con el botón Remito.');
       return;
     }
+    const numeroEntrega = generateDocNumber('ENT', p?.name || '');
     const res = await armarYEntregarRemito({
       tipo: 'entrega',
       paciente: p?.name || 'Sin paciente',
@@ -1679,12 +1386,24 @@ function RentalsPage({ data, updateData }) {
       direccion: p?.address || '',
       dni: p?.dni || '',
       equipos,
-      fecha: getToday(),
-      numero: generateDocNumber('ENT', p?.name || ''),
+      fecha: opciones.rental?.remitoEntrega?.fecha || opciones.rental?.startDate || getToday(),
+      numero: opciones.rental?.remitoEntrega?.numero || numeroEntrega,
     }, settings);
+    // Primera emision: el numero y la fecha quedan guardados en el/los alquiler(es) y las
+    // copias salen iguales.
+    const idsAGuardar = opciones.rental ? (opciones.rental.remitoEntrega ? [] : [opciones.rental.id]) : (opciones.idsNuevos || []);
+    if (res.ok && idsAGuardar.length) {
+      const fecha = opciones.rental ? (opciones.rental.startDate || getToday()) : getToday();
+      try {
+        updateData(cur => ({ ...cur, rentals: cur.rentals.map(r => idsAGuardar.includes(r.id) && !r.remitoEntrega ? { ...r, remitoEntrega: { numero: numeroEntrega, fecha, equipos } } : r) }));
+      } catch (e) { console.error(e); }
+    }
     if (!res.ok) {
       alert('No se pudo ARMAR el remito de entrega.\n\nMotivo: ' + (res.error && res.error.message ? res.error.message : res.error)
         + '\n\nPodés reintentar con el botón Remito del alquiler.');
+    }
+    } finally {
+      clavesCurso.forEach(k => remitosEnCurso.delete(k));
     }
   };
 
@@ -1695,7 +1414,7 @@ function RentalsPage({ data, updateData }) {
     const quien = getPatientName(rental.patientId);
     if (!confirm(`¿Generar el remito de ${esRetiro ? 'retiro' : 'entrega'} de ${quien}?`)) return;
     if (esRetiro) emitirRemitoRetiro(rental, data, updateData);
-    else emitirRemitoEntrega(rental.patientId, [{ id: rental.equipmentId, period: rental.period }]);
+    else emitirRemitoEntrega(rental.patientId, [{ id: rental.equipmentId, period: rental.period }], { rental });
   };
 
   // Baja del alquiler desde esta lista: finaliza, libera el equipo y emite el remito de retiro.
@@ -1723,17 +1442,22 @@ function RentalsPage({ data, updateData }) {
     // el de entrega pisaba al de retiro y la baja quedaba sin remito.
     let retiro = null;   // alquiler (ya editado) que pasa a finalizado
     let retiroFinal = null; // ese mismo alquiler tal como queda guardado (con fecha de baja y marcas)
-    let entrega = null;  // { patientId, equipmentIds }
+    let entrega = null;  // { patientId, equipmentIds, ids }
+    // Los alquileres nuevos llevan su id desde ya: asi el remito de entrega queda guardado en
+    // cada uno (numero y fecha fijos para las copias).
+    const conId = (r) => ({ ...r, id: r.id || generateId() });
+    if (!editingRental) payload = Array.isArray(payload) ? payload.map(conId) : conId(payload);
+    else if (payload.create?.length) payload = { ...payload, create: payload.create.map(conId) };
     if (!editingRental) {
       const nuevos = Array.isArray(payload) ? payload : [payload];
-      entrega = { patientId: nuevos[0]?.patientId, equipmentIds: nuevos.map(r => ({ id: r.equipmentId, period: r.period })) };
+      entrega = { patientId: nuevos[0]?.patientId, equipmentIds: nuevos.map(r => ({ id: r.equipmentId, period: r.period })), ids: nuevos.map(r => r.id) };
     } else {
       const actualizado = payload.update || payload;
       // Pasa a finalizado (antes no lo estaba) -> remito de retiro.
       if (actualizado.status === 'finalizado' && editingRental.status !== 'finalizado') retiro = actualizado;
       // Equipos extra agregados al mismo paciente -> remito de entrega por esos.
       if (payload.create?.length) {
-        entrega = { patientId: payload.create[0].patientId, equipmentIds: payload.create.map(r => ({ id: r.equipmentId, period: r.period })) };
+        entrega = { patientId: payload.create[0].patientId, equipmentIds: payload.create.map(r => ({ id: r.equipmentId, period: r.period })), ids: payload.create.map(r => r.id) };
       }
     }
     updateData(cur => {
@@ -1741,21 +1465,28 @@ function RentalsPage({ data, updateData }) {
       // marcado con el remito de retiro pendiente. Si vuelve a estar en curso, se
       // limpia la marca del remito: la proxima baja genera uno nuevo.
       const ahoraIso = new Date().toISOString();
-      const stamp = (nr) => sellarFinalizacion(cur.rentals.find(r => r.id === nr.id), nr, ahoraIso);
+      // Los pagos NO se editan en el formulario: se toman del registro actual, asi un pago
+      // registrado mientras el formulario estaba abierto (otro dispositivo, sync) no se pierde.
+      const conPagosActuales = (nr) => {
+        const actual = cur.rentals.find(r => r.id === nr.id);
+        // Tampoco el remito de entrega (numero fijo): se conserva el que tenga guardado.
+        return actual ? { ...nr, paymentStatusByMonth: actual.paymentStatusByMonth, ...(actual.remitoEntrega ? { remitoEntrega: actual.remitoEntrega } : {}) } : nr;
+      };
+      const stamp = (nr) => sellarFinalizacion(cur.rentals.find(r => r.id === nr.id), conPagosActuales(nr), ahoraIso);
       let newRentals = [...cur.rentals];
       if (editingRental && payload.update) {
         newRentals = newRentals.map(r => r.id === payload.update.id ? stamp(payload.update) : r);
         if (payload.create?.length) {
           const createdAt = getToday();
-          newRentals = [...newRentals, ...payload.create.map(r => stamp({ ...r, id: generateId(), createdAt }))];
+          newRentals = [...newRentals, ...payload.create.map(r => stamp({ ...r, createdAt }))];
         }
       } else if (editingRental) {
         newRentals = newRentals.map(r => r.id === payload.id ? stamp(payload) : r);
       } else if (Array.isArray(payload)) {
         const createdAt = getToday();
-        newRentals = [...newRentals, ...payload.map(r => stamp({ ...r, id: generateId(), createdAt }))];
+        newRentals = [...newRentals, ...payload.map(r => stamp({ ...r, createdAt }))];
       } else {
-        newRentals = [...newRentals, stamp({ ...payload, id: generateId(), createdAt: getToday() })];
+        newRentals = [...newRentals, stamp({ ...payload, createdAt: getToday() })];
       }
       if (retiro) retiroFinal = newRentals.find(r => r.id === retiro.id) || null;
       return { ...cur, rentals: newRentals };
@@ -1764,7 +1495,7 @@ function RentalsPage({ data, updateData }) {
     setEditingRental(null);
     // Emitir los remitos correspondientes (no bloquean el guardado).
     if (retiroFinal) emitirRemitoRetiro(retiroFinal, data, updateData, { bajaNueva: true });
-    if (entrega) emitirRemitoEntrega(entrega.patientId, entrega.equipmentIds);
+    if (entrega) emitirRemitoEntrega(entrega.patientId, entrega.equipmentIds, { idsNuevos: entrega.ids });
   };
 
   const handleDelete = (id) => {
@@ -1792,7 +1523,7 @@ function RentalsPage({ data, updateData }) {
     updateData(cur => ({
       ...cur,
       rentals: cur.rentals.map(r => {
-        if (r.status === 'finalizado' || !r.startDate) return r;
+        if (r.status === 'finalizado' || !/^\d{4}-\d{2}-\d{2}$/.test(r.startDate || '')) return r;
         const periodo = periodoDe(r);
         // Con periodos vencidos sin pagar NO se adelanta: antes los saltaba al
         // proximo mes, la deuda desaparecia de Vencidos y nunca llegaba el aviso.
@@ -1805,7 +1536,8 @@ function RentalsPage({ data, updateData }) {
         if (!D) return r;
         // Si el periodo que vence en D ya esta pago, el vencimiento es el siguiente
         // (antes lo traia de vuelta a D y marcaba vencido un mes ya cobrado).
-        const newEndDate = isPaidKey(r, claveDePeriodo(D, periodo)) ? nextDueAfter(D, r.startDate, periodo) : D;
+        // Salta todos los periodos ya pagos desde D (tambien si hay mas de uno pagado por adelantado).
+        const newEndDate = primerVencimientoImpago({ ...r, endDate: D });
         return newEndDate !== r.endDate ? { ...r, endDate: newEndDate } : r;
       })
     }));
@@ -1959,81 +1691,6 @@ function RentalsPage({ data, updateData }) {
   );
 }
 
-function nextMonthDate(start) {
-  if (!start || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return '';
-  const [y, m, d] = start.split('-').map(Number);
-  const nm = m === 12 ? 1 : m + 1;
-  const ny = m === 12 ? y + 1 : y;
-  const maxDay = new Date(ny, nm, 0).getDate();
-  return `${ny}-${String(nm).padStart(2, '0')}-${String(Math.min(d, maxDay)).padStart(2, '0')}`;
-}
-
-// El vencimiento SIEMPRE cae el dia de inicio. Esta funcion ajusta solo el dia
-// de una fecha (manteniendo mes/anio) al dia de inicio, corrigiendo el desfase
-// de +/-1 que arrastraban datos viejos. Si el dia no existe (ej: 31 en feb),
-// usa el ultimo dia del mes.
-function alignDueDay(refDate, startDate, periodo) {
-  if (periodo === 'quincenal') return refDate; // la quincena no cae en el dia de inicio
-  if (!refDate || !startDate || !/^\d{4}-\d{2}-\d{2}$/.test(refDate) || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return refDate;
-  const [y, m] = refDate.split('-').map(Number);
-  const startDay = Number(startDate.split('-')[2]);
-  const maxDay = new Date(y, m, 0).getDate();
-  const day = Math.min(startDay, maxDay);
-  return `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-}
-
-// Proximo vencimiento: el dia de INICIO, en el mes siguiente al vencimiento actual.
-function nextDueAfter(refDate, startDate, periodo) {
-  if (periodo === 'quincenal') {
-    return refDate && /^\d{4}-\d{2}-\d{2}$/.test(refDate) ? addDaysStr(refDate, 15) : addDaysStr(startDate, 15);
-  }
-  if (!refDate || !/^\d{4}-\d{2}-\d{2}$/.test(refDate)) return nextMonthDate(startDate);
-  const [y, m] = refDate.split('-').map(Number);
-  let ny = y, nm = m + 1;
-  if (nm > 12) { nm = 1; ny += 1; }
-  return alignDueDay(`${ny}-${String(nm).padStart(2, '0')}-01`, startDate || refDate);
-}
-
-// Vencimiento = un mes despues del inicio, avanzando mes a mes sucesivamente
-// hasta el primer vencimiento que sea hoy o futuro. Asi los alquileres viejos
-// quedan con el proximo vencimiento real (no uno pasado que marque todo vencido).
-function rollingDueDate(start, periodo) {
-  if (!start || !/^\d{4}-\d{2}-\d{2}$/.test(start)) return '';
-  if (periodo === 'quincenal') {
-    const hoy = getToday();
-    let due = addDaysStr(start, 15);
-    let guard = 0;
-    while (due < hoy && guard < 400) { due = addDaysStr(due, 15); guard++; }
-    return due;
-  }
-  const [y, m, d] = start.split('-').map(Number);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  let year = y, month = m;
-  let due;
-  do {
-    month += 1;
-    if (month > 12) { month = 1; year += 1; }
-    const maxDay = new Date(year, month, 0).getDate();
-    due = new Date(year, month - 1, Math.min(d, maxDay));
-  } while (due < today);
-  return `${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, '0')}-${String(due.getDate()).padStart(2, '0')}`;
-}
-
-// El vencimiento de un alquiler nunca puede estar a mas de un mes (un periodo)
-// del que corresponde por fecha de inicio. D = primer vencimiento (dia de inicio)
-// que cae hoy o despues. Si ese mes ya esta pagado, el tope es el mes siguiente;
-// si no, es D. Si la fecha cargada quedo mas adelante, se la trae al tope.
-function cappedDueDate(rental) {
-  if (!rental.startDate || !rental.endDate) return rental.endDate;
-  const periodo = periodoDe(rental);
-  const D = rollingDueDate(rental.startDate, periodo);
-  if (!D) return rental.endDate;
-  const paidActual = isPaidKey(rental, claveDePeriodo(D, periodo));
-  const tope = paidActual ? nextDueAfter(D, rental.startDate, periodo) : D;
-  return rental.endDate > tope ? tope : rental.endDate;
-}
-
 function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatient, onClose }) {
   const isEditing = Boolean(rental);
   const [form, setForm] = useState(() => {
@@ -2046,6 +1703,9 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
     return [{ equipmentId: '', period: 'mensual', endDate: nextMonthDate(getToday()), price: '' }];
   });
   // Primer vencimiento segun el periodo: +1 mes (dia de inicio) o +15 dias.
+  // Al editar, las filas extra son equipos que se entregan HOY: arrancan hoy, no en la fecha de
+  // inicio del alquiler original (si no, nacian vencidos con meses impagos que nunca usaron).
+  const inicioFilas = rental ? getToday() : form.startDate;
   const primerVencimiento = (start, periodo) => (periodo === 'quincenal' ? addDaysStr(start, 15) : nextMonthDate(start));
   const equipoDe = (id) => equipment.find(e => e.id === id);
   const [showNewPatient, setShowNewPatient] = useState(false);
@@ -2053,7 +1713,10 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
 
   const handleStartDateChange = (start) => {
     // El vencimiento sigue a la fecha de inicio segun el periodo. Editable luego a mano.
-    setForm({ ...form, startDate: start, ...(isEditing ? { endDate: primerVencimiento(start, periodoDe(form)) } : {}) });
+    // Al editar: si ya tiene vencimiento posterior al nuevo inicio se conserva (si no, se borraba
+    // la deuda o se inventaban periodos impagos); la normalizacion de Inicio lo alinea al dia de inicio.
+    const endEdit = form.endDate && form.endDate > start ? form.endDate : primerVencimiento(start, periodoDe(form));
+    setForm({ ...form, startDate: start, ...(isEditing ? { endDate: endEdit } : {}) });
     if (!isEditing) {
       setItems(items.map(it => {
         const prevDefault = primerVencimiento(form.startDate, it.period);
@@ -2072,13 +1735,15 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
   const elegirPeriodoEnFila = (idx, period) => {
     const it = items[idx];
     const precio = precioEquipoPorPeriodo(equipoDe(it.equipmentId), period);
-    updateItem(idx, { period, endDate: primerVencimiento(form.startDate, period), price: precio > 0 ? precio : it.price });
+    updateItem(idx, { period, endDate: primerVencimiento(inicioFilas, period), price: precio > 0 ? precio : it.price });
   };
   // Al editar: cambiar de periodo trae el precio del equipo para ese periodo y
   // recalcula el vencimiento desde el inicio (proximo periodo que cae hoy o despues).
   const cambiarPeriodoEdit = (period) => {
     const precio = precioEquipoPorPeriodo(equipoDe(form.equipmentId), period);
-    const endDate = rollingDueDate(form.startDate, period) || form.endDate;
+    // Con periodos impagos NO se adelanta el vencimiento: la deuda desaparecia de Vencidos.
+    const conDeuda = form.status !== 'finalizado' && form.endDate && periodosImpagos(form).length > 0;
+    const endDate = conDeuda ? form.endDate : (rollingDueDate(form.startDate, period) || form.endDate);
     setForm({ ...form, period, endDate, ...(precio > 0 ? { price: precio } : {}) });
   };
 
@@ -2087,12 +1752,20 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
   };
 
   const addItem = () => {
-    setItems([...items, { equipmentId: '', period: 'mensual', endDate: nextMonthDate(form.startDate), price: '' }]);
+    setItems([...items, { equipmentId: '', period: 'mensual', endDate: nextMonthDate(inicioFilas), price: '' }]);
   };
 
   const removeItem = (idx) => {
     if (items.length === 1) return;
     setItems(items.filter((_, i) => i !== idx));
+  };
+
+  // Precio: numero >= 0. En $0 o vacio se pide confirmacion (antes quedaba en $0 sin aviso
+  // y Inicio/Contabilidad lo sumaban como $0).
+  const precioOk = (precios) => {
+    if (precios.some(p => p !== '' && p !== null && p !== undefined && !(Number(p) >= 0))) { alert('Revisá el precio: tiene que ser un número.'); return false; }
+    if (precios.some(p => !(Number(p) > 0))) return confirm('Hay un alquiler sin precio (queda en $0). ¿Guardar igual?');
+    return true;
   };
 
   const handleSubmit = (e) => {
@@ -2110,14 +1783,18 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
         if (choque) { alert(`Ese equipo ya tiene un alquiler vigente con ${nombrePaciente(choque.patientId)}. Finaliza ese alquiler o elegi otro equipo.`); return; }
       }
       const validExtra = items.filter(it => it.equipmentId);
+      if (validExtra.some(it => it.equipmentId === form.equipmentId)) { alert('El equipo agregado es el mismo que el principal.'); return; }
+      const extraIds = validExtra.map(it => it.equipmentId);
+      if (new Set(extraIds).size !== extraIds.length) { alert('Hay equipos repetidos'); return; }
       const extraChoque = validExtra.map(it => ocupadoPorOtro(it.equipmentId, null)).find(Boolean);
       if (extraChoque) { alert(`El equipo agregado ya tiene un alquiler vigente con ${nombrePaciente(extraChoque.patientId)}.`); return; }
+      if (!precioOk([form.price, ...validExtra.map(it => it.price)])) return;
       if (validExtra.length > 0) {
         const extraRentals = validExtra.map(it => ({
           patientId: form.patientId,
           equipmentId: it.equipmentId,
           period: it.period || 'mensual',
-          startDate: form.startDate,
+          startDate: getToday(),
           endDate: it.endDate,
           price: Number(it.price),
           // Un equipo que se entrega ahora nace en curso, aunque el alquiler que se
@@ -2140,6 +1817,7 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
       alert('Hay equipos repetidos');
       return;
     }
+    if (!precioOk(items.map(it => it.price))) return;
     const rentalsToCreate = items.map(it => ({
       patientId: form.patientId,
       equipmentId: it.equipmentId,
@@ -2157,7 +1835,8 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
   const rentedEquipIds = new Set((rentals || []).filter(r => r.status !== 'finalizado').map(r => r.equipmentId));
   const ocupadoPorOtro = (equipId, rentalId) => (rentals || []).find(r => r.equipmentId === equipId && r.id !== rentalId && r.status !== 'finalizado');
   const nombrePaciente = (pid) => (patients || []).find(p => p.id === pid)?.name || 'otro paciente';
-  const availableEquipment = isEditing ? equipment : equipment.filter(e => !rentedEquipIds.has(e.id));
+  // Para alquilar (filas nuevas o agregadas): ni ocupados ni en mantenimiento.
+  const availableEquipment = equipment.filter(e => !rentedEquipIds.has(e.id) && e.status !== 'mantenimiento');
 
   const handleAddNewPatient = () => {
     if (!newPatient.name) {
@@ -2281,7 +1960,7 @@ function RentalModal({ rental, patients, equipment, rentals, onSave, onAddPatien
               <label className="form-label" style={{ color: '#1E5AA8', fontWeight: 700 }}>Agregar otro equipo al mismo paciente</label>
               {items.map((it, idx) => {
                 const usedIds = items.filter((_, i) => i !== idx).map(x => x.equipmentId).filter(Boolean);
-                const options = equipment.filter(e => !rentedEquipIds.has(e.id) && !usedIds.includes(e.id) && e.id !== form.equipmentId);
+                const options = availableEquipment.filter(e => !usedIds.includes(e.id) && e.id !== form.equipmentId);
                 return (
                   <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 104px 140px 110px auto', gap: 6, marginBottom: 8, alignItems: 'center' }}>
                     <select className="form-select" value={it.equipmentId} onChange={e => elegirEquipoEnFila(idx, e.target.value)}>
@@ -2333,14 +2012,14 @@ function EquipmentPage({ data, updateData }) {
     const idA = a.id || ''; const idB = b.id || '';
     return idB.localeCompare(idA);
   }).filter(e => {
-    if (filter === 'disponible' && getCurrentRental(e.id)) return false;
+    if (filter === 'disponible' && (getCurrentRental(e.id) || e.status === 'mantenimiento')) return false;
     if (filter === 'alquilado' && !getCurrentRental(e.id)) return false;
     if (filter === 'mantenimiento' && e.status !== 'mantenimiento') return false;
     if (search) {
       const q = search.toLowerCase();
       const patient = getCurrentPatient(e.id);
       const hayMatch = (e.name || '').toLowerCase().includes(q)
-        || (e.serialNumber || '').toLowerCase().includes(q)
+        || String(e.serialNumber || '').toLowerCase().includes(q)
         || (patient?.name || '').toLowerCase().includes(q);
       if (!hayMatch) return false;
     }
@@ -2369,6 +2048,12 @@ function EquipmentPage({ data, updateData }) {
   };
 
   const handleDelete = (id) => {
+    // Un equipo alquilado no se puede borrar: el alquiler quedaba con "Equipo no encontrado"
+    // y el remito de retiro pendiente para siempre.
+    if (getOccupyingRental(rentals, id)) {
+      alert('Este equipo tiene un alquiler en curso. Primero da de baja el alquiler.');
+      return;
+    }
     if (confirm('¿Eliminar equipo?')) {
       updateData(cur => ({ ...cur, equipment: cur.equipment.filter(e => e.id !== id) }));
     }
@@ -2406,7 +2091,8 @@ function EquipmentPage({ data, updateData }) {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
           {filteredEquipment.map(equip => {
             const currentPatient = getCurrentPatient(equip.id);
-            const isRented = !!currentPatient;
+            // Ocupado lo decide el alquiler, no que exista el paciente.
+            const isRented = !!getCurrentRental(equip.id);
             return (
               <div key={equip.id} className="card" style={{ padding: 14, marginBottom: 0 }}>
                 <div style={{ display: 'flex', gap: 12, marginBottom: 10, alignItems: 'center' }}>
@@ -2417,7 +2103,9 @@ function EquipmentPage({ data, updateData }) {
                   </div>
                 </div>
                 {isRented ? (
-                  <div style={{ marginBottom: 8 }}><span className="badge badge-alquilado" style={{ textTransform: 'none', maxWidth: '100%' }}>Alquilado a {currentPatient.name}</span></div>
+                  <div style={{ marginBottom: 8 }}><span className="badge badge-alquilado" style={{ textTransform: 'none', maxWidth: '100%' }}>Alquilado a {currentPatient?.name || 'paciente sin datos'}</span></div>
+                ) : equip.status === 'mantenimiento' ? (
+                  <div style={{ marginBottom: 8 }}><span className="badge badge-mantenimiento">Mantenimiento</span></div>
                 ) : (
                   <div style={{ marginBottom: 8 }}><span className="badge badge-disponible">Disponible</span></div>
                 )}
@@ -2440,18 +2128,18 @@ function EquipmentPage({ data, updateData }) {
       )}
 
       {showModal && (
-        <EquipmentModal equipment={editingEquipment} onSave={handleSave} onClose={() => { setShowModal(false); setEditingEquipment(null); }} />
+        <EquipmentModal equipment={editingEquipment} existentes={equipment} onSave={handleSave} onClose={() => { setShowModal(false); setEditingEquipment(null); }} />
       )}
     </div>
   );
 }
 
-function EquipmentModal({ equipment, onSave, onClose }) {
+function EquipmentModal({ equipment, existentes = [], onSave, onClose }) {
   const [form, setForm] = useState(equipment || { name: '', serialNumber: '', type: 'otro', status: 'disponible', description: '', available: true, imageUrl: '', ownership: 'propio', rentalPrice: '', rentalPrice15: '' });
   // Cada registro de Equipos es UNA unidad fisica. Por eso la cantidad solo aplica al alta:
   // se crean N equipos, uno por cada numero de serie.
   const [cantidad, setCantidad] = useState(1);
-  const [serials, setSerials] = useState([equipment?.serialNumber || '']);
+  const [serials, setSerials] = useState([String(equipment?.serialNumber ?? '')]);
   const setCant = (v) => {
     const c = Math.max(1, Math.min(50, Number(v) || 1));
     setCantidad(c);
@@ -2486,12 +2174,17 @@ function EquipmentModal({ equipment, onSave, onClose }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const series = serials.slice(0, equipment ? 1 : cantidad).map(s => (s || '').trim());
+    const series = serials.slice(0, equipment ? 1 : cantidad).map(s => String(s ?? '').trim());
     if (!form.name || series.some(s => !s)) {
       alert(series.length > 1 ? 'Nombre y el numero de serie de cada unidad son obligatorios' : 'Nombre y serie son obligatorios');
       return;
     }
     if (new Set(series).size !== series.length) { alert('Hay numeros de serie repetidos. Cada unidad tiene que tener el suyo.'); return; }
+    // Serie que ya tiene OTRA unidad cargada: se avisa (dos unidades con la misma serie se
+    // confunden en remitos e importaciones).
+    const norm = (v) => String(v || '').trim().toLowerCase();
+    const repetidas = series.filter(sr => existentes.some(e => e.id !== equipment?.id && norm(e.serialNumber) === norm(sr)));
+    if (repetidas.length && !confirm(`Ya hay otro equipo con el numero de serie ${repetidas.join(', ')}. ¿Guardar igual?`)) return;
     const base = { ...form, rentalPrice: Number(form.rentalPrice) || 0, rentalPrice15: Number(form.rentalPrice15) || 0 };
     if (!equipment && series.length > 1) {
       onSave(series.map(s => ({ ...base, serialNumber: s })));
@@ -2593,6 +2286,144 @@ function EquipmentModal({ equipment, onSave, onClose }) {
   );
 }
 
+// El "Precio ARS" de un equipo nuevo es el que va a facturas y cotizaciones. Varios quedaron
+// cargados como el COSTO pasado a pesos (exactamente USD costo x 1450, de la carga inicial) o
+// con un error de tipeo: se avisa en la tarjeta para revisarlos (no se cambia ningun dato solo).
+function avisoPrecioEquipoNuevo(eq) {
+  const ars = Number(eq?.price) || 0;
+  const costo = Number(eq?.priceUsd) || 0;
+  if (ars > 100000000) return 'Revisar precio: parece un error de tipeo';
+  if (costo > 0 && ars > 0 && Math.abs(ars / costo - 1450) < 1) return 'Revisar precio: es el costo en USD x 1450, no el de venta';
+  return '';
+}
+
+// Al guardar un formulario de edicion: si el usuario NO toco el stock, se conserva el stock
+// ACTUAL (una venta u otro dispositivo pudo cambiarlo mientras el formulario estaba abierto;
+// antes se pisaba con el valor de cuando se abrio).
+function conStockActual(original, editado, actual) {
+  if (!original || !actual) return editado;
+  const igual = String(original.stock ?? '') === String(editado.stock ?? '');
+  return igual ? { ...editado, stock: actual.stock } : editado;
+}
+
+// Formulario de Equipo Nuevo. Componente de nivel superior: definido dentro del render de
+// la pagina se desmontaba en cada redibujo (p. ej. al llegar un cambio de otro dispositivo)
+// y se perdia lo tipeado y la foto.
+function EquipoNuevoModal({ editing, onSave, onClose }) {
+  const [form, setForm] = useState(editing || { name: '', description: '', price: '', priceUsd: '', priceVentaUsd: '', stock: '', imageUrl: '', serialNumber: '' });
+  const [cantidad, setCantidad] = useState(1);
+  const [serials, setSerials] = useState(() => {
+    if (!editing) return [''];
+    const c = Math.max(1, Math.min(50, Number(editing.stock) || 1));
+    const a = [String(editing.serialNumber ?? '')];
+    while (a.length < c) a.push('');
+    return a;
+  });
+  const ajustarFilas = (c) => setSerials(prev => { const a = [...prev]; while (a.length < c) a.push(''); return a.slice(0, c); });
+  const setCant = (n) => {
+    const c = Math.max(1, Math.min(50, Number(n) || 1));
+    setCantidad(c);
+    ajustarFilas(c);
+  };
+  // al editar, el stock manda cuantos numeros de serie se piden
+  const setStock = (n) => {
+    setForm(f => ({ ...f, stock: n }));
+    ajustarFilas(Math.max(1, Math.min(50, Number(n) || 1)));
+  };
+  const unidadesEdit = Math.max(1, Math.min(50, Number(form.stock) || 1));
+  const handleImg = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const r = new FileReader();
+    r.onloadend = () => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 600;
+        const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * ratio);
+        canvas.height = Math.round(img.height * ratio);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+setForm(f => ({ ...f, imageUrl: dataUrl })); // vista previa inmediata
+// Se sube a Cloudflare R2 y queda solo la URL (no viaja en los datos de Supabase).
+// Si falla (sin internet, etc.), queda la foto en base64 como antes.
+subirFoto(dataUrl, 'equipos-nuevos')
+  .then(url => setForm(f => (f.imageUrl === dataUrl ? { ...f, imageUrl: url } : f)))
+  .catch(err => console.warn('La foto quedo guardada localmente:', err.message));
+      };
+      img.src = r.result;
+    };
+    r.readAsDataURL(file);
+  };
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2 className="modal-title">{editing && editing.id ? 'Editar' : 'Nuevo'} Equipo</h2>
+          <span className="modal-close" onClick={onClose}>x</span>
+        </div>
+        <form onSubmit={e => {
+          e.preventDefault();
+          if (!form.name) { alert('Nombre obligatorio'); return; }
+          const base = { ...form, price: Number(form.price), priceUsd: Number(form.priceUsd || 0), priceVentaUsd: Number(form.priceVentaUsd || 0) };
+          if (editing) {
+            const stk = Number(form.stock || 0);
+            const series = serials.slice(0, Math.max(1, stk)).map(s => String(s ?? '').trim());
+            const cargadas = series.filter(Boolean);
+            if (new Set(cargadas).size !== cargadas.length) { alert('Hay numeros de serie repetidos. Cada unidad tiene que tener el suyo.'); return; }
+            if (stk >= 2 && cargadas.length >= 2) {
+              onSave(series.map(s => ({ ...base, stock: 1, serialNumber: s })), editing.id);
+            } else {
+              onSave({ ...base, id: editing.id, stock: stk, serialNumber: (series[0] || '') });
+            }
+          } else {
+            const items = serials.slice(0, cantidad).map(s => ({ ...base, stock: 1, serialNumber: String(s ?? '').trim() }));
+            onSave(items);
+          }
+        }}>
+          <div className="form-group"><label className="form-label">Nombre *</label><input type="text" className="form-input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div>
+          <div className="form-group"><label className="form-label">Descripcion (Marca / Modelo)</label><textarea className="form-textarea" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="form-group"><label className="form-label">Precio ARS</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
+            {editing
+              ? <div className="form-group"><label className="form-label">Stock</label><input type="number" min="0" className="form-input" value={form.stock || ''} onChange={e => setStock(e.target.value)} /></div>
+              : <div className="form-group"><label className="form-label">Cantidad</label><input type="number" min="1" className="form-input" value={cantidad} onChange={e => setCant(e.target.value)} /></div>
+            }
+          </div>
+          {editing ? (
+            <div className="form-group">
+              <label className="form-label">N° de serie {unidadesEdit > 1 ? 'por unidad' : ''}</label>
+              {serials.slice(0, unidadesEdit).map((s, i) => (
+                <input key={i} type="text" className="form-input" placeholder={unidadesEdit > 1 ? `Unidad ${i + 1}` : 'N° de serie'} value={s} onChange={e => setSerials(prev => prev.map((x, j) => j === i ? e.target.value : x))} style={{ marginBottom: 6 }} />
+              ))}
+              {unidadesEdit > 1 && <div style={{ fontSize: 12, color: '#5A6978' }}>Si cargas el numero de serie de cada unidad, al guardar se separan en {unidadesEdit} equipos individuales.</div>}
+            </div>
+          ) : (
+            <div className="form-group">
+              <label className="form-label">N° de serie {cantidad > 1 ? 'por unidad' : ''}</label>
+              {serials.map((s, i) => (
+                <input key={i} type="text" className="form-input" placeholder={cantidad > 1 ? `Unidad ${i + 1}` : 'N° de serie'} value={s} onChange={e => setSerials(prev => prev.map((x, j) => j === i ? e.target.value : x))} style={{ marginBottom: 6 }} />
+              ))}
+              {cantidad > 1 && <div style={{ fontSize: 12, color: '#5A6978' }}>Se crearán {cantidad} equipos individuales, uno por cada número de serie.</div>}
+            </div>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div className="form-group"><label className="form-label">Precio USD</label><input type="number" className="form-input" value={form.priceUsd || ''} onChange={e => setForm({...form, priceUsd: e.target.value})} /></div>
+            <div className="form-group"><label className="form-label">Venta USD</label><input type="number" className="form-input" value={form.priceVentaUsd || ''} onChange={e => setForm({...form, priceVentaUsd: e.target.value})} /></div>
+          </div>
+          <div className="form-group">
+            <label className="form-label">Foto</label>
+            <input type="file" accept="image/*" onChange={handleImg} className="form-input" />
+            {form.imageUrl && <div style={{ marginTop: 10, textAlign: 'center' }}><img src={form.imageUrl} alt="Preview" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8 }} /><button type="button" className="btn btn-sm btn-danger" style={{ marginTop: 5 }} onClick={() => setForm({ ...form, imageUrl: '' })}>Eliminar foto</button></div>}
+          </div>
+          <button type="submit" className="btn btn-primary btn-block">Guardar</button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function EquiposNuevosPage({ data, updateData }) {
   const { equiposNuevos } = data;
   const [showModal, setShowModal] = useState(false);
@@ -2615,14 +2446,20 @@ function EquiposNuevosPage({ data, updateData }) {
     updateData(cur => {
       const lista = cur.equiposNuevos || [];
       if (reemplazaId) {
-        // la primera unidad conserva el id original para no perder la posicion en el catalogo
-        const unidades = payload.map((it, i) => ({ ...it, id: i === 0 ? reemplazaId : generateId() }));
+        // la primera unidad conserva el id original para no perder la posicion en el catalogo.
+        // Si mientras tanto se vendieron unidades, se crean solo las que quedan en stock.
+        const actual = lista.find(e => e.id === reemplazaId);
+        // vendidas = lo que bajo el stock desde que se abrio el formulario.
+        const vendidas = actual && editing ? Math.max(0, (Number(editing.stock) || 0) - (Number(actual.stock) || 0)) : 0;
+        const cantidad = Math.max(0, payload.length - vendidas);
+        const usar = payload.slice(0, Math.max(1, cantidad));
+        const unidades = usar.map((it, i) => ({ ...it, id: i === 0 ? reemplazaId : generateId(), ...(i === 0 && cantidad === 0 ? { stock: 0 } : {}) }));
         return { ...cur, equiposNuevos: lista.flatMap(e => e.id === reemplazaId ? unidades : [e]) };
       }
       return {
         ...cur,
         equiposNuevos: payload.id
-          ? lista.map(e => e.id === payload.id ? payload : e)
+          ? lista.map(e => e.id === payload.id ? conStockActual(editing, payload, e) : e)
           : [...lista, ...(isArray ? payload : [payload]).map(it => ({ ...it, id: generateId() }))]
       };
     });
@@ -2657,6 +2494,7 @@ function EquiposNuevosPage({ data, updateData }) {
               {eq.description && <div style={{ fontSize: 13, color: '#5A6978', marginBottom: 4 }}>{eq.description}</div>}
               {eq.serialNumber && <div style={{ fontSize: 12, color: '#5A6978', marginBottom: 4 }}>N° serie: {eq.serialNumber}</div>}
               <div style={{ fontSize: 18, fontWeight: 700, color: '#1E5AA8' }}>{formatCurrency(eq.price)}</div>
+              {avisoPrecioEquipoNuevo(eq) && <div style={{ fontSize: 12, fontWeight: 700, color: '#B45309', background: 'var(--warn-50)', borderRadius: 6, padding: '3px 6px', margin: '4px 0' }}>{avisoPrecioEquipoNuevo(eq)}</div>}
               {eq.priceUsd > 0 && <div style={{ fontSize: 13, color: '#43A047', fontWeight: 600 }}>USD {eq.priceUsd}</div>}
               {eq.priceVentaUsd > 0 && <div style={{ fontSize: 12, color: '#5A6978' }}>Venta: USD {eq.priceVentaUsd}</div>}
               <div style={{ fontSize: 13, fontWeight: 600, color: Number(eq.stock) > 0 ? '#43A047' : '#E53935', marginBottom: 8 }}>Stock: {Number(eq.stock) || 0}</div>
@@ -2669,123 +2507,9 @@ function EquiposNuevosPage({ data, updateData }) {
           ))}
         </div>
       )}
-      {showModal && (() => {
-        const EquipoNuevoModal = () => {
-          const [form, setForm] = useState(editing || { name: '', description: '', price: '', priceUsd: '', priceVentaUsd: '', stock: '', imageUrl: '', serialNumber: '' });
-          const [cantidad, setCantidad] = useState(1);
-          const [serials, setSerials] = useState(() => {
-            if (!editing) return [''];
-            const c = Math.max(1, Math.min(50, Number(editing.stock) || 1));
-            const a = [editing.serialNumber || ''];
-            while (a.length < c) a.push('');
-            return a;
-          });
-          const ajustarFilas = (c) => setSerials(prev => { const a = [...prev]; while (a.length < c) a.push(''); return a.slice(0, c); });
-          const setCant = (n) => {
-            const c = Math.max(1, Math.min(50, Number(n) || 1));
-            setCantidad(c);
-            ajustarFilas(c);
-          };
-          // al editar, el stock manda cuantos numeros de serie se piden
-          const setStock = (n) => {
-            setForm(f => ({ ...f, stock: n }));
-            ajustarFilas(Math.max(1, Math.min(50, Number(n) || 1)));
-          };
-          const unidadesEdit = Math.max(1, Math.min(50, Number(form.stock) || 1));
-          const handleImg = (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-            const r = new FileReader();
-            r.onloadend = () => {
-              const img = new Image();
-              img.onload = () => {
-                const MAX = 600;
-                const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
-                const canvas = document.createElement('canvas');
-                canvas.width = Math.round(img.width * ratio);
-                canvas.height = Math.round(img.height * ratio);
-                canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-                const dataUrl = canvas.toDataURL('image/jpeg', 0.75);
-        setForm(f => ({ ...f, imageUrl: dataUrl })); // vista previa inmediata
-        // Se sube a Cloudflare R2 y queda solo la URL (no viaja en los datos de Supabase).
-        // Si falla (sin internet, etc.), queda la foto en base64 como antes.
-        subirFoto(dataUrl, 'equipos-nuevos')
-          .then(url => setForm(f => (f.imageUrl === dataUrl ? { ...f, imageUrl: url } : f)))
-          .catch(err => console.warn('La foto quedo guardada localmente:', err.message));
-              };
-              img.src = r.result;
-            };
-            r.readAsDataURL(file);
-          };
-          return (
-            <div className="modal-overlay" onClick={() => { setShowModal(false); setEditing(null); }}>
-              <div className="modal" onClick={e => e.stopPropagation()}>
-                <div className="modal-header">
-                  <h2 className="modal-title">{editing && editing.id ? 'Editar' : 'Nuevo'} Equipo</h2>
-                  <span className="modal-close" onClick={() => { setShowModal(false); setEditing(null); }}>x</span>
-                </div>
-                <form onSubmit={e => {
-                  e.preventDefault();
-                  if (!form.name) { alert('Nombre obligatorio'); return; }
-                  const base = { ...form, price: Number(form.price), priceUsd: Number(form.priceUsd || 0), priceVentaUsd: Number(form.priceVentaUsd || 0) };
-                  if (editing) {
-                    const stk = Number(form.stock || 0);
-                    const series = serials.slice(0, Math.max(1, stk)).map(s => (s || '').trim());
-                    const cargadas = series.filter(Boolean);
-                    if (new Set(cargadas).size !== cargadas.length) { alert('Hay numeros de serie repetidos. Cada unidad tiene que tener el suyo.'); return; }
-                    if (stk >= 2 && cargadas.length >= 2) {
-                      handleSave(series.map(s => ({ ...base, stock: 1, serialNumber: s })), editing.id);
-                    } else {
-                      handleSave({ ...base, id: editing.id, stock: stk, serialNumber: (series[0] || '') });
-                    }
-                  } else {
-                    const items = serials.slice(0, cantidad).map(s => ({ ...base, stock: 1, serialNumber: (s || '').trim() }));
-                    handleSave(items);
-                  }
-                }}>
-                  <div className="form-group"><label className="form-label">Nombre *</label><input type="text" className="form-input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div>
-                  <div className="form-group"><label className="form-label">Descripcion (Marca / Modelo)</label><textarea className="form-textarea" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                    <div className="form-group"><label className="form-label">Precio ARS</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
-                    {editing
-                      ? <div className="form-group"><label className="form-label">Stock</label><input type="number" min="0" className="form-input" value={form.stock || ''} onChange={e => setStock(e.target.value)} /></div>
-                      : <div className="form-group"><label className="form-label">Cantidad</label><input type="number" min="1" className="form-input" value={cantidad} onChange={e => setCant(e.target.value)} /></div>
-                    }
-                  </div>
-                  {editing ? (
-                    <div className="form-group">
-                      <label className="form-label">N° de serie {unidadesEdit > 1 ? 'por unidad' : ''}</label>
-                      {serials.slice(0, unidadesEdit).map((s, i) => (
-                        <input key={i} type="text" className="form-input" placeholder={unidadesEdit > 1 ? `Unidad ${i + 1}` : 'N° de serie'} value={s} onChange={e => setSerials(prev => prev.map((x, j) => j === i ? e.target.value : x))} style={{ marginBottom: 6 }} />
-                      ))}
-                      {unidadesEdit > 1 && <div style={{ fontSize: 12, color: '#5A6978' }}>Si cargas el numero de serie de cada unidad, al guardar se separan en {unidadesEdit} equipos individuales.</div>}
-                    </div>
-                  ) : (
-                    <div className="form-group">
-                      <label className="form-label">N° de serie {cantidad > 1 ? 'por unidad' : ''}</label>
-                      {serials.map((s, i) => (
-                        <input key={i} type="text" className="form-input" placeholder={cantidad > 1 ? `Unidad ${i + 1}` : 'N° de serie'} value={s} onChange={e => setSerials(prev => prev.map((x, j) => j === i ? e.target.value : x))} style={{ marginBottom: 6 }} />
-                      ))}
-                      {cantidad > 1 && <div style={{ fontSize: 12, color: '#5A6978' }}>Se crearán {cantidad} equipos individuales, uno por cada número de serie.</div>}
-                    </div>
-                  )}
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                    <div className="form-group"><label className="form-label">Precio USD</label><input type="number" className="form-input" value={form.priceUsd || ''} onChange={e => setForm({...form, priceUsd: e.target.value})} /></div>
-                    <div className="form-group"><label className="form-label">Venta USD</label><input type="number" className="form-input" value={form.priceVentaUsd || ''} onChange={e => setForm({...form, priceVentaUsd: e.target.value})} /></div>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Foto</label>
-                    <input type="file" accept="image/*" onChange={handleImg} className="form-input" />
-                    {form.imageUrl && <div style={{ marginTop: 10, textAlign: 'center' }}><img src={form.imageUrl} alt="Preview" style={{ maxWidth: '100%', maxHeight: 200, borderRadius: 8 }} /><button type="button" className="btn btn-sm btn-danger" style={{ marginTop: 5 }} onClick={() => setForm({ ...form, imageUrl: '' })}>Eliminar foto</button></div>}
-                  </div>
-                  <button type="submit" className="btn btn-primary btn-block">Guardar</button>
-                </form>
-              </div>
-            </div>
-          );
-        };
-        return <EquipoNuevoModal />;
-      })()}
+      {showModal && (
+        <EquipoNuevoModal editing={editing} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); }} />
+      )}
     </div>
   );
 }
@@ -2817,7 +2541,7 @@ function MascarasPage({ data, updateData }) {
       ...cur,
       mascaras: isNew
         ? [...cur.mascaras, { ...mascara, id: generateId() }]
-        : cur.mascaras.map(m => m.id === mascara.id ? mascara : m)
+        : cur.mascaras.map(m => m.id === mascara.id ? conStockActual(editingMascara, mascara, m) : m)
     }));
     setShowModal(false);
     setEditingMascara(null);
@@ -2832,12 +2556,15 @@ function MascarasPage({ data, updateData }) {
   const updateStock = (id, delta) => {
     const m = mascaras.find(x => x.id === id);
     if (!m) return;
-    const nuevo = Math.max(0, m.stock + delta);
-    if (nuevo === m.stock) return;
-    if (!confirm(`¿Cambiar el stock de "${m.name}" de ${m.stock} a ${nuevo}?`)) return;
+    const actual = Number(m.stock) || 0;
+    const nuevo = Math.max(0, actual + delta);
+    if (nuevo === actual) return;
+    if (!confirm(`¿Cambiar el stock de "${m.name}" de ${actual} a ${nuevo}?`)) return;
+    // Se suma sobre el stock ACTUAL (cur): una venta o un cambio de otro dispositivo que
+    // entro mientras estaba abierto el aviso no se pisa.
     updateData(cur => ({
       ...cur,
-      mascaras: cur.mascaras.map(x => x.id === id ? { ...x, stock: nuevo } : x)
+      mascaras: cur.mascaras.map(x => x.id === id ? { ...x, stock: Math.max(0, (Number(x.stock) || 0) + delta) } : x)
     }));
   };
 
@@ -3067,22 +2794,11 @@ function SalesCartPage({ data, updateData, pageType }) {
   const [sigFirma, setSigFirma] = useState('');
   const [sigAclaracion, setSigAclaracion] = useState('');
   const [sigDni, setSigDni] = useState('');
+  // Documento guardado que se esta editando: se reemplaza al regenerar (mismo numero y fecha)
+  // y NO se borra del historial al cargarlo al carrito.
+  const [editando, setEditando] = useState(null);
 
-  const getEquipPrice = (equip) => {
-    if (Number(equip.rentalPrice) > 0) return Number(equip.rentalPrice);
-    const rental = (rentals || []).find(r => r.equipmentId === equip.id);
-    if (rental && Number(rental.price) > 0) return Number(rental.price);
-    if (equip.name) {
-      const sameNameEquip = (equipment || []).find(e => e.id !== equip.id && e.name === equip.name && Number(e.rentalPrice) > 0);
-      if (sameNameEquip) return Number(sameNameEquip.rentalPrice);
-      const sameNameRental = (rentals || []).find(r => {
-        const re = (equipment || []).find(e => e.id === r.equipmentId);
-        return re && re.name === equip.name && Number(r.price) > 0;
-      });
-      if (sameNameRental) return Number(sameNameRental.price);
-    }
-    return 0;
-  };
+  const getEquipPrice = (equip) => precioMensualEquipo(equip, equipment, rentals);
 
   const categories = [
     { value: 'todos', label: 'Todos' },
@@ -3117,15 +2833,29 @@ function SalesCartPage({ data, updateData, pageType }) {
 
   const addLibre = () => {
     if (!libreItem.name || libreItem.price <= 0) { alert('Ingrese nombre y precio'); return; }
-    setCart([...cart, { id: 'libre-' + Date.now(), name: libreItem.name, price: Number(libreItem.price), quantity: Number(libreItem.quantity) || 1, _cat: 'libre', _label: 'Item libre' }]);
+    setCart([...cart, { id: 'libre-' + Date.now(), name: libreItem.name, price: Number(libreItem.price), quantity: Math.max(1, Math.floor(Number(libreItem.quantity) || 1)), _cat: 'libre', _label: 'Item libre' }]);
     setLibreItem({ name: '', price: 0, quantity: 1 });
     setShowLibre(false);
   };
 
   const updateCartItem = (id, field, value) => setCart(cart.map(c => c.id === id ? { ...c, [field]: value } : c));
   const removeFromCart = (id) => setCart(cart.filter(c => c.id !== id));
-  const clearCart = () => { setCart([]); setCustomerName(''); setCustomerPhone(''); setNotes(''); setSigFirma(''); setSigAclaracion(''); setSigDni(''); };
-  const cartTotal = cart.reduce((s, c) => s + (c.price * c.quantity), 0);
+  const clearCart = () => { setCart([]); setCustomerName(''); setCustomerPhone(''); setNotes(''); setSigFirma(''); setSigAclaracion(''); setSigDni(''); setEditando(null); };
+  const cartTotal = cart.reduce((s, c) => s + ((Number(c.price) || 0) * (Number(c.quantity) || 0)), 0);
+  // Cantidad entera >= 1 y precio >= 0. Antes una cantidad 0 o negativa no sumaba en el total
+  // pero el PDF la imprimia como 1, y una negativa SUBIA el stock.
+  const itemsInvalidos = cart.filter(c => {
+    const q = Number(c.quantity), pr = Number(c.price);
+    return !Number.isInteger(q) || q < 1 || !Number.isFinite(pr) || pr < 0;
+  });
+  const validarCarrito = () => {
+    if (cart.length === 0) { alert('Agregue productos'); return false; }
+    if (itemsInvalidos.length) {
+      alert(`Revisa cantidad y precio de: ${itemsInvalidos.map(c => c.name).join(', ')}. La cantidad tiene que ser un numero entero de 1 o mas y el precio no puede ser negativo.`);
+      return false;
+    }
+    return true;
+  };
 
   const buildWhatsAppMsg = () => {
     const prefix = isRemito ? 'REMITO' : (isCotizacion ? 'COTIZACION' : 'FACTURA');
@@ -3144,19 +2874,36 @@ function SalesCartPage({ data, updateData, pageType }) {
   };
 
   const handleWhatsApp = () => {
-    if (cart.length === 0) { alert('Agregue productos'); return; }
+    if (!validarCarrito()) return;
     sendWhatsApp(customerPhone, buildWhatsAppMsg());
   };
 
+  // Un solo documento por clic: mientras se arma el PDF el boton queda deshabilitado.
+  const generandoRef = useRef(false);
+  const [generando, setGenerando] = useState(false);
   const handlePDF = async () => {
-    if (cart.length === 0) { alert('Agregue productos'); return; }
+    if (generandoRef.current) return;
+    generandoRef.current = true; setGenerando(true);
+    try { await generarPDF(); } finally { generandoRef.current = false; setGenerando(false); }
+  };
+  const generarPDF = async () => {
+    if (!validarCarrito()) return;
     const prefix = isRemito ? 'REM' : (isCotizacion ? 'COT' : 'FAC');
     const docType = isRemito ? 'remito' : (isCotizacion ? 'cotizacion' : 'factura');
-    if (!confirm(`¿Generar ${docType} para "${customerName || 'sin nombre'}" por ${formatCurrency(cartTotal)}?`)) return;
-    const number = generateDocNumber(prefix, customerName);
+    // Al facturar: avisar si se vende mas de lo que hay en stock (antes quedaba en 0 sin aviso).
+    if (docType === 'factura') {
+      const anterior = editando ? (savedItems.find(x => x.id === editando.id)?.cartItems || []) : [];
+      const faltantes = faltantesDeStock(data, cart, anterior);
+      if (faltantes.length && !confirm(`Stock insuficiente:\n${faltantes.join('\n')}\n\n¿Facturar igual? El stock queda en 0.`)) return;
+    }
+    const accion = editando ? `¿Regenerar ${docType} ${editando.invoiceNumber}` : `¿Generar ${docType}`;
+    if (!confirm(`${accion} para "${customerName || 'sin nombre'}" por ${formatCurrency(cartTotal)}?`)) return;
+    // Al editar se conservan numero y fecha: una factura de septiembre editada en noviembre
+    // sigue siendo de septiembre (Contabilidad y Reportes).
+    const number = editando?.invoiceNumber || generateDocNumber(prefix, customerName);
     const invoiceData = {
       invoiceNumber: number,
-      date: getToday(),
+      date: editando?.date || getToday(),
       clientName: customerName,
       clientPhone: customerPhone,
       // Al PDF van las fotos COMPLETAS (se ven al lado de la descripcion).
@@ -3169,20 +2916,26 @@ function SalesCartPage({ data, updateData, pageType }) {
     try {
       const doc = await generateInvoicePDF(invoiceData, settings, docType);
       downloadInvoicePDF(doc, number, docType);
-      const record = { id: generateId(), ...invoiceData, items: invoiceData.items.map(itemLiviano), customerName, customerPhone, cartItems: cart.map(itemLiviano), createdAt: getToday() };
+      const record = {
+        id: editando?.id || generateId(), ...invoiceData, items: invoiceData.items.map(itemLiviano), customerName, customerPhone,
+        cartItems: cart.map(itemLiviano), createdAt: editando?.createdAt || getToday(),
+        ...(editando ? { editedAt: new Date().toISOString() } : {}),
+      };
       updateData(cur => {
-        const next = { ...cur, [collectionKey]: [...(cur[collectionKey] || []), record] };
-        // Solo al FACTURAR (no remito, no cotizacion) se descuenta el stock de mascaras y descartables.
+        const lista = cur[collectionKey] || [];
+        const previo = editando ? lista.find(x => x.id === editando.id) : null;
+        let next = cur;
+        let rec = record;
+        // Solo al FACTURAR (no remito, no cotizacion) se mueve el stock. Al editar una factura,
+        // primero vuelve lo que desconto la version anterior (antes se descontaba dos veces) y
+        // despues se descuenta lo nuevo, anotando en cada item cuanto se desconto.
         if (docType === 'factura') {
-          const descontar = (arr, cat) => (arr || []).map(it => {
-            const enCarrito = cart.find(c => c.id === it.id && c._cat === cat);
-            if (!enCarrito) return it;
-            return { ...it, stock: Math.max(0, Number(it.stock || 0) - Number(enCarrito.quantity || 1)) };
-          });
-          next.mascaras = descontar(cur.mascaras, 'mascarillas');
-          next.descartables = descontar(cur.descartables, 'descartables');
+          if (previo) next = devolverStock(next, previo.cartItems);
+          const r = descontarStock(next, previo ? itemsADescontar(cart, previo.cartItems) : cart);
+          next = r.next;
+          rec = { ...record, cartItems: r.items.map(itemLiviano) };
         }
-        return next;
+        return { ...next, [collectionKey]: previo ? lista.map(x => x.id === previo.id ? rec : x) : [...lista, rec] };
       });
       alert(`${isRemito ? 'Remito' : (isCotizacion ? 'Cotizacion' : 'Factura')} ${number} generado`);
       clearCart();
@@ -3193,20 +2946,29 @@ function SalesCartPage({ data, updateData, pageType }) {
   };
 
   const handleDeleteSaved = (id) => {
-    if (confirm('¿Eliminar?')) {
-      updateData(cur => ({ ...cur, [collectionKey]: (cur[collectionKey] || []).filter(s => s.id !== id) }));
+    const esFactura = collectionKey === 'invoices';
+    if (confirm(esFactura ? '¿Eliminar la factura? El stock de lo facturado vuelve al inventario.' : '¿Eliminar?')) {
+      updateData(cur => {
+        const lista = cur[collectionKey] || [];
+        const previo = lista.find(s => s.id === id);
+        let next = { ...cur, [collectionKey]: lista.filter(s => s.id !== id) };
+        if (esFactura && previo) next = devolverStock(next, previo.cartItems);
+        return next;
+      });
+      if (editando?.id === id) setEditando(null);
     }
   };
 
   const handleEditSaved = (s) => {
-    if (!confirm(`¿Editar "${s.customerName || s.clientName || s.invoiceNumber || 'este documento'}"? Se carga al carrito y se quita del historial hasta que lo vuelvas a generar.`)) return;
+    if (!confirm(`¿Editar "${s.customerName || s.clientName || s.invoiceNumber || 'este documento'}"? Se carga al carrito; al volver a generarlo reemplaza al guardado, con el mismo numero y fecha.`)) return;
     const items = s.cartItems || s.items?.map(i => ({ ...i, id: i.id || ('item-' + Math.random()), _cat: 'libre', _label: 'Item' })) || [];
-    setCart(items.map(i => ({ ...i, price: Number(i.price) || 0, quantity: Number(i.quantity) || 1 })));
+    // _descontado es de la version guardada (se usa para devolver el stock), no del carrito nuevo.
+    setCart(items.map(i => { const c = { ...i, price: Number(i.price) || 0, quantity: Number(i.quantity) || 1 }; delete c._descontado; delete c._sinDescontar; return c; }));
     setCustomerName(s.customerName || s.clientName || '');
     setCustomerPhone(s.customerPhone || s.clientPhone || '');
     setNotes(s.notes || '');
     if (isRemito) { setSigFirma(s.sigFirma || ''); setSigAclaracion(s.sigAclaracion || ''); setSigDni(s.sigDni || ''); }
-    updateData(cur => ({ ...cur, [collectionKey]: (cur[collectionKey] || []).filter(x => x.id !== s.id) }));
+    setEditando({ id: s.id, invoiceNumber: s.invoiceNumber, date: s.date || (s.createdAt || '').slice(0, 10) || getToday(), createdAt: s.createdAt });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -3291,10 +3053,10 @@ function SalesCartPage({ data, updateData, pageType }) {
               {serieDe(c) && <div style={{ fontSize: 11, color: '#1E5AA8', fontWeight: 600 }}>{etiquetaSerie(c)}</div>}
               <div style={{ display: 'flex', gap: 4, alignItems: 'center', fontSize: 12 }}>
                 <span>$</span>
-                <input type="number" style={{ width: 80, border: '2px solid #90CAF9', borderRadius: 6, padding: '3px 6px', fontSize: 13, fontWeight: 700, color: '#1E5AA8', background: '#F0F7FF' }} value={c.price} onChange={e => updateCartItem(c.id, 'price', Number(e.target.value))} />
+                <input type="number" style={{ width: 80, border: '2px solid #90CAF9', borderRadius: 6, padding: '3px 6px', fontSize: 13, fontWeight: 700, color: '#1E5AA8', background: '#F0F7FF' }} value={c.price} min="0" onChange={e => updateCartItem(c.id, 'price', e.target.value === '' ? '' : Number(e.target.value))} onBlur={() => updateCartItem(c.id, 'price', Math.max(0, Number(c.price) || 0))} />
                 <span>x</span>
-                <input type="number" style={{ width: 50, border: '2px solid #90CAF9', borderRadius: 6, padding: '3px 6px', fontSize: 13, fontWeight: 700, color: '#1E5AA8', background: '#F0F7FF' }} value={c.quantity} onChange={e => updateCartItem(c.id, 'quantity', Number(e.target.value))} />
-                <span style={{ fontWeight: 700, color: '#1E5AA8' }}>= {formatCurrency(c.price * c.quantity)}</span>
+                <input type="number" style={{ width: 50, border: '2px solid #90CAF9', borderRadius: 6, padding: '3px 6px', fontSize: 13, fontWeight: 700, color: '#1E5AA8', background: '#F0F7FF' }} value={c.quantity} min="1" step="1" onChange={e => updateCartItem(c.id, 'quantity', e.target.value === '' ? '' : Number(e.target.value))} onBlur={() => updateCartItem(c.id, 'quantity', Math.max(1, Math.floor(Number(c.quantity) || 1)))} />
+                <span style={{ fontWeight: 700, color: '#1E5AA8' }}>= {formatCurrency((Number(c.price) || 0) * (Number(c.quantity) || 0))}</span>
               </div>
             </div>
             <button className="btn btn-sm btn-danger" onClick={() => removeFromCart(c.id)}>x</button>
@@ -3332,7 +3094,7 @@ function SalesCartPage({ data, updateData, pageType }) {
         )}
 
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
-          <button className="btn btn-success" style={{ flex: 1 }} onClick={handlePDF}><Icon name="file" size={16} /> {isRemito ? 'Remito' : (isCotizacion ? 'Cotizacion' : 'Factura')} PDF</button>
+          <button className="btn btn-success" style={{ flex: 1 }} onClick={handlePDF} disabled={generando}><Icon name="file" size={16} /> {generando ? 'Generando...' : `${isRemito ? 'Remito' : (isCotizacion ? 'Cotizacion' : 'Factura')} PDF`}</button>
           <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleWhatsApp}><Icon name="whatsapp" size={16} /> WhatsApp</button>
           <button className="btn btn-danger" onClick={clearCart} title="Eliminar" aria-label="Eliminar"><Icon name="trash" size={16} /></button>
         </div>
@@ -3402,56 +3164,84 @@ function QuotationsPage({ data, updateData }) {
 //
 // Categorias del parque: se derivan del NOMBRE del equipo, no del campo type,
 // porque type esta sin cargar en 47 de 73 equipos (dice "otro" hasta en CPAP).
-const CATEGORIAS_EQUIPO = [
+// Orden importante: la primera regla que coincide gana.
+// - Mochila antes que portatil ("mochila de oxigeno portatil" es mochila).
+// - AutoCPAP antes que CPAP (incluye "autoset" y "CPAP ... auto").
+// - BiPAP antes que AutoCPAP ("BPAP auto").
+const REGLAS_EQUIPO = [
+  { key: 'Mochilas de oxigeno', test: /mochila/i },
   { key: 'Oxigeno portatil', test: /portatil|portátil|simplygo|longfian|activox|inogen|zen-?o|kingon|freestyle|eclipse/i },
   { key: 'Concentradores', test: /concentrador/i },
   { key: 'BiPAP', test: /bipap|bpap/i },
-  { key: 'AutoCPAP', test: /auto\s*(cpap|cpp|cap)/i },
+  { key: 'AutoCPAP', test: /auto\s*(cpap|cpp|cap)|autoset|\bcpap\b.*\bauto\b/i },
   { key: 'CPAP', test: /cpap|yamind/i },
   { key: 'Ventiladores', test: /ventilador|stellar|respirador|legendair/i },
-  { key: 'Mochilas de oxigeno', test: /mochila/i },
   { key: 'Cilindros y tubos', test: /cilindro|tubo/i },
   { key: 'Aspiradores', test: /aspirador/i },
   { key: 'Tos asistida', test: /cough|tos\b/i },
 ];
+const CATEGORIAS_EQUIPO = REGLAS_EQUIPO;
 const categoriaDeEquipo = (nombre) => {
   const n = String(nombre || '');
   const hit = CATEGORIAS_EQUIPO.find(c => c.test.test(n));
   return hit ? hit.key : 'Otros';
 };
 
-// Lo facturado suma mascaras, que no estan en el parque de alquiler.
+// Lo facturado suma mascaras, que no estan en el parque de alquiler. Los EQUIPOS van
+// primero: "AutoCPAP + mascara nasal" es un AutoCPAP (antes contaba como mascara).
 // Buconasal va ANTES que nasal: la palabra buconasal contiene nasal.
-const CATEGORIAS_VENTA = [
-  { key: 'Mascara buconasal', test: /buconasal|full ?face|\bf6\b|\bf20\b|\bf2\b/i },
-  { key: 'Mascara nasal', test: /nasal|dreamwear|rescom|wisp|airfit|almohadilla|mascara/i },
-  { key: 'Oxigeno portatil', test: /portatil|portátil|simplygo|longfian|activox|inogen|zen-?o|kingon|freestyle|eclipse/i },
-  { key: 'Concentradores', test: /concentrador/i },
-  { key: 'AutoCPAP', test: /auto\s*(cpap|cpp|cap)/i },
-  { key: 'BiPAP', test: /bipap|bpap/i },
-  { key: 'CPAP', test: /cpap|yamind/i },
-  { key: 'Ventiladores', test: /ventilador|stellar|respirador|legendair/i },
-  { key: 'Mochilas de oxigeno', test: /mochila/i },
-  { key: 'Cilindros y tubos', test: /cilindro|tubo/i },
-  { key: 'Aspiradores', test: /aspirador/i },
-  { key: 'Tos asistida', test: /cough|tos\b/i },
+const REGLAS_MASCARA = [
+  { key: 'Mascara buconasal', test: /buconasal|nasobucal|oronasal|full ?face|total ?face|facial|\bf6\b|\bf20\b|\bf2\b/i },
+  { key: 'Mascara nasal', test: /nasal|dreamwear|rescom|wisp|airfit|almohadilla|pillow/i },
+  { key: 'Otras mascaras', test: /m[aá]scar(a|illa)/i },
 ];
+const CATEGORIAS_VENTA = [...REGLAS_EQUIPO, ...REGLAS_MASCARA];
+// Lo que EMPIEZA con mascara o con un accesorio ("Tubuladura para CPAP", "Mascara facial para
+// CPAP") no es el equipo que nombra despues.
+const ES_MASCARA_O_ACCESORIO = /^\s*(m[aá]scar(a|as|illa|illas)|almohadillas?|arn[eé]s|tubuladuras?|cubetas?|filtros?|termohumidificador(es)?|c[aá]nulas?|bigoteras?|fuente|bater[ií]as?|banco de bater)/i;
 const categoriaDeVenta = (nombre) => {
   const n = String(nombre || '');
+  if (ES_MASCARA_O_ACCESORIO.test(n)) {
+    const m = REGLAS_MASCARA.find(c => c.test.test(n));
+    return m ? m.key : 'Accesorios';
+  }
   const hit = CATEGORIAS_VENTA.find(c => c.test.test(n));
   return hit ? hit.key : 'Otros';
 };
 
-const mesSiguiente = (mk) => {
-  let [y, m] = mk.split('-').map(Number);
-  m++; if (m > 12) { m = 1; y++; }
-  return `${y}-${String(m).padStart(2, '0')}`;
-};
 const mesAnterior = (mk) => {
   let [y, m] = mk.split('-').map(Number);
   m--; if (m < 1) { m = 12; y--; }
   return `${y}-${String(m).padStart(2, '0')}`;
 };
+
+// Tarjeta y fila de Contabilidad (fuera del render de la pagina para no recrearlas).
+function Tarjeta({ icono, etiqueta, valor, detalle, color }) {
+  return (
+    <div className="card" style={{ padding: 16, borderTop: `4px solid ${color}` }}>
+      <div style={{ color, display: 'flex' }}>{icono}</div>
+      <div style={{ fontSize: 12, color: '#5A6978', fontWeight: 600, marginTop: 2 }}>{etiqueta}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color, lineHeight: 1.2, marginTop: 2, wordBreak: 'break-word' }}>{valor}</div>
+      {detalle && <div style={{ fontSize: 11, color: '#5A6978', marginTop: 4 }}>{detalle}</div>}
+    </div>
+  );
+}
+
+// negativo = renglon que resta (se pasa el monto en positivo). Un valor negativo tambien
+// se muestra con signo menos y en rojo (antes se veia como ganancia por el Math.abs).
+function Fila({ label, valor, negativo, fuerte, nota }) {
+  const neg = Boolean(negativo) || Number(valor) < 0;
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '7px 0', borderBottom: '1px solid #EEF3F8', gap: 10 }}>
+      <span style={{ fontSize: 13, color: fuerte ? '#0D47A1' : '#5A6978', fontWeight: fuerte ? 700 : 500 }}>
+        {label}{nota && <span style={{ fontSize: 11, color: '#90A4AE' }}> {nota}</span>}
+      </span>
+      <span style={{ fontSize: fuerte ? 16 : 14, fontWeight: fuerte ? 800 : 600, color: neg ? '#E53935' : (fuerte ? '#2E7D32' : '#0D47A1'), whiteSpace: 'nowrap' }}>
+        {neg ? '− ' : ''}{formatCurrency(Math.abs(Number(valor) || 0))}
+      </span>
+    </div>
+  );
+}
 
 function ContabilidadPage({ data, updateData }) {
   const { invoices = [], rentals = [], equipment = [], settings = {}, patients = [] } = data;
@@ -3498,28 +3288,15 @@ function ContabilidadPage({ data, updateData }) {
   // (el primer mes se cobra al iniciar). Para el MES EN CURSO se excluyen los
   // finalizados, igual que en Inicio, para que los dos numeros coincidan; en los
   // meses ya cerrados se cuentan, porque esa plata entro igual.
-  const arrancaEnMes = (r, mk) => (r.startDate || '').slice(0, 7) === mk;
+  const arrancaEnMes = (r, mk) => String(r.startDate || '').slice(0, 7) === mk;
   // Baja: finalizedAt es lo correcto, pero el campo se agrego despues y falta en
   // varios; se cae a endDate. Los que no tienen ninguna fecha quedan sin mes.
-  const mesDeBaja = (r) => String(r.finalizedAt || r.endDate || '').slice(0, 7);
-  // Un quincenal puede cobrar dos periodos en el mismo mes: se cuenta por periodos.
-  const cobradoEnMes = (r, mk) => periodosCobradosEnMes(r, mk) > 0;
 
   const alquilerCobradoDeMes = (mk) => rentals
     .reduce((s, r) => s + montoCobradoEnMes(r, mk), 0);
   // Vigente en el mes: arranco antes o durante y todavia no habia terminado. Si se
   // cobro ese mes, estaba vigente por definicion. El mes de la baja solo cuenta si
   // efectivamente se cobro, para no inventar deuda de un alquiler que ya termino.
-  const vigenteEnMes = (r, mk) => {
-    if (cobradoEnMes(r, mk)) return true;
-    const inicio = (r.startDate || '').slice(0, 7);
-    if (!inicio || inicio > mk) return false;
-    if (r.status === 'finalizado') {
-      const baja = mesDeBaja(r);
-      return !baja || baja > mk;
-    }
-    return true;
-  };
   const alquilerContratadoDeMes = (mk) => rentals
     .filter(r => vigenteEnMes(r, mk))
     .reduce((s, r) => s + (Number(r.price) || 0) * periodosContratadosEnMes(r, mk), 0);
@@ -3535,7 +3312,8 @@ function ContabilidadPage({ data, updateData }) {
     const entregas = entregasDeMes(mk);
     const gastoEnt = entregas * costoEntrega;
     const gananciaVentas = ventas * pNeto;
-    const gananciaAlquiler = Math.max(0, alquiler - gastoEnt);
+    // Sin tope en 0: si las entregas cuestan mas que lo cobrado, es perdida y se muestra.
+    const gananciaAlquiler = alquiler - gastoEnt;
     return {
       mk, ventas, alquiler, entregas, gastoEnt,
       ingreso: ventas + alquiler,
@@ -3551,14 +3329,16 @@ function ContabilidadPage({ data, updateData }) {
     const claves = [];
     invoices.forEach(i => { const k = fechaFactura(i).slice(0, 7); if (k) claves.push(k); });
     rentals.forEach(r => {
-      const k = (r.startDate || '').slice(0, 7); if (k) claves.push(k);
-      Object.keys(r.paymentStatusByMonth || {}).forEach(k2 => claves.push(k2));
+      const k = String(r.startDate || '').slice(0, 7); if (k) claves.push(k);
+      Object.keys(r.paymentStatusByMonth || {}).forEach(k2 => claves.push(String(k2).slice(0, 7)));
     });
-    if (!claves.length) return [mesActual];
-    let cursor = claves.sort()[0];
+    const validas = claves.filter(k => /^\d{4}-\d{2}$/.test(k) && k <= mesActual).sort();
+    if (!validas.length) return [mesActual];
+    // Hasta 60 meses hacia ATRAS desde hoy: antes se contaban 60 desde la clave mas vieja y
+    // una fecha mal tipeada (ej. 2020) dejaba afuera los meses recientes.
+    let cursor = mesActual;
     const out = [];
-    let guard = 0;
-    while (cursor <= mesActual && guard < 60) { out.push(cursor); cursor = mesSiguiente(cursor); guard++; }
+    while (out.length < 60 && cursor >= validas[0]) { out.unshift(cursor); cursor = mesAnterior(cursor); }
     return out;
   })();
   const serie = meses.map(resumenDeMes);
@@ -3568,7 +3348,8 @@ function ContabilidadPage({ data, updateData }) {
   const ant = resumenDeMes(mesAnterior(mes));
   const variacion = (a, b) => {
     if (!b) return { txt: a > 0 ? 'nuevo' : '—', color: a > 0 ? '#2E7D32' : '#5A6978' };
-    const pct = Math.round(((a - b) / b) * 100);
+    // Sobre el valor absoluto de la base: con una base negativa (perdida) el signo salia al reves.
+    const pct = Math.round(((a - b) / Math.abs(b)) * 100);
     return { txt: `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}%`, color: pct >= 0 ? '#2E7D32' : '#E53935' };
   };
 
@@ -3636,7 +3417,8 @@ function ContabilidadPage({ data, updateData }) {
 
   // ---- Indicadores ----
   const activos = rentals.filter(r => r.status !== 'finalizado');
-  const mrr = activos.reduce((s, r) => s + (Number(r.price) || 0), 0);
+  // MRR mensual: un quincenal cobra 2 periodos por mes.
+  const mrr = activos.reduce((s, r) => s + (Number(r.price) || 0) * (periodoDe(r) === 'quincenal' ? 2 : 1), 0);
   const ticketVenta = cantVentasDeMes(mes) ? act.ventas / cantVentasDeMes(mes) : 0;
   const mixAlquiler = act.ingreso ? Math.round((act.alquiler / act.ingreso) * 100) : 0;
   const contratado = alquilerContratadoDeMes(mes);
@@ -3651,26 +3433,6 @@ function ContabilidadPage({ data, updateData }) {
   const barW = Math.max(4, (grupoW - gap) / 2);
   const altura = (v) => Math.max(0, ((H - padY * 2) * v) / maxVal);
   const mesCorto = (mk) => formatMonthLabel(mk).slice(0, 3);
-
-  const Tarjeta = ({ icono, etiqueta, valor, detalle, color }) => (
-    <div className="card" style={{ padding: 16, borderTop: `4px solid ${color}` }}>
-      <div style={{ color, display: 'flex' }}>{icono}</div>
-      <div style={{ fontSize: 12, color: '#5A6978', fontWeight: 600, marginTop: 2 }}>{etiqueta}</div>
-      <div style={{ fontSize: 22, fontWeight: 800, color, lineHeight: 1.2, marginTop: 2, wordBreak: 'break-word' }}>{valor}</div>
-      {detalle && <div style={{ fontSize: 11, color: '#5A6978', marginTop: 4 }}>{detalle}</div>}
-    </div>
-  );
-
-  const Fila = ({ label, valor, negativo, fuerte, nota }) => (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', padding: '7px 0', borderBottom: '1px solid #EEF3F8', gap: 10 }}>
-      <span style={{ fontSize: 13, color: fuerte ? '#0D47A1' : '#5A6978', fontWeight: fuerte ? 700 : 500 }}>
-        {label}{nota && <span style={{ fontSize: 11, color: '#90A4AE' }}> {nota}</span>}
-      </span>
-      <span style={{ fontSize: fuerte ? 16 : 14, fontWeight: fuerte ? 800 : 600, color: negativo ? '#E53935' : (fuerte ? '#2E7D32' : '#0D47A1'), whiteSpace: 'nowrap' }}>
-        {negativo ? '− ' : ''}{formatCurrency(Math.abs(valor))}
-      </span>
-    </div>
-  );
 
   return (
     <div>
@@ -4040,10 +3802,14 @@ function CalendarPage({ data }) {
   const getRentalsForDay = (date) => {
     if (!date) return [];
     const dateStr = toLocalDateStr(date);
+    // endDate es el PROXIMO VENCIMIENTO, no el fin del alquiler: uno en curso sigue en curso
+    // despues de esa fecha. Un finalizado termina el dia de la baja (finalizedAt).
     return rentals.filter(r => {
-      const start = r.startDate?.split('T')[0];
-      const end = r.endDate?.split('T')[0];
-      return dateStr >= start && dateStr <= end;
+      const start = String(r.startDate || '').split('T')[0];
+      if (!start || dateStr < start) return false;
+      if (r.status !== 'finalizado') return true;
+      const fin = (r.finalizedAt ? toLocalDateStr(new Date(r.finalizedAt)) : '') || String(r.endDate || '').split('T')[0] || '';
+      return !fin || dateStr <= fin;
     });
   };
 
@@ -4051,7 +3817,7 @@ function CalendarPage({ data }) {
   const getExpiringForDay = (date) => {
     if (!date) return [];
     const dateStr = toLocalDateStr(date);
-    return rentals.filter(r => r.status !== 'finalizado' && r.endDate?.split('T')[0] === dateStr);
+    return rentals.filter(r => r.status !== 'finalizado' && String(r.endDate || '').split('T')[0] === dateStr);
   };
 
   const days = getDaysInMonth(currentDate);
@@ -4120,7 +3886,7 @@ function CalendarPage({ data }) {
                   <div className="patient-info">
                     <div className="patient-name">{patient?.name}</div>
                     <div className="patient-detail">{equip?.name}</div>
-                    {Number(rental.price) > 0 && <div className="patient-detail" style={{ fontWeight: 600 }}>{formatCurrency(rental.price)}/mes</div>}
+                    {Number(rental.price) > 0 && <div className="patient-detail" style={{ fontWeight: 600 }}>{formatCurrency(rental.price)}{periodoDe(rental) === 'quincenal' ? '/15 dias' : '/mes'}</div>}
                   </div>
                   <span className={`badge badge-${rental.status}`}>{rental.status}</span>
                 </div>
@@ -4205,8 +3971,12 @@ function SettingsPage({ data, updateData }) {
 
   const handleSave = () => {
     if (!confirm('¿Guardar los cambios de configuración?')) return;
-    // Merge sobre settings actuales para no pisar campos que el form no maneja (ej: apiKey).
-    updateData(cur => ({ ...cur, settings: { ...cur.settings, ...form } }));
+    // Solo los campos que maneja este formulario: `form` es una copia de settings de cuando
+    // se abrio la pantalla, y guardarla entera revertia la clave API regenerada o la
+    // configuracion de Contabilidad cambiada en otro dispositivo.
+    const CAMPOS = ['companyName', 'companyPhone', 'companyAddress', 'monthlyRentalPrice', 'dailyRentalPrice'];
+    const cambios = Object.fromEntries(CAMPOS.filter(k => k in form).map(k => [k, form[k]]));
+    updateData(cur => ({ ...cur, settings: { ...cur.settings, ...cambios } }));
     alert('Configuración guardada');
   };
 
@@ -4293,18 +4063,21 @@ function SettingsPage({ data, updateData }) {
           const worksheet = workbook.Sheets[sheetName];
           const excelData = XLSX.utils.sheet_to_json(worksheet);
           
-          const { patients: newPatients, equipment: newEquipment, rentals: newRentals } = parseExcelData(excelData, patients, equipment);
+          const { patients: newPatients, equipment: newEquipment, rentals: newRentals } = parseExcelData(excelData, patients, equipment, rentals);
 
           if (!confirm(`¿Importar ${newPatients.length} pacientes, ${newEquipment.length} equipos y ${newRentals.length} alquileres del Excel?`)) {
             setImporting(false);
             return;
           }
 
-          const allPatients = [...patients, ...newPatients];
-          const allEquipment = [...equipment, ...newEquipment];
-          const allRentals = [...rentals, ...newRentals];
-
-          updateData(cur => ({ ...cur, patients: allPatients, equipment: allEquipment, rentals: allRentals }));
+          // Se suma sobre el estado ACTUAL (cur): armarlo con las listas del render pisaba
+          // cualquier cambio que entrara mientras tanto (otro dispositivo, normalizacion de Inicio).
+          updateData(cur => ({
+            ...cur,
+            patients: [...cur.patients, ...newPatients],
+            equipment: [...cur.equipment, ...newEquipment],
+            rentals: [...cur.rentals, ...newRentals],
+          }));
 
           alert(`Importados: ${newPatients.length} pacientes, ${newEquipment.length} equipos, ${newRentals.length} alquileres`);
         } catch (err) {
@@ -4320,19 +4093,6 @@ function SettingsPage({ data, updateData }) {
       console.error(err);
       alert('Error al leer el archivo');
       setImporting(false);
-    }
-  };
-
-  const handleClear = () => {
-    if (confirm('¿Borrar todos los datos? Esta acción no se puede deshacer.')) {
-      updateData({
-        patients: [],
-        equipment: [],
-        rentals: [],
-        quotations: [],
-        settings: data.settings
-      });
-      alert('Datos borrados');
     }
   };
 
@@ -4447,7 +4207,6 @@ function SettingsPage({ data, updateData }) {
         </div>
       </div>
 
-      <button className="btn btn-danger btn-block" onClick={handleClear}><Icon name="trash" size={16} /> Borrar todos los datos</button>
     </div>
   );
 }
@@ -4628,6 +4387,7 @@ function DescartablesPage({ data, updateData }) {
   const { descartables } = data;
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [editOriginal, setEditOriginal] = useState(null); // como estaba al abrir el formulario
   const [filter, setFilter] = useState('todos');
   const [search, setSearch] = useState('');
 
@@ -4669,8 +4429,10 @@ function DescartablesPage({ data, updateData }) {
       id: form.id || generateId(),
       updatedAt: getToday()
     };
+    if (!String(newItem.name || '').trim()) { alert('Ingresá el nombre del producto'); return; }
     if (!confirm(editing ? `¿Guardar los cambios de "${newItem.name}"?` : `¿Agregar el producto "${newItem.name}"?`)) return;
-    updateData(cur => ({ ...cur, descartables: editing ? cur.descartables.map(d => d.id === editing ? newItem : d) : [...cur.descartables, newItem] }));
+    const original = editing ? editOriginal : null;
+    updateData(cur => ({ ...cur, descartables: editing ? cur.descartables.map(d => d.id === editing ? conStockActual(original, newItem, d) : d) : [...cur.descartables, newItem] }));
     setForm(defaultItem);
     setShowForm(false);
     setEditing(null);
@@ -4678,6 +4440,7 @@ function DescartablesPage({ data, updateData }) {
 
   const handleEdit = (item) => {
     setForm(item);
+    setEditOriginal(item);
     setEditing(item.id);
     setShowForm(true);
   };
@@ -4837,8 +4600,14 @@ function FacturacionReportes({ data }) {
 
   const hoy = getToday();
   const primerDiaMes = hoy.slice(0, 7) + '-01';
-  const [desde, setDesde] = useState(primerDiaMes);
-  const [hasta, setHasta] = useState(hoy);
+  const [desdeInput, setDesde] = useState(primerDiaMes);
+  const [hastaInput, setHasta] = useState(hoy);
+  // Rango valido para los calculos: fechas completas y desde <= hasta; si no, el mes actual
+  // (antes un "Desde" vacio armaba cientos de meses basura y los totales no coincidian).
+  const FECHA_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const rangoOk = FECHA_RE.test(desdeInput) && FECHA_RE.test(hastaInput) && desdeInput <= hastaInput && desdeInput >= '2000-01-01';
+  const desde = rangoOk ? desdeInput : primerDiaMes;
+  const hasta = rangoOk ? hastaInput : hoy;
 
   const invDate = (inv) => (inv.date || inv.createdAt || '').slice(0, 10);
   const facturadosPeriodo = invoices.filter(inv => {
@@ -4850,9 +4619,11 @@ function FacturacionReportes({ data }) {
   const ventasPorMes = (mk) => invoices
     .filter(inv => invDate(inv).slice(0, 7) === mk)
     .reduce((s, inv) => s + Number(inv.total || 0), 0);
+  // Misma cifra que el "contratado" de Contabilidad: vigentes en el mes (incluye morosos y
+  // meses pasados de alquileres ya dados de baja) x periodos del mes (un quincenal cobra 2).
   const alquiladoPorMes = (mk) => rentals
-    .filter(r => isRentalInMonth(r, mk))
-    .reduce((s, r) => s + Number(r.price || 0), 0);
+    .filter(r => vigenteEnMes(r, mk))
+    .reduce((s, r) => s + Number(r.price || 0) * periodosContratadosEnMes(r, mk), 0);
 
   // Meses dentro del periodo elegido (por defecto, solo el mes en curso).
   const meses = (() => {
@@ -4860,7 +4631,8 @@ function FacturacionReportes({ data }) {
     let [y, m] = desde.slice(0, 7).split('-').map(Number);
     const [ey, em] = hasta.slice(0, 7).split('-').map(Number);
     let guard = 0;
-    while ((y < ey || (y === ey && m <= em)) && guard < 24) {
+    // Todo el rango elegido (antes se cortaba a 24 meses y no coincidia con lo facturado).
+    while ((y < ey || (y === ey && m <= em)) && guard < 600) {
       out.push(`${y}-${String(m).padStart(2, '0')}`);
       m++; if (m > 12) { m = 1; y++; }
       guard++;
@@ -4879,7 +4651,7 @@ function FacturacionReportes({ data }) {
   const ant = { mk: prevMk, alquilado: alquiladoPorMes(prevMk), ventas: ventasPorMes(prevMk) };
   const variacion = (a, b) => {
     if (!b) return a > 0 ? { txt: 'nuevo', up: true } : { txt: '—', up: null };
-    const pct = Math.round(((a - b) / b) * 100);
+    const pct = Math.round(((a - b) / Math.abs(b)) * 100);
     return { txt: `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}%`, up: pct >= 0 };
   };
   const vAlq = variacion(act.alquilado, ant.alquilado);
@@ -4898,11 +4670,11 @@ function FacturacionReportes({ data }) {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Desde</label>
-            <input type="date" className="form-input" value={desde} max={hasta} onChange={e => setDesde(e.target.value)} />
+            <input type="date" className="form-input" value={desdeInput} max={hastaInput} onChange={e => setDesde(e.target.value)} />
           </div>
           <div className="form-group" style={{ margin: 0 }}>
             <label className="form-label">Hasta</label>
-            <input type="date" className="form-input" value={hasta} min={desde} onChange={e => setHasta(e.target.value)} />
+            <input type="date" className="form-input" value={hastaInput} min={desdeInput} onChange={e => setHasta(e.target.value)} />
           </div>
           <button className="btn btn-secondary" onClick={() => { setDesde(primerDiaMes); setHasta(hoy); }}>Mes actual</button>
         </div>
