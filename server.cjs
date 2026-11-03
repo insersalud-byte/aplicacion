@@ -354,7 +354,15 @@ async function handleApi(req, res, pathname) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = decodeURIComponent(url.pathname);
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    // URL mal codificada: antes tiraba el servidor entero.
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('URL invalida');
+    return;
+  }
 
   try {
     if (pathname.startsWith('/api/')) {
@@ -362,9 +370,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    let filePath = path.join(DIST_DIR, pathname === '/' ? 'index.html' : pathname);
+    let filePath = path.resolve(DIST_DIR, '.' + (pathname === '/' ? '/index.html' : pathname));
+    // Nada fuera de dist/ (con %2e%2e%2f se podia leer cualquier archivo de la PC).
+    if (filePath !== DIST_DIR && !filePath.startsWith(path.resolve(DIST_DIR) + path.sep)) {
+      filePath = path.join(DIST_DIR, 'index.html');
+    }
 
-    if (!fs.existsSync(filePath)) {
+    if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
       filePath = path.join(DIST_DIR, 'index.html');
     }
 

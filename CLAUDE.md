@@ -14,7 +14,7 @@
 - Supabase es la UNICA fuente de verdad. Tabla `inser_app_data`, fila id=1, columna JSON `data`.
 - URL: https://gvharyztavhugqiaihjq.supabase.co
 - `loadData()` lee SIEMPRE de Supabase; localStorage es solo cache offline.
-- `saveData()` escribe a Supabase y luego cachea local.
+- `saveData(next, prev)` sube la diferencia prev -> next a Supabase y cachea local.
 
 ### Acceso con contraseña (desde 13-oct-2026)
 - La tabla `inser_app_data` NO tiene acceso anonimo (se quito la politica `anon_full_access`): con la clave publica no se lee ni se escribe. NUNCA volver a abrirla ni leerla/escribirla con `fetch` directo a `/rest/v1/inser_app_data`.
@@ -45,6 +45,13 @@
 - "Eliminar" un alquiler en curso, o finalizado con remito pendiente, pide una confirmacion explicita. Se dejo a proposito (sirve para alquileres cargados por error).
 - `updateData` lanza un error claro si no hay datos cargados (sesion vencida) y no guarda si el updater devuelve el mismo estado.
 - En Alquileres se quito el bloque "Por vencer" de arriba (ocupaba mucho lugar); queda "Vencen hoy". Los por vencer se ven en Inicio.
+
+### Auditoria de logica (3-nov-2026)
+- Logica pura separada y con tests (`npm test`, node --test): `src/data/periodos.js` (vencimientos, normalizacion de Inicio `normalizarAlquiler`, cobrado/contratado/vigente por mes, baja en hora local), `src/data/stock.js` (precio mensual de alquiler, stock de ventas), `src/data/fechas.js`. Tests en `tests/` (periodos, bajas, stock, sync).
+- Sincronizacion (database.js): cada cambio es un PASO con id y solo la DIFERENCIA (registros nuevos/editados, ids borrados, claves de settings). Se sube aplicandolo sobre lo que hay AHORA en la base (`saveData(next, prev)` desde updateData). La base guarda los ultimos ids aplicados en `settings._pasosAplicados`: un paso repetido (respuesta perdida, pestana adoptada) no se vuelve a aplicar. Pasos sin subir por pestana en localStorage (`insersalud_pend_<tab>`, latido `insersalud_vivo_<tab>`); los de pestanas cerradas o muertas se suben al reabrir o en el latido. Un ciclo a la vez en todo el navegador (navigator.locks). Pantalla = base + mis pasos sin subir. Solo 400/409/422 descartan un paso; el resto se reintenta. Cada llamada a la base tiene tope de tiempo (20 s, app_save 60 s). Antes de escribir se vuelve a mirar la version (app_ts). Limite: app_save no tiene compare-and-set (se cierra agregando un parametro con el updated_at esperado). Escenarios en tests/sync-escenarios*.test.js.
+- Regla unica de meses: `vigenteEnMes` (Inicio, Contabilidad y Reportes). El periodo de alta cuenta SIEMPRE en su mes. Contratado >= cobrado. Un quincenal dado de baja no cuenta vencimientos posteriores a la baja. Un finalizado sin fecha de baja solo cuenta en meses que cobro. MRR: quincenal x2. Ganancia de alquiler sin piso en 0. Categorias: equipos primero; lo que empieza con mascara/accesorio va por mascaras.
+- Facturas: cada item guarda `_descontado` (stock que realmente desconto); editar/borrar devuelve eso. Equipos nuevos tambien descuentan stock. Editar un documento conserva numero y fecha.
+- Pendiente de replicar en `contabilidad.py` de Santi: todas las reglas del punto anterior (alta siempre, vigenteEnMes, baja local, contratado por baja/>= cobrado, MRR, ganancia, categorias).
 
 ### Flujo de deploy
 editar src/ -> `npm run build` -> `git add` (codigo fuente) -> commit -> `git push origin main` -> verificar en produccion con Ctrl+F5.

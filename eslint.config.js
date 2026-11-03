@@ -6,6 +6,11 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
   globalIgnores(['dist']),
+  // Codigo que corre en node (config, API de Vercel, tests): tiene process, Buffer, etc.
+  {
+    files: ['vite.config.js', 'api/**/*.js', 'tests/**/*.js', 'server.cjs'],
+    languageOptions: { globals: { ...globals.node } },
+  },
   {
     files: ['**/*.{js,jsx}'],
     extends: [
