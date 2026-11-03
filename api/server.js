@@ -1,4 +1,3 @@
-/* global Buffer, process */
 // Funcion serverless de Vercel. vercel.json reescribe /api/* hacia aca.
 // Usos:
 //  1) Proxy de imagenes para los PDF: GET /api/server?img=<url>
@@ -39,6 +38,14 @@ function hoyArgentina() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Cordoba' }).format(new Date());
 }
 
+// Dia (YYYY-MM-DD) en hora argentina de un instante ISO. Vacio si no hay fecha valida.
+function fechaLocal(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso).slice(0, 10);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Cordoba' }).format(d);
+}
+
 function diasEntre(desde, hasta) {
   const a = new Date(`${desde}T00:00:00Z`);
   const b = new Date(`${hasta}T00:00:00Z`);
@@ -68,7 +75,14 @@ async function getAuthorizedData(req, res) {
     res.status(502).json({ error: 'No se pudo leer la base de datos' });
     return null;
   }
-  return (await dbRes.json()) || {};
+  const json = await dbRes.json().catch(() => null);
+  // Clave invalida o sin configurar: la base devuelve null. Antes se respondia 200 con
+  // datos vacios y Santi informaba "nada vencido".
+  if (!json || typeof json !== 'object') {
+    res.status(403).json({ error: 'Clave API invalida' });
+    return null;
+  }
+  return json;
 }
 
 // Mismo criterio que la app (primerVencimientoImpago en App.jsx): el pago de un
@@ -91,14 +105,16 @@ function mesSiguiente(fecha, diaInicio) {
   return `${y}-${String(m).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
 }
 
-function vencimientoEfectivo(r, hoy) {
+function vencimientoEfectivo(r) {
   let d = r.endDate || '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
   const quincenal = r.period === 'quincenal';
   const pagos = r.paymentStatusByMonth || {};
-  const diaInicio = Number(String(r.startDate || '').slice(8, 10)) || Number(d.slice(8, 10));
+  // Dia de inicio solo de una fecha valida (con un formato viejo tomaba cualquier numero).
+  const diaInicio = (/^\d{4}-\d{2}-\d{2}$/.test(String(r.startDate || '')) ? Number(r.startDate.slice(8, 10)) : 0) || Number(d.slice(8, 10));
   let guard = 0;
-  while (d <= hoy && guard < 400) {
+  // Igual que la app: salta tambien los periodos pagados por adelantado.
+  while (guard < 400) {
     const clave = quincenal ? d : d.slice(0, 7);
     if (!pagos[clave]?.paid) break;
     d = quincenal ? sumarDias(d, 15) : mesSiguiente(d, diaInicio);
@@ -116,7 +132,7 @@ async function handleVencimientos(req, res) {
   const equipment = data.equipment || [];
   const rentals = (data.rentals || []).map((r) => {
     if (r.status === 'finalizado' || !r.endDate) return r;
-    const endDate = vencimientoEfectivo(r, hoy);
+    const endDate = vencimientoEfectivo(r);
     return { ...r, endDate, status: endDate <= hoy ? 'vencido' : 'activo' };
   });
 
@@ -141,7 +157,9 @@ async function handleVencimientos(req, res) {
     };
   };
 
-  const activos = rentals.filter((r) => r.status !== 'finalizado' && r.endDate);
+  // Solo vencimientos con fecha valida (YYYY-MM-DD), igual que la app: un formato viejo
+  // ("15/03/2026") se comparaba como texto y caia en cualquier lista.
+  const activos = rentals.filter((r) => r.status !== 'finalizado' && /^\d{4}-\d{2}-\d{2}$/.test(String(r.endDate || '')));
   const vencidos = activos.filter((r) => r.endDate < hoy).map(item)
     .sort((a, b) => a.fecha_vencimiento.localeCompare(b.fecha_vencimiento));
   const vencenHoy = activos.filter((r) => r.endDate === hoy).map(item);
@@ -177,17 +195,26 @@ async function handlePrecios(req, res) {
   const mascaras = data.mascaras || [];
   const rentals = data.rentals || [];
 
-  // Precio de alquiler de un equipo: campo propio -> alquiler activo del mismo
-  // equipo -> alquiler de otro equipo con el mismo nombre (mismo criterio que la app).
+  // Precio MENSUAL de alquiler (MISMO criterio que precioMensualEquipo en App.jsx):
+  // propio -> alquiler mensual del equipo (primero en curso) -> otro equipo con el mismo
+  // nombre y precio propio -> alquiler mensual de otro equipo con el mismo nombre.
+  // Los quincenales no cuentan: su precio es por 15 dias.
+  const esMensual = (r) => r.period !== 'quincenal';
+  const mensualCon = (pred) => {
+    const cands = rentals.filter((r) => pred(r) && esMensual(r) && Number(r.price) > 0);
+    const r = cands.find((x) => x.status !== 'finalizado') || cands[0];
+    return r ? Number(r.price) : 0;
+  };
   const precioAlquiler = (e) => {
     if (Number(e.rentalPrice) > 0) return Number(e.rentalPrice);
-    const r = rentals.find((x) => x.equipmentId === e.id && x.status !== 'finalizado' && Number(x.price) > 0);
-    if (r) return Number(r.price);
-    const r2 = rentals.find((x) => {
-      const re = equipment.find((q) => q.id === x.equipmentId);
-      return re && re.name === e.name && Number(x.price) > 0;
-    });
-    return r2 ? Number(r2.price) : 0;
+    const propio = mensualCon((r) => r.equipmentId === e.id);
+    if (propio) return propio;
+    if (!e.name) return 0;
+    const mismoNombre = equipment.filter((q) => q.id !== e.id && q.name === e.name);
+    const conPrecio = mismoNombre.find((q) => Number(q.rentalPrice) > 0);
+    if (conPrecio) return Number(conPrecio.rentalPrice);
+    const ids = new Set(mismoNombre.map((q) => q.id));
+    return mensualCon((r) => ids.has(r.equipmentId));
   };
 
   const equipos_alquiler = equipment
@@ -268,7 +295,7 @@ async function handleContabilidad(req, res) {
       inicio: txt(r.startDate),
       vencimiento: txt(r.endDate),
       estado: txt(r.status),
-      baja: txt(r.finalizedAt).slice(0, 10),
+      baja: fechaLocal(r.finalizedAt), // dia de la baja en hora de Argentina (finalizedAt es UTC)
       pagos: r.paymentStatusByMonth || {},
       notas: txt(r.notes),
     };
@@ -354,7 +381,26 @@ async function handleImageProxy(req, res) {
   }
 
   try {
-    const upstream = await fetch(target.href, { redirect: 'follow' });
+    // Se siguen redirecciones solo hacia hosts permitidos (un redirect abierto de un host
+    // permitido llevaba a cualquier destino).
+    let upstream = null;
+    let actual = target;
+    for (let saltos = 0; saltos < 4; saltos++) {
+      upstream = await fetch(actual.href, { redirect: 'manual' });
+      if (upstream.status < 300 || upstream.status >= 400) break;
+      const loc = upstream.headers.get('location');
+      if (!loc) break;
+      actual = new URL(loc, actual);
+      if (actual.protocol !== 'https:' || !ALLOWED_HOSTS.has(actual.host)) {
+        res.status(403).json({ error: 'Redireccion a host no permitido' });
+        return;
+      }
+      upstream = null;
+    }
+    if (!upstream) {
+      res.status(502).json({ error: 'Demasiadas redirecciones' });
+      return;
+    }
     if (!upstream.ok) {
       res.status(502).json({ error: `Upstream ${upstream.status}` });
       return;
@@ -364,13 +410,23 @@ async function handleImageProxy(req, res) {
       res.status(415).json({ error: 'No es una imagen' });
       return;
     }
+    const MAX = 8 * 1024 * 1024; // tope: una foto de producto no pesa mas que esto
+    if (Number(upstream.headers.get('content-length') || 0) > MAX) {
+      res.status(413).json({ error: 'Imagen demasiado grande' });
+      return;
+    }
     const buf = Buffer.from(await upstream.arrayBuffer());
+    if (buf.length > MAX) {
+      res.status(413).json({ error: 'Imagen demasiado grande' });
+      return;
+    }
     res.setHeader('Content-Type', contentType);
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=604800');
     res.status(200).send(buf);
   } catch (e) {
-    res.status(502).json({ error: 'Error bajando imagen', detail: String(e?.message || e) });
+    console.error('Proxy de imagen:', e);
+    res.status(502).json({ error: 'Error bajando imagen' });
   }
 }
 
