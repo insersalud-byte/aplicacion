@@ -1,4 +1,4 @@
-import { seedEquiposNuevos } from './seedEquiposNuevos';
+import { seedEquiposNuevos } from './seedEquiposNuevos.js';
 
 const STORAGE_KEY = 'insersalud_db';
 const STORAGE_TS_KEY = 'insersalud_db_ts';
@@ -38,26 +38,43 @@ class AuthError extends Error {
   constructor() { super('Sesion vencida: hay que ingresar la contraseña'); this.code = 'AUTH'; }
 }
 
+// Tope de tiempo por llamada: una peticion colgada (red movil) dejaba la sincronizacion
+// trabada para siempre en todas las pestanas.
+const TOPE_RPC_MS = { app_save: 60000 };
 async function rpc(fn, args) {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
-    method: 'POST',
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(args),
+  const tope = globalThis.__insersaludTopeRpcMs || TOPE_RPC_MS[fn] || 20000; // el global es solo para tests
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  let timer;
+  const vencido = new Promise((_, rej) => {
+    timer = setTimeout(() => { try { ctrl?.abort(); } catch { /* noop */ } rej(new Error(`Sin respuesta de la base (${fn})`)); }, tope);
   });
-  if (response.status === 401 || response.status === 403) {
-    setSessionToken('');
-    queueMicrotask(() => _authListeners.forEach(f => f()));
-    throw new AuthError();
+  try {
+    const response = await Promise.race([fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(args),
+      ...(ctrl ? { signal: ctrl.signal } : {}),
+    }), vencido]);
+    if (response.status === 401 || response.status === 403) {
+      setSessionToken('');
+      queueMicrotask(() => _authListeners.forEach(f => f()));
+      throw new AuthError();
+    }
+    // El cuerpo tambien se lee dentro del tope (una respuesta cortada a mitad colgaba el ciclo).
+    if (!response.ok) {
+      const text = await Promise.race([response.text().catch(() => ''), vencido]);
+      const err = new Error(`Supabase ${fn} ${response.status}: ${text}`);
+      err.status = response.status;
+      throw err;
+    }
+    return await Promise.race([response.json(), vencido]);
+  } finally {
+    clearTimeout(timer);
   }
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Supabase ${fn} ${response.status}: ${text}`);
-  }
-  return response.json();
 }
 
 // Devuelve { ok: true } o { ok: false, error: 'clave_incorrecta' | 'demasiados_intentos' | 'sin_conexion' }.
@@ -81,20 +98,26 @@ export async function logout() {
   const token = getSessionToken();
   setSessionToken('');
   try { if (token) await rpc('app_logout', { p_token: token }); } catch { /* igual queda cerrada en este navegador */ }
+  // Los cambios sin subir quedan en memoria y guardados en el navegador, y se suben al volver
+  // a ingresar (sin sesion, el ciclo no puede subirlos: falla y quedan pendientes). Antes se
+  // vaciaban aca y un ciclo en vuelo, al terminar, borraba la copia guardada.
   try {
-    if (localStorage.getItem(DIRTY_KEY) !== '1') {
+    if (!hayCambiosSinSubir()) {
       localStorage.removeItem(STORAGE_KEY);
       localStorage.removeItem(STORAGE_TS_KEY);
-      localStorage.removeItem(BASE_KEY);
     }
   } catch { /* noop */ }
   _baseState = null;
-  _pendingLocal = null;
   _lastRemoteTs = null;
+  _ultimaVista = null;
 }
 
 export function hayCambiosSinSubir() {
-  try { return localStorage.getItem(DIRTY_KEY) === '1'; } catch { return false; }
+  if (_pasos.length) return true;
+  try {
+    if (localStorage.getItem(DIRTY_KEY)) return true; // marca de una version anterior
+    return clavesPendientes().length > 0;
+  } catch { return false; }
 }
 
 // Devuelve { ok } o { ok: false, error: 'clave_actual_incorrecta' | 'clave_muy_corta' | ... }.
@@ -247,19 +270,15 @@ function cacheLocal(data) {
 
 // ============================================================================
 // MERGE 3-VIAS POR REGISTRO (anti-clobber multi-dispositivo)
-// El estado es un unico blob, pero al guardar NO se pisa entero: se fusiona
-// base (ultimo estado sincronizado) + mine (mi estado local) + remote (lo que
-// hay ahora en la base). Asi dos dispositivos editando registros distintos al
-// mismo tiempo conservan AMBOS cambios, y un borrado real no reaparece.
+// El estado es un unico blob, pero al guardar NO se pisa entero: se aplican sobre
+// lo que hay AHORA en la base solo MIS cambios, medidos contra el estado del que
+// salio la edicion (prev -> next). Asi dos dispositivos editando registros
+// distintos conservan AMBOS cambios, un borrado ajeno no revive y un alta ajena
+// no se borra. (Esto no es el viejo "merge local+remoto" al cargar: al cargar
+// manda siempre la base.)
 // ============================================================================
 
 const COLLECTIONS = ['patients', 'equipment', 'rentals', 'quotations', 'remitos', 'descartables', 'mascaras', 'invoices', 'equiposNuevos'];
-
-let _baseState = null;                 // ultimo estado confirmado en la base (base del merge)
-let _pendingLocal = null;              // cambios locales aun no confirmados (para reintentar)
-let _writeChain = Promise.resolve();   // serializa escrituras: nunca se pisan ni reordenan
-let _writesInFlight = 0;               // guardados en curso: mientras haya, no se pisa la pantalla
-let _lastRemoteTs = null;              // updated_at que ya aplicamos (para detectar cambios ajenos)
 
 const _dataListeners = new Set();
 // Permite que la app reaccione cuando un merge trae cambios de otros dispositivos.
@@ -277,28 +296,34 @@ function indexById(arr) {
   return m;
 }
 
-// Merge 3-vias de una coleccion por id.
-function mergeCollection(base, mine, remote) {
+// Aplica sobre `remote` los cambios de una coleccion entre `base` (de donde sali) y
+// `mine` (adonde llegue). Lo que no toque queda como esta en remoto: si alguien lo
+// borro, sigue borrado; si alguien lo agrego o edito, se conserva.
+// conBorrados=false: sin base confiable no se borra nada (solo altas/ediciones).
+function mergeCollection(base, mine, remote, conBorrados = true) {
   const baseM = indexById(base);
   const mineM = indexById(mine);
-  const result = indexById(remote); // partir de la base remota (incluye cambios de otros dispositivos)
-
-  // 1. Borrados que hice yo: estaban en base y ya no estan en mine -> borrar de verdad.
-  for (const id of baseM.keys()) {
-    if (!mineM.has(id)) result.delete(id);
+  const result = indexById(remote);
+  if (conBorrados) {
+    for (const id of baseM.keys()) {
+      if (!mineM.has(id)) result.delete(id); // lo borre yo
+    }
   }
-  // 2. Altas/ediciones mias: gana mi version SOLO en los registros que toque.
   for (const [id, rec] of mineM) {
     const baseRec = baseM.get(id);
-    const changedByMe = !baseRec || JSON.stringify(baseRec) !== JSON.stringify(rec);
-    if (changedByMe) {
-      result.set(id, rec);        // yo lo cree o edite -> mi version manda
-    } else if (!result.has(id)) {
-      result.set(id, rec);        // no lo toque pero falta en remoto -> conservarlo
-    }
-    // no lo toque y existe en remoto -> queda la version remota (toma ediciones ajenas)
+    if (!baseRec || JSON.stringify(baseRec) !== JSON.stringify(rec)) result.set(id, rec); // lo cree o edite yo
   }
-  return Array.from(result.values());
+  // Mantener el orden: primero el de remoto, despues las altas mias.
+  const orden = [...indexById(remote).keys(), ...mineM.keys()];
+  const vistos = new Set();
+  const out = [];
+  for (const id of orden) {
+    if (vistos.has(id) || !result.has(id)) continue;
+    vistos.add(id); out.push(result.get(id));
+  }
+  // Registros sin id (no deberia haber) quedan como estan en mine.
+  (Array.isArray(mine) ? mine : []).forEach(x => { if (x && x.id == null) out.push(x); });
+  return out;
 }
 
 // Settings a nivel campo: gana mi valor solo en los campos que cambie.
@@ -311,38 +336,324 @@ function mergeSettings(base = {}, mine = {}, remote = {}) {
   return out;
 }
 
-function mergeStates(base, mine, remote) {
+export function mergeStates(base, mine, remote, conBorrados = true) {
   const out = { ...remote };
   for (const c of COLLECTIONS) {
-    out[c] = mergeCollection(base?.[c], mine?.[c], remote?.[c]);
+    out[c] = mergeCollection(base?.[c], mine?.[c], remote?.[c], conBorrados);
   }
   out.settings = mergeSettings(base?.settings, mine?.settings, remote?.settings);
   return normalizeData(out);
 }
 
-// Si quedaron cambios locales sin subir (la app se cerro sin internet), los
-// fusiona contra lo que hay ahora en la base y los sube. Devuelve el estado
-// final, o null si no habia nada pendiente.
-async function flushDirtyLocal(remoteData) {
-  let dirty = false;
-  try { dirty = localStorage.getItem(DIRTY_KEY) === '1'; } catch (e) { /* noop */ }
-  if (!dirty) return null;
+function leerJSON(key) {
+  try { const raw = localStorage.getItem(key); return raw ? normalizeData(JSON.parse(raw)) : null; } catch { return null; }
+}
 
-  const mine = loadLocalData(); // estado local con los cambios sin subir
-  let base = remoteData;         // fallback conservador si no tenemos base guardada
+// ============================================================================
+// SINCRONIZACION
+// - Cada cambio de la pantalla es un PASO { prev, next }: lo que habia y lo que quedo.
+//   Se sube aplicando la diferencia prev -> next sobre lo que hay AHORA en la base.
+// - Los pasos sin subir de cada pestana se guardan en localStorage (insersalud_pend_<tab>),
+//   asi nada queda solo en la pantalla: si la pestana se cierra o se corta internet, el
+//   proximo arranque (o otra pestana, si esta murio) los sube.
+// - Todo lo que lee y escribe la base pasa por UN ciclo a la vez en todo el navegador
+//   (navigator.locks), asi dos pestanas no se pisan entre si.
+// - La pantalla se actualiza con: lo que quedo en la base + mis pasos que todavia no subieron.
+// Limite: app_save no tiene compare-and-set. Antes de escribir se vuelve a mirar la version
+// de la base (y se rehace la mezcla si cambio), pero entre esa mirada y la escritura queda
+// una ventana chica entre DISPOSITIVOS distintos. Se cierra del todo agregando a app_save
+// un parametro con el updated_at esperado.
+// ============================================================================
+
+const TAB_ID = Math.random().toString(36).slice(2);
+const PEND_PREFIX = 'insersalud_pend_';
+const VIVO_PREFIX = 'insersalud_vivo_';
+const VIVO_VENCE_MS = 2 * 60 * 1000;
+
+let _baseState = null;          // ultimo estado confirmado en la base
+let _lastRemoteTs = null;       // su updated_at
+let _pasos = [];                // mis cambios sin subir, en orden
+let _persistido = false;        // _pasos esta guardado en localStorage
+let _enCurso = 0;               // ciclos encolados o corriendo
+let _cadena = Promise.resolve();
+let _ultimaVista = null;        // ultimo estado que mostro la pantalla (para no emitir de mas)
+
+// ── Pasos como DIFERENCIA ──────────────────────────────────────────────────
+// Un paso guarda solo lo que cambio: por coleccion, los registros nuevos/editados (upsert) y
+// los ids borrados (remove), y las claves de settings cambiadas. Pesa poco (antes se guardaban
+// dos copias enteras de los datos por paso y el localStorage se llenaba en ~14 cambios).
+// Cada paso tiene un id: la base guarda los ultimos aplicados en settings._pasosAplicados y un
+// paso que ya figura NO se vuelve a aplicar (respuesta perdida, pestana adoptada, reintento).
+const CLAVE_APLICADOS = '_pasosAplicados';
+const MAX_APLICADOS = 400;
+export function calcularDiff(prev, next) {
+  const d = { c: {}, s: {} };
+  for (const c of COLLECTIONS) {
+    const antes = indexById(prev ? prev[c] : []);
+    const despues = Array.isArray(next[c]) ? next[c] : [];
+    const upsert = despues.filter(r => {
+      if (!r || r.id == null) return false;
+      const b = antes.get(r.id);
+      return !b || (b !== r && JSON.stringify(b) !== JSON.stringify(r));
+    });
+    const ids = new Set(despues.filter(r => r && r.id != null).map(r => r.id));
+    const remove = prev ? [...antes.keys()].filter(id => !ids.has(id)) : [];
+    if (upsert.length || remove.length) d.c[c] = { upsert, remove };
+  }
+  const sp = (prev && prev.settings) || {};
+  const sn = next.settings || {};
+  for (const k of Object.keys(sn)) {
+    if (k === CLAVE_APLICADOS) continue;
+    if (!prev || JSON.stringify(sp[k]) !== JSON.stringify(sn[k])) d.s[k] = sn[k];
+  }
+  return d;
+}
+export function aplicarDiff(d, estado) {
+  const out = { ...estado };
+  for (const [c, { upsert = [], remove = [] }] of Object.entries(d.c || {})) {
+    const fuera = new Set(remove);
+    const nuevos = new Map(upsert.map(r => [r.id, r]));
+    const lista = (Array.isArray(estado[c]) ? estado[c] : []).filter(r => !(r && fuera.has(r.id))).map(r => (r && nuevos.has(r.id) ? nuevos.get(r.id) : r));
+    const ya = new Set(lista.map(r => r && r.id));
+    for (const r of upsert) if (!ya.has(r.id)) lista.push(r);
+    out[c] = lista;
+  }
+  if (d.s && Object.keys(d.s).length) out.settings = { ...(estado.settings || {}), ...d.s };
+  return normalizeData(out);
+}
+// Hash corto (FNV-1a de 32 bits) para ids estables.
+function hashTexto(t) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36);
+}
+const nuevoIdPaso = () => TAB_ID + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+// Aplica pasos sobre `sobre` salteando los ya aplicados en la base. marcar=true anota sus ids.
+function aplicarPasos(pasos, sobre, marcar = false) {
+  const previos = Array.isArray(sobre.settings?.[CLAVE_APLICADOS]) ? sobre.settings[CLAVE_APLICADOS] : [];
+  const hechos = new Set(previos);
+  let s = sobre;
+  const nuevos = [];
+  for (const p of pasos) {
+    if (hechos.has(p.id)) continue;
+    s = aplicarDiff(p.d, s);
+    hechos.add(p.id); nuevos.push(p.id);
+  }
+  if (marcar && nuevos.length) s = { ...s, settings: { ...s.settings, [CLAVE_APLICADOS]: [...previos, ...nuevos].slice(-MAX_APLICADOS) } };
+  return s;
+}
+const pasoValido = (p) => p && p.id && p.d && typeof p.d === 'object';
+
+function clavesPendientes() {
+  const out = [];
   try {
-    const baseRaw = localStorage.getItem(BASE_KEY);
-    if (baseRaw) base = normalizeData(JSON.parse(baseRaw));
-  } catch (e) { /* noop */ }
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(PEND_PREFIX)) out.push(k);
+    }
+  } catch { /* noop */ }
+  return out;
+}
+function marcarVivo() {
+  try { localStorage.setItem(VIVO_PREFIX + TAB_ID, String(Date.now())); } catch { /* noop */ }
+}
+function guardarMisPasos() {
+  try {
+    if (_pasos.length) localStorage.setItem(PEND_PREFIX + TAB_ID, JSON.stringify({ pasos: _pasos, t: Date.now() }));
+    else localStorage.removeItem(PEND_PREFIX + TAB_ID);
+    _persistido = _pasos.length > 0;
+  } catch {
+    // Sin espacio: quedan en memoria y se suben online; se avisa porque si se cierra la pestana
+    // sin conexion se perderian.
+    _persistido = false;
+    setSyncStatus('error', 'No hay espacio en el navegador para guardar los cambios sin conexión.');
+  }
+  marcarVivo();
+}
+function leerPasosGuardados(key) {
+  try {
+    const crudo = localStorage.getItem(key);
+    const raw = JSON.parse(crudo);
+    if (raw && Array.isArray(raw.pasos)) return { pasos: raw.pasos.filter(pasoValido), t: raw.t || 0, crudo };
+  } catch { /* clave corrupta */ }
+  return null;
+}
 
-  const merged = mergeStates(base, mine, remoteData);
-  _lastRemoteTs = await saveRemoteData(merged); // si falla, lanza y se mantiene dirty
-  _baseState = merged;
-  _pendingLocal = null; // ya subido: no reintentar con una copia vieja
-  try { localStorage.removeItem(DIRTY_KEY); localStorage.removeItem(BASE_KEY); } catch (e) { /* noop */ }
-  cacheLocal(merged);
-  setSyncStatus('ok');
-  return merged;
+// Pasos de pestanas que ya no estan (y el formato de una sola marca de versiones anteriores).
+// Una pestana que sigue abierta ("late" hace menos de 2 min) no se toca. Limpia los latidos
+// viejos de pestanas que murieron sin avisar.
+function pendientesHuerfanos() {
+  const out = [];
+  const ahora = Date.now();
+  const vivoDe = (id) => { try { return Number(localStorage.getItem(VIVO_PREFIX + id)) || 0; } catch { return 0; } };
+  const conPend = new Set();
+  for (const k of clavesPendientes()) {
+    const id = k.slice(PEND_PREFIX.length);
+    conPend.add(id);
+    if (id === TAB_ID) continue;
+    const vivo = vivoDe(id);
+    if (vivo && ahora - vivo < VIVO_VENCE_MS) continue;
+    const g = leerPasosGuardados(k);
+    if (g && g.pasos.length) out.push({ key: k, vivo: VIVO_PREFIX + id, crudo: g.crudo, pasos: g.pasos, t: g.t });
+    else { try { localStorage.removeItem(k); } catch { /* noop */ } }
+  }
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(VIVO_PREFIX)) continue;
+      const id = k.slice(VIVO_PREFIX.length);
+      if (id !== TAB_ID && !conPend.has(id) && ahora - (Number(localStorage.getItem(k)) || 0) > VIVO_VENCE_MS) localStorage.removeItem(k);
+    }
+  } catch { /* noop */ }
+  return out.sort((a, b) => a.t - b.t);
+}
+
+// Cambios sin subir del formato de versiones anteriores (marca insersalud_dirty + base +
+// cache): se convierten UNA vez, antes de que nada reescriba la cache, en un pendiente normal
+// con id fijo. Asi el id no cambia aunque despues cambie la cache (se aplicaba dos veces).
+function migrarPendienteViejo() {
+  try {
+    if (!localStorage.getItem(DIRTY_KEY)) return;
+    const next = leerJSON(STORAGE_KEY);
+    if (next) {
+      const d = calcularDiff(leerJSON(BASE_KEY), next);
+      const paso = { id: 'legacy-' + hashTexto(JSON.stringify(d)), d };
+      localStorage.setItem(PEND_PREFIX + 'legacy', JSON.stringify({ pasos: [paso], t: -1 }));
+    }
+    localStorage.removeItem(DIRTY_KEY);
+    localStorage.removeItem(BASE_KEY);
+  } catch { /* sin espacio: queda la marca y se reintenta al proximo arranque */ }
+}
+migrarPendienteViejo();
+
+// Un ciclo de sincronizacion a la vez en TODO el navegador (todas las pestanas).
+function conCandado(fn) {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : null;
+  if (locks && typeof locks.request === 'function') return locks.request('insersalud-sync', fn);
+  // Sin navigator.locks (navegadores viejos, tests): candado compartido en este proceso.
+  const g = globalThis;
+  const run = g.__insersaludCandado = (g.__insersaludCandado || Promise.resolve()).then(fn, fn);
+  return run;
+}
+function encolar(opts = {}) {
+  _enCurso++;
+  const p = _cadena.then(() => conCandado(() => ciclo(opts)));
+  _cadena = p.catch(() => {}).finally(() => { _enCurso--; });
+  return p;
+}
+
+// Error de la base que no se arregla reintentando (4xx que no es de sesion): por ejemplo
+// app_save rechazando un guardado que deja la base sin pacientes.
+// Solo errores de validacion: 408 (timeout) y 429 (demasiadas peticiones) se reintentan.
+const esRechazoDefinitivo = (e) => e && e.code !== 'AUTH' && [400, 409, 422].includes(e.status);
+
+async function bajarBase(usarCache) {
+  if (usarCache && _baseState) {
+    const ts = await fetchRemoteTs();
+    if (ts && ts === _lastRemoteTs) return { data: _baseState, ts };
+  }
+  const r = await loadRemoteData();
+  return { data: r.exists ? r.data : null, ts: r.updatedAt };
+}
+
+// Guarda `calcular(base)` sobre la base. Justo antes de escribir vuelve a mirar la version: si
+// otro dispositivo guardo en el medio, rehace la mezcla sobre lo nuevo (hasta 3 veces).
+async function guardarSobreBase(base, calcular) {
+  let actual = base;
+  for (let intento = 0; intento < 3; intento++) {
+    const resultado = calcular(actual.data);
+    const ts = await fetchRemoteTs();
+    if (actual.ts && ts && ts !== actual.ts) { actual = await bajarBase(false); continue; }
+    const nuevoTs = await saveRemoteData(resultado);
+    return { data: resultado, ts: nuevoTs };
+  }
+  const resultado = calcular(actual.data);
+  return { data: resultado, ts: await saveRemoteData(resultado) };
+}
+
+// El ciclo: sube mis pasos y los de pestanas muertas, y deja la pantalla al dia.
+// opts.latido: solo baja si la base cambio. opts.carga: devuelve la vista inicial.
+async function ciclo(opts = {}) {
+  marcarVivo();
+  // (Si otra pestana adopto mis pasos mientras esta estuvo congelada, se vuelven a enviar pero
+  // la base los saltea por id.)
+  // Pasos guardados de esta pestana que no estan en memoria (cerro sesion y volvio a entrar).
+  if (!_pasos.length) {
+    const g = leerPasosGuardados(PEND_PREFIX + TAB_ID);
+    if (g && g.pasos.length) { _pasos = g.pasos; _persistido = true; }
+  }
+  const huerfanos = pendientesHuerfanos();
+  const nPropios = _pasos.length;
+  const aSubir = [...huerfanos.flatMap(h => h.pasos), ..._pasos.slice(0, nPropios)];
+
+  if (!aSubir.length && opts.latido && _baseState) {
+    const ts = await fetchRemoteTs();
+    if (!ts || ts === _lastRemoteTs) return null;
+  }
+  setSyncStatus(aSubir.length ? 'saving' : 'loading');
+  let base = await bajarBase(!opts.carga && !opts.forzar && !opts.latido);
+  if (!base.data) base = { data: normalizeData(loadLocalData()), ts: null };
+
+  // Quita de pendientes los pasos ya subidos (o descartados): los mios de memoria y los de
+  // pestanas muertas. La clave de un huerfano se borra solo si nadie la reescribio mientras
+  // tanto (si su pestana revivio y agrego cambios, queda y se sube despues; lo ya subido se
+  // saltea por id).
+  const resueltos = new Set();
+  const limpiarResueltos = () => {
+    _pasos = _pasos.filter(p => !resueltos.has(p.id));
+    guardarMisPasos();
+    for (const h of huerfanos) {
+      if (!h.pasos.every(p => resueltos.has(p.id))) continue;
+      try {
+        if (localStorage.getItem(h.key) === h.crudo) {
+          localStorage.removeItem(h.key);
+          if (h.vivo) localStorage.removeItem(h.vivo);
+          if (h.extra) localStorage.removeItem(h.extra);
+        }
+      } catch { /* noop */ }
+    }
+  };
+
+  let final = base;
+  if (aSubir.length) {
+    try {
+      final = await guardarSobreBase(base, (d) => aplicarPasos(aSubir, d, true));
+      aSubir.forEach(p => resueltos.add(p.id));
+    } catch (e) {
+      if (!esRechazoDefinitivo(e)) throw e;
+      // Algun paso lo rechaza la base: se prueban de a uno y se descarta solo el rechazado.
+      // Cada paso que entra se quita de pendientes en el momento (si se corta la red a mitad,
+      // no se vuelve a aplicar).
+      console.error('La base rechazo un cambio:', e);
+      let actual = await bajarBase(false);
+      for (const paso of aSubir) {
+        try {
+          actual = await guardarSobreBase(actual, (d) => aplicarPasos([paso], d, true));
+          _baseState = actual.data; _lastRemoteTs = actual.ts;
+        } catch (e2) {
+          if (!esRechazoDefinitivo(e2)) { limpiarResueltos(); throw e2; }
+          console.error('Cambio descartado (la base lo rechazo):', e2);
+          setTimeout(() => setSyncStatus('error', 'La base rechazó un cambio y no se guardó.'), 0);
+        }
+        resueltos.add(paso.id);
+        limpiarResueltos();
+      }
+      final = actual;
+    }
+    limpiarResueltos();
+  }
+  _baseState = final.data;
+  _lastRemoteTs = final.ts;
+  // La pantalla: lo que quedo en la base + mis cambios que todavia no subieron.
+  const vista = aplicarPasos(_pasos, final.data);
+  cacheLocal(vista);
+  if (_syncStatus.state !== 'error' || !aSubir.length) setSyncStatus('ok');
+  if (!opts.carga && JSON.stringify(vista) !== JSON.stringify(_ultimaVista)) {
+    _ultimaVista = vista;
+    emitData(vista);
+  }
+  _ultimaVista = vista;
+  return vista;
 }
 
 // ── Aligerado de datos ──────────────────────────────────────────────────────
@@ -416,7 +727,7 @@ async function comprimirFotosDeProductos(data) {
 // (usan la base real y no deben reescribir datos solo por abrirlas para probar).
 const HOSTS_PRODUCCION = ['aplicacion-beta.vercel.app', 'app.insersalud.com'];
 async function aligerarDatos(data) {
-  if (import.meta.env.DEV || !HOSTS_PRODUCCION.includes(window.location.hostname)) return false;
+  if (import.meta.env?.DEV || typeof window === 'undefined' || !HOSTS_PRODUCCION.includes(window.location.hostname)) return false;
   const quitadas = quitarFotosDeDocumentos(data);
   const comprimidas = await comprimirFotosDeProductos(data);
   if (quitadas || comprimidas) {
@@ -427,166 +738,88 @@ async function aligerarDatos(data) {
 }
 
 export async function loadData() {
+  migrarPendienteViejo();
+  setSyncStatus('loading');
+  _baseState = null;
+  _lastRemoteTs = null;
   try {
-    setSyncStatus('loading');
-    const remote = await loadRemoteData();
-
-    if (remote.exists) {
-      let data = remote.data;
-
-      // Sembrar equiposNuevos solo si la base no tiene ninguno cargado.
-      if (!data.equiposNuevos || data.equiposNuevos.length === 0) {
-        data = { ...data, equiposNuevos: seedEquiposNuevos };
-      }
-
-      // Antes de confiar en lo remoto, subir cambios locales pendientes.
-      const recovered = await flushDirtyLocal(data);
-      if (recovered) return recovered;
-
-      _pendingLocal = null;
-      _baseState = data;
-      _lastRemoteTs = remote.updatedAt;
-      cacheLocal(data);
-      setSyncStatus('ok');
-
-      // Aligerar el blob (una sola vez). Se hace despues de devolver los datos
-      // para no demorar el arranque; el resultado se guarda por la via normal.
-      setTimeout(async () => {
-        try {
-          const copia = JSON.parse(JSON.stringify(data));
-          if (await aligerarDatos(copia)) {
-            await saveData(copia);
-            emitData(copia);
-          }
-        } catch (e) { console.error('No se pudo aligerar los datos:', e); }
-      }, 1500);
-
-      return data;
+    let data = await encolar({ carga: true });
+    // Sembrar el catalogo de equipos nuevos UNA sola vez (si la base nunca tuvo): se sube
+    // como un cambio mas. Antes se mostraba sin guardarlo y, si se borraba todo el
+    // catalogo, volvia a aparecer al recargar.
+    if ((!data.equiposNuevos || data.equiposNuevos.length === 0) && !data.settings?.equiposNuevosSembrados) {
+      const sembrado = { ...data, equiposNuevos: seedEquiposNuevos, settings: { ...data.settings, equiposNuevosSembrados: true } };
+      saveData(sembrado, data);
+      data = sembrado;
     }
-
-    // La base esta vacia (primera vez): subir lo que haya en local como base inicial.
-    const localData = loadLocalData();
-    _lastRemoteTs = await saveRemoteData(localData);
-    _baseState = localData;
-    cacheLocal(localData);
-    setSyncStatus('ok');
-    return localData;
+    // Aligerar el blob (una sola vez), despues del arranque y solo si nadie cambio nada.
+    const cargado = _baseState;
+    setTimeout(async () => {
+      try {
+        const copia = JSON.parse(JSON.stringify(cargado));
+        if (!(await aligerarDatos(copia))) return;
+        if (_pasos.length || _enCurso > 0 || _baseState !== cargado) return; // queda para la proxima carga
+        await saveData(copia, cargado);
+      } catch (e) { console.error('No se pudo aligerar los datos:', e); }
+    }, 1500);
+    return data;
   } catch (e) {
     // Sesion vencida o sin contraseña: no mostrar datos, volver al ingreso.
     if (e.code === 'AUTH') {
       setSyncStatus('error', e.message);
       throw e;
     }
-    // Sin conexion a Supabase: usar cache local para no quedar sin datos.
+    // Sin conexion: cache local + cambios sin subir (mios y de pestanas cerradas); se suben
+    // en el latido cuando vuelva la conexion.
     console.error('Sync error on load (usando cache local):', e);
     setSyncStatus('error', e.message);
-    const local = loadLocalData();
-    if (!_baseState) _baseState = local;
-    return local;
+    if (!_pasos.length) {
+      const g = leerPasosGuardados(PEND_PREFIX + TAB_ID);
+      if (g) { _pasos = g.pasos; _persistido = true; }
+    }
+    const vista = aplicarPasos([...pendientesHuerfanos().flatMap(h => h.pasos), ..._pasos], loadLocalData());
+    _ultimaVista = vista;
+    return vista;
   }
 }
 
-export async function saveData(nextState) {
-  const mine = normalizeData(nextState);
-  _pendingLocal = mine;
-  // Marcar "sucio" y, la primera vez del ciclo, guardar el estado base (ultimo
-  // sincronizado) ANTES de pisar el cache. Asi, si la app se cierra sin internet,
-  // el proximo arranque sabe fusionar y subir el cambio: nunca queda solo en local.
-  try {
-    if (localStorage.getItem(DIRTY_KEY) !== '1') {
-      const lastSynced = localStorage.getItem(STORAGE_KEY);
-      if (lastSynced) localStorage.setItem(BASE_KEY, lastSynced);
-      localStorage.setItem(DIRTY_KEY, '1');
-    }
-  } catch (e) { /* sin espacio: igual se reintenta online */ }
-  cacheLocal(mine);                    // nunca perder el cambio localmente
-  // Encadenar para serializar escrituras (evita reordenamiento de PATCH).
-  _writesInFlight++;
-  _writeChain = _writeChain.then(() => _commit(mine)).finally(() => { _writesInFlight--; });
-  return _writeChain;
-}
-
-async function _commit(mine) {
-  try {
-    setSyncStatus('saving');
-    // Leer lo ultimo de la base y fusionar antes de escribir (anti-clobber).
-    // Si el timestamp no cambio desde la ultima vez, nadie mas guardo: lo remoto
-    // es igual a la base conocida y no hace falta bajar el blob entero (~1 MB).
-    let remoteData;
-    const ts = _baseState ? await fetchRemoteTs() : null;
-    if (_baseState && ts && ts === _lastRemoteTs) {
-      remoteData = _baseState;
-    } else {
-      remoteData = (await loadRemoteData()).data;
-    }
-    const base = _baseState || remoteData;
-    const merged = mergeStates(base, mine, remoteData);
-
-    _lastRemoteTs = await saveRemoteData(merged);
-    _baseState = merged;
-    if (_pendingLocal === mine) {
-      _pendingLocal = null;
-      // Confirmado en la base: ya no hay cambios pendientes.
-      try { localStorage.removeItem(DIRTY_KEY); localStorage.removeItem(BASE_KEY); } catch (e) { /* noop */ }
-    }
-    cacheLocal(merged);
-    setSyncStatus('ok');
-
-    // Si el merge trajo cambios de otros dispositivos, refrescar la UI.
-    if (JSON.stringify(merged) !== JSON.stringify(mine)) {
-      emitData(merged);
-    }
-  } catch (e) {
-    // Falla de red/base: queda _pendingLocal para reintentar en el proximo refresh.
+// prevState = el estado del que salio la edicion (lo que tenia la pantalla).
+export function saveData(nextState, prevState) {
+  const next = normalizeData(nextState);
+  const prev = prevState ? normalizeData(prevState) : (_ultimaVista || _baseState);
+  const d = calcularDiff(prev, next);
+  if (Object.keys(d.c).length || Object.keys(d.s).length) _pasos = [..._pasos, { id: nuevoIdPaso(), d }];
+  _ultimaVista = next;
+  guardarMisPasos();
+  cacheLocal(next);
+  return encolar().catch(e => {
     console.error('Sync error on save:', e);
     setSyncStatus('error', e.message);
-  }
+  });
 }
 
-// Re-sincronizar desde la base (focus / intervalo / reconexion).
-// Primero empuja cambios pendientes para no perderlos, luego trae lo remoto.
-export async function refreshFromRemote() {
-  try {
-    // Con un guardado en curso, NO bajar lo remoto: llegaria sin el cambio
-    // recien hecho y lo borraria de la pantalla (parecia que no habia guardado).
-    if (_writesInFlight > 0) return;
-    if (_pendingLocal) {
-      await saveData(_pendingLocal); // saveData ya hace merge + emitData
-      return;
-    }
-    const remote = await loadRemoteData();
-    if (!remote.exists) return;
-    _baseState = remote.data;
-    _lastRemoteTs = remote.updatedAt;
-    cacheLocal(remote.data);
-    setSyncStatus('ok');
-    emitData(remote.data);
-  } catch (e) {
-    setSyncStatus('error', e.message);
-  }
+// Re-sincronizar desde la base (al volver a la pestana / reconexion).
+export function refreshFromRemote() {
+  return encolar({ forzar: true }).catch(e => setSyncStatus('error', e.message));
 }
 
-// Heartbeat barato: cada pocos segundos chequea SOLO el timestamp.
-// Si la base cambio (otro dispositivo guardo), baja el estado completo.
-// Asi lo que se carga en cualquier dispositivo se refleja en los demas en segundos.
-export async function syncIfRemoteChanged() {
-  try {
-    // Mientras se esta guardando, no tocar nada (ver refreshFromRemote).
-    if (_writesInFlight > 0) return;
-    // Si tengo cambios locales sin confirmar, primero los empujo (no perderlos).
-    if (_pendingLocal) {
-      await saveData(_pendingLocal);
-      return;
-    }
-    const ts = await fetchRemoteTs();
-    if (ts && ts !== _lastRemoteTs) {
-      await refreshFromRemote();
-    } else if (_syncStatus.state === 'error') {
-      setSyncStatus('ok');
-    }
-  } catch (e) {
-    setSyncStatus('error', e.message);
-  }
+// Latido barato: mira solo la version de la base y baja todo si cambio. Si hay cambios sin
+// subir (mios o de una pestana cerrada) los sube primero.
+export function syncIfRemoteChanged() {
+  if (_enCurso > 0) return Promise.resolve();
+  return encolar({ latido: true }).catch(e => setSyncStatus('error', e.message));
+}
+
+// En el navegador: latir cada 20 s y, si hay cambios sin subir, reintentarlos aunque la
+// pestana este oculta (el latido de la app corre solo con la pestana visible).
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  marcarVivo();
+  setInterval(() => {
+    marcarVivo();
+    if (_pasos.length && _enCurso === 0 && getSessionToken()) encolar().catch(() => {});
+  }, 20000);
+  window.addEventListener('pagehide', () => { try { localStorage.removeItem(VIVO_PREFIX + TAB_ID); } catch { /* noop */ } });
+  window.addEventListener('pageshow', marcarVivo);
 }
 
 export function generateId() {
@@ -598,7 +831,9 @@ export function generateId() {
 // Apellido: lo que esta antes de la coma ("PEREZ, JOSE") o la ultima palabra
 // ("Jose Perez"). Sin nombre de cliente, queda solo prefijo + timestamp.
 export function generateDocNumber(prefix, clientName = '') {
-  const ts = Date.now().toString(36).toUpperCase();
+  // Timestamp + 2 caracteres al azar: con solo el milisegundo, dos documentos del mismo
+  // cliente generados a la vez (dos dispositivos o doble clic) repetian numero.
+  const ts = Date.now().toString(36).toUpperCase() + Math.floor(Math.random() * 1296).toString(36).toUpperCase().padStart(2, '0');
   const raw = String(clientName || '').trim();
   if (!raw) return `${prefix}-${ts}`;
   const base = raw.includes(',') ? raw.split(',')[0] : raw.split(/\s+/).pop();
@@ -610,16 +845,8 @@ export function generateDocNumber(prefix, clientName = '') {
   return slug ? `${prefix}-${slug}-${ts}` : `${prefix}-${ts}`;
 }
 
-// Fecha local YYYY-MM-DD. NUNCA usar toISOString() para fechas de negocio:
-// devuelve UTC, y en Argentina (UTC-3) desde las 21:00 ya es "manana" en UTC,
-// lo que marcaba vencimientos un dia antes.
-export function toLocalDateStr(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
-export function getToday() {
-  return toLocalDateStr(new Date());
-}
+import { toLocalDateStr, getToday } from './fechas.js';
+export { toLocalDateStr, getToday };
 
 // new Date('YYYY-MM-DD') parsea como medianoche UTC (= dia anterior 21:00 en
 // Argentina). Parsear como medianoche LOCAL para que no se corra un dia.
@@ -647,27 +874,120 @@ export function formatCurrency(amount) {
   }).format(amount || 0);
 }
 
-export function parseExcelData(data, existingPatients = [], existingEquipment = []) {
+// Fecha de una celda de Excel a YYYY-MM-DD: numero de serie de Excel (dias desde
+// 1899-12-30), Date, "dd/mm/aaaa", "dd-mm-aaaa" o "aaaa-mm-dd". '' si no se entiende.
+// Antes se guardaba crudo (ej. 45900) y rompia toda la logica de vencimientos.
+export function fechaDeExcel(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (v instanceof Date && !isNaN(v)) return toLocalDateStr(v);
+  if (typeof v === 'number' && isFinite(v) && v > 20000 && v < 80000) {
+    const d = new Date(1899, 11, 30 + Math.floor(v));
+    return toLocalDateStr(d);
+  }
+  const t = String(v).trim();
+  // Solo fechas que existen (31/02 o mes 13 se rechazan).
+  const valida = (y, mes, dia) => {
+    const d = new Date(y, mes - 1, dia);
+    return d.getFullYear() === y && d.getMonth() === mes - 1 && d.getDate() === dia
+      ? `${y}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}` : '';
+  };
+  let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return valida(Number(m[1]), Number(m[2]), Number(m[3]));
+  m = t.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/);
+  if (m) return valida(Number(m[3].length === 2 ? `20${m[3]}` : m[3]), Number(m[2]), Number(m[1]));
+  return '';
+}
+
+// Nombre para comparar: sin acentos, sin mayusculas ni espacios de mas.
+const claveNombre = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+// Importe de una celda: numero, o texto como "25.000", "$ 25.000,50" o "25000". 0 si no se
+// entiende (antes "25.000" se leia como 25 y "$ 25.000" como NaN).
+export function importeDeExcel(v) {
+  if (typeof v === 'number') return isFinite(v) && v > 0 ? v : 0;
+  const t = String(v ?? '').replace(/[^\d.,]/g, '');
+  if (!t) return 0;
+  let n;
+  if (t.includes(',') && t.includes('.') && t.lastIndexOf('.') > t.lastIndexOf(',')) {
+    n = Number(t.replace(/,/g, '')); // "1,500.00": coma de miles y punto decimal
+  } else if (/^\d{1,3}(,\d{3}){2,}$/.test(t)) {
+    n = Number(t.replace(/,/g, '')); // "1,500,000": comas de miles (formato US)
+  } else if (t.includes(',')) {
+    // Formato argentino: punto = miles, coma = decimales ("1.012,50").
+    n = Number(t.replace(/\./g, '').replace(',', '.'));
+  } else if (/^\d{1,3}(\.\d{3})+$/.test(t)) {
+    n = Number(t.replace(/\./g, '')); // "25.000" o "1.500.000": puntos de miles
+  } else {
+    n = Number(t); // "1070.5" o "25000.50": punto decimal
+  }
+  return isFinite(n) && n > 0 ? n : 0;
+}
+
+const COLS_NOMBRE = ['NOMBRE', 'NOMBRE Y APELLIDO', 'paciente', 'NOMBRECliente'];
+const valorCol = (row, cols) => { for (const c of cols) if (row[c] !== undefined && row[c] !== null && row[c] !== '') return row[c]; return ''; };
+
+// existingRentals: para no asignar una unidad que ya esta alquilada a otro paciente.
+export function parseExcelData(data, existingPatients = [], existingEquipment = [], existingRentals = []) {
   if (!data || data.length === 0) return { patients: [], equipment: [], rentals: [] };
-  
-  const firstRow = data[0];
-  const hasRentalData = firstRow['FECHA ALTA'] || firstRow['INICIO'];
-  
+
+  // Hay alquileres si CUALQUIER fila tiene fecha de alta (antes solo se miraba la primera).
+  const hasRentalData = data.some(r => r && (r['FECHA ALTA'] || r['INICIO']));
+
   const patients = [];
   const equipment = [];
   const rentals = [];
-  
+  const hoy = getToday();
+  // Unidades ocupadas: alquileres en curso de la base + las ya asignadas en esta importacion.
+  const ocupadas = new Set((existingRentals || []).filter(r => r && r.status !== 'finalizado').map(r => r.equipmentId));
+
+  // Coincidencia EXACTA (normalizada) de nombre. Antes se buscaba por la primera palabra
+  // y el alquiler de "Juan Perez" quedaba a nombre de "Juan Gomez".
+  const buscarPaciente = (name) => {
+    const k = claveNombre(name);
+    if (!k) return null;
+    return patients.find(p => claveNombre(p.name) === k) || existingPatients.find(p => claveNombre(p.name) === k) || null;
+  };
+  const porSerie = (sr) => equipment.find(e => String(e.serialNumber || '').trim() === sr) || existingEquipment.find(e => String(e.serialNumber || '').trim() === sr) || null;
+  const nuevaUnidad = (name, serie, row, index) => {
+    const eq = {
+      id: generateId(),
+      serialNumber: String(serie || '').trim() || 'EQ-' + (index + 1),
+      name: String(name).trim(),
+      type: 'otro',
+      status: 'disponible',
+      images: [],
+      description: row['DESCRIPCION'] || row['descripcion'] || '',
+      available: true
+    };
+    equipment.push(eq);
+    return eq;
+  };
+  // Unidad para una fila. Con serie manda la serie (si no existe, es otra unidad). Sin serie,
+  // una unidad LIBRE del mismo modelo, o una nueva: antes dos pacientes podian quedar con la
+  // misma unidad fisica (incluso una ya alquilada).
+  const unidadParaFila = (name, serie, row, index, paraAlquiler) => {
+    const k = claveNombre(name);
+    const sr = String(serie || '').trim();
+    if (sr) return porSerie(sr) || (k ? nuevaUnidad(name, sr, row, index) : null);
+    if (!k) return null;
+    const mismas = [...equipment, ...existingEquipment].filter(e => claveNombre(e.name) === k);
+    const libre = paraAlquiler ? mismas.find(e => !ocupadas.has(e.id)) : mismas[0];
+    return libre || nuevaUnidad(name, '', row, index);
+  };
+
   data.forEach((row, index) => {
     if (!row) return;
-    
-    const name = row['NOMBRE'] || row['NOMBRE Y APELLIDO'] || row['paciente'] || row['NOMBRECliente'] || '';
-    if (name && typeof name === 'string' && name.length > 2) {
+
+    const name = valorCol(row, COLS_NOMBRE);
+    let patient = null;
+    if (name && typeof name === 'string' && name.trim().length > 2) {
       const dni = String(row['DNI'] || row['dni'] || '').replace(/\.+$/, '');
       const phone = String(row['TELEFONO'] || row['telefono'] || row['CELULAR'] || row['telefonoCliente'] || '');
       const address = row['DIRECCION'] || row['direccion'] || row['DOMICILIO'] || row['direccionCliente'] || '';
-      
-      if (!existingPatients.find(p => p.name === name && p.phone === phone)) {
-        patients.push({
+      // Una persona con varias filas (varios equipos) es UN paciente.
+      patient = buscarPaciente(name);
+      if (!patient) {
+        patient = {
           id: generateId(),
           name: name.trim(),
           dni: dni,
@@ -675,60 +995,41 @@ export function parseExcelData(data, existingPatients = [], existingEquipment = 
           address: address,
           observations: row['OBSERVACIONES'] || row['observaciones'] || '',
           documents: [],
-          createdAt: getToday()
-        });
+          createdAt: hoy
+        };
+        patients.push(patient);
       }
     }
-    
+
     const equipName = row['EQUIPO'] || row['equipo'] || '';
-    if (equipName && typeof equipName === 'string' && equipName.length > 2) {
-      if (!existingEquipment.find(e => e.name === equipName)) {
-        equipment.push({
-          id: generateId(),
-          serialNumber: row['SERIE'] || row['serie'] || 'EQ-' + (index + 1),
-          name: equipName.trim(),
-          type: 'otro',
-          status: 'disponible',
-          images: [],
-          description: row['DESCRIPCION'] || row['descripcion'] || '',
-          available: true
-        });
-      }
+    const serie = row['SERIE'] ?? row['serie'] ?? '';
+    const esAlquiler = hasRentalData && Boolean(row['FECHA ALTA'] || row['INICIO'] || row['fecha'] || row['VENCIMIENTO'] || row['FIN'] || row['fechaFin'] || importeDeExcel(row['importe'] || row['IMPORTE'] || row['PRECIO'] || row['precio']));
+    let equip = null;
+    if (equipName && typeof equipName === 'string' && equipName.trim().length > 2) {
+      equip = unidadParaFila(equipName, serie, row, index, esAlquiler);
     }
-  });
-  
-  if (hasRentalData) {
-    data.forEach((row) => {
-      if (!row) return;
-      
-      const name = row['NOMBRE'] || row['NOMBRE Y APELLIDO'] || row['paciente'] || '';
-      const patient = patients.find(p => p.name === name) || existingPatients.find(p => p.name && name && p.name.toLowerCase().includes(name.toLowerCase().split(' ')[0]));
-      
-      const equipName = row['EQUIPO'] || row['equipo'] || '';
-      const equip = equipment.find(e => e.name === equipName) || existingEquipment.find(e => e.name && equipName && e.name.toLowerCase().includes(equipName.toLowerCase().split(' ')[0]));
-      
-      if (patient || equip) {
-        const startDate = row['FECHA ALTA'] || row['INICIO'] || row['fecha'] || getToday();
-        const endDate = row['VENCIMIENTO'] || row['FIN'] || row['fechaFin'] || '';
-        const price = Number(row['importe'] || row['IMPORTE'] || row['PRECIO'] || row['precio'] || 0);
-        
-        if (price > 0 || endDate) {
-          rentals.push({
-            id: generateId(),
-            patientId: patient?.id || '',
-            equipmentId: equip?.id || '',
-            startDate: startDate,
-            endDate: endDate || '',
-            price: price,
-            status: endDate && new Date(endDate) < new Date() ? 'vencido' : 'activo',
-            notes: row['OBSERVACIONES'] || row['observaciones'] || '',
-            createdAt: getToday()
-          });
-        }
-      }
+
+    if (!esAlquiler || !(patient || equip)) return;
+    const startDate = fechaDeExcel(row['FECHA ALTA'] || row['INICIO'] || row['fecha']) || hoy;
+    const endDate = fechaDeExcel(row['VENCIMIENTO'] || row['FIN'] || row['fechaFin']);
+    const price = importeDeExcel(row['importe'] || row['IMPORTE'] || row['PRECIO'] || row['precio']);
+    if (!(price > 0 || endDate)) return;
+    if (equip) ocupadas.add(equip.id);
+    rentals.push({
+      id: generateId(),
+      patientId: patient?.id || '',
+      equipmentId: equip?.id || '',
+      period: 'mensual',
+      startDate,
+      endDate: endDate || '',
+      price,
+      // Comparacion de fechas como texto local (vence hoy = vencido).
+      status: endDate && endDate <= hoy ? 'vencido' : 'activo',
+      notes: row['OBSERVACIONES'] || row['observaciones'] || '',
+      createdAt: hoy
     });
-  }
-  
+  });
+
   return { patients, equipment, rentals };
 }
 
@@ -879,7 +1180,11 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
     // REMITO: only photo + description, no prices
     invoiceData.items.forEach((item, i) => {
       const imgData = itemImages[i];
-      const rh = imgData ? 20 : 9;
+      doc.setFontSize(10);
+      // El nombre se parte en lineas (antes, sin foto, se salia del margen derecho) y el
+      // renglon crece segun las lineas.
+      const lineasNombre = doc.splitTextToSize(String(item.name || ''), imgData ? 140 : width - 44);
+      const rh = Math.max(imgData ? 20 : 9, lineasNombre.length * 4.5 + 4);
       if (y + rh > height - 25) { doc.addPage(); y = 20; }
       if (i % 2 === 0) {
         doc.setFillColor(248, 250, 252);
@@ -890,13 +1195,12 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
         doc.setFontSize(10);
         doc.setFont(undefined, 'normal');
         doc.setTextColor(60, 60, 60);
-        const lines = doc.splitTextToSize(String(item.name || ''), 140);
-        doc.text(lines, 43, y + 2);
+        doc.text(lineasNombre, 43, y + 2);
       } else {
         doc.setFontSize(10);
         doc.setFont(undefined, 'normal');
         doc.setTextColor(60, 60, 60);
-        doc.text(String(item.name || ''), 22, y);
+        doc.text(lineasNombre, 22, y);
       }
       y += rh;
     });
@@ -917,23 +1221,32 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
     y += 8;
     doc.setFont(undefined, 'normal');
     doc.setTextColor(60, 60, 60);
+    // Misma cantidad y precio que usa el total (sin "|| 1": antes una cantidad 0 se
+    // imprimia como 1 y las filas no sumaban el TOTAL).
+    const cantDe = (it) => Number(it.quantity) || 0;
+    const precioDe = (it) => Number(it.price) || 0;
+    let sumaFilas = 0;
     invoiceData.items.forEach((item, i) => {
-      const subtotal = item.price * (item.quantity || 1);
-      if (y + rowH > height - 25) { doc.addPage(); y = 20; }
+      const subtotal = precioDe(item) * cantDe(item);
+      sumaFilas += subtotal;
+      const nameLines = doc.splitTextToSize(String(item.name || ''), descW);
+      // El renglon crece con las lineas del nombre (antes se encimaba con el de abajo).
+      const rh = Math.max(rowH, nameLines.length * 4.5 + 3);
+      if (y + rh > height - 25) { doc.addPage(); y = 20; }
       if (i % 2 === 1) {
         doc.setFillColor(248, 250, 252);
-        doc.rect(20, y - 4, width - 40, rowH, 'F');
+        doc.rect(20, y - 4, width - 40, rh, 'F');
       }
       const imgData = itemImages[i];
       if (imgData) { try { doc.addImage(imgData, 'JPEG', 22, y - 3, 16, 16); } catch {} }
-      const nameLines = doc.splitTextToSize(String(item.name || ''), descW);
       doc.text(nameLines, textX, y + (hasAnyImage ? 3 : 0));
       const rowMid = hasAnyImage ? y + 5 : y;
-      doc.text(String(item.quantity || 1), 120, rowMid, { align: 'center' });
-      doc.text(formatCurrency(item.price), 150, rowMid, { align: 'center' });
+      doc.text(String(cantDe(item)), 120, rowMid, { align: 'center' });
+      doc.text(formatCurrency(precioDe(item)), 150, rowMid, { align: 'center' });
       doc.text(formatCurrency(subtotal), width - 22, rowMid, { align: 'right' });
-      y += rowH;
+      y += rh;
     });
+    if (y + 16 > height - 20) { doc.addPage(); y = 20; }
     y += 3;
     doc.setDrawColor(30, 90, 168);
     doc.line(20, y, width - 20, y);
@@ -941,18 +1254,25 @@ export async function generateInvoicePDF(invoiceData, settings, type = 'factura'
     doc.setFont(undefined, 'bold');
     doc.setFontSize(13);
     doc.setTextColor(30, 90, 168);
-    doc.text(`TOTAL: ${formatCurrency(invoiceData.total)}`, width - 22, y, { align: 'right' });
+    // El TOTAL impreso es la suma de las filas impresas.
+    doc.text(`TOTAL: ${formatCurrency(sumaFilas)}`, width - 22, y, { align: 'right' });
   }
 
   if (invoiceData.notes) {
     y += 12;
+    if (y > height - 30) { doc.addPage(); y = 20; }
     doc.setFont(undefined, 'normal');
     doc.setFontSize(9);
     doc.setTextColor(100, 100, 100);
     doc.text('Observaciones:', 20, y);
     y += 5;
+    // Observaciones largas: salto de pagina en vez de cortarse al final de la hoja.
     const splitNotes = doc.splitTextToSize(invoiceData.notes, 170);
-    doc.text(splitNotes, 20, y);
+    splitNotes.forEach(linea => {
+      if (y > height - 20) { doc.addPage(); y = 20; }
+      doc.text(linea, 20, y);
+      y += 4.5;
+    });
   }
 
   // Signature block for remito
