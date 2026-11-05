@@ -386,39 +386,89 @@ let _ultimaVista = null;        // ultimo estado que mostro la pantalla (para no
 // paso que ya figura NO se vuelve a aplicar (respuesta perdida, pestana adoptada, reintento).
 const CLAVE_APLICADOS = '_pasosAplicados';
 const MAX_APLICADOS = 400;
+const esObjetoPlano = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const igualJSON = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
+// Diferencia de un registro editado A NIVEL DE CAMPO: solo los campos que cambiaron. Los campos
+// que son objetos (ej. paymentStatusByMonth, contabilidad) se comparan clave por clave. Asi dos
+// dispositivos que cambian cosas distintas del mismo registro (dos pagos de meses distintos)
+// no se pisan: antes el paso llevaba el registro entero y ganaba el ultimo.
+function diffCampos(antes, despues) {
+  const set = {}; const unset = []; const sub = {};
+  for (const k of Object.keys(despues)) {
+    const a = antes[k]; const n = despues[k];
+    if (igualJSON(a, n)) continue;
+    if (esObjetoPlano(n) && (esObjetoPlano(a) || a === undefined || a === null)) {
+      const ant = esObjetoPlano(a) ? a : {};
+      const sset = {}; const sunset = [];
+      for (const kk of Object.keys(n)) if (!igualJSON(ant[kk], n[kk])) sset[kk] = n[kk];
+      for (const kk of Object.keys(ant)) if (!(kk in n)) sunset.push(kk);
+      sub[k] = { set: sset, unset: sunset };
+    } else {
+      set[k] = n;
+    }
+  }
+  for (const k of Object.keys(antes)) if (!(k in despues)) unset.push(k);
+  return { set, unset, sub };
+}
+function aplicarCampos(base, p) {
+  const out = { ...base, ...(p.set || {}) };
+  for (const k of p.unset || []) delete out[k];
+  for (const [k, { set = {}, unset = [] }] of Object.entries(p.sub || {})) {
+    const obj = { ...(esObjetoPlano(base[k]) ? base[k] : {}), ...set };
+    for (const kk of unset) delete obj[kk];
+    out[k] = obj;
+  }
+  return out;
+}
 export function calcularDiff(prev, next) {
-  const d = { c: {}, s: {} };
+  const d = { c: {}, s: null };
   for (const c of COLLECTIONS) {
     const antes = indexById(prev ? prev[c] : []);
     const despues = Array.isArray(next[c]) ? next[c] : [];
-    const upsert = despues.filter(r => {
-      if (!r || r.id == null) return false;
+    const upsert = [];   // registros nuevos (completos)
+    const patch = [];    // registros editados: { id, set, unset, sub }
+    for (const r of despues) {
+      if (!r || r.id == null) continue;
       const b = antes.get(r.id);
-      return !b || (b !== r && JSON.stringify(b) !== JSON.stringify(r));
-    });
+      if (!b) { upsert.push(r); continue; }
+      if (b === r || igualJSON(b, r)) continue;
+      patch.push({ id: r.id, ...diffCampos(b, r) });
+    }
     const ids = new Set(despues.filter(r => r && r.id != null).map(r => r.id));
     const remove = prev ? [...antes.keys()].filter(id => !ids.has(id)) : [];
-    if (upsert.length || remove.length) d.c[c] = { upsert, remove };
+    if (upsert.length || patch.length || remove.length) d.c[c] = { upsert, patch, remove };
   }
-  const sp = (prev && prev.settings) || {};
-  const sn = next.settings || {};
-  for (const k of Object.keys(sn)) {
-    if (k === CLAVE_APLICADOS) continue;
-    if (!prev || JSON.stringify(sp[k]) !== JSON.stringify(sn[k])) d.s[k] = sn[k];
-  }
+  const sp = { ...((prev && prev.settings) || {}) };
+  const sn = { ...(next.settings || {}) };
+  delete sp[CLAVE_APLICADOS]; delete sn[CLAVE_APLICADOS];
+  const ds = prev ? diffCampos(sp, sn) : { set: sn, unset: [], sub: {} };
+  if (Object.keys(ds.set).length || ds.unset.length || Object.keys(ds.sub).length) d.s = ds;
   return d;
 }
 export function aplicarDiff(d, estado) {
   const out = { ...estado };
-  for (const [c, { upsert = [], remove = [] }] of Object.entries(d.c || {})) {
+  for (const [c, { upsert = [], patch = [], remove = [] }] of Object.entries(d.c || {})) {
     const fuera = new Set(remove);
     const nuevos = new Map(upsert.map(r => [r.id, r]));
-    const lista = (Array.isArray(estado[c]) ? estado[c] : []).filter(r => !(r && fuera.has(r.id))).map(r => (r && nuevos.has(r.id) ? nuevos.get(r.id) : r));
+    const parches = new Map(patch.map(p => [p.id, p]));
+    // Un registro editado que otro dispositivo borro NO revive (el parche se descarta).
+    const lista = (Array.isArray(estado[c]) ? estado[c] : [])
+      .filter(r => !(r && fuera.has(r.id)))
+      .map(r => {
+        if (!r) return r;
+        if (nuevos.has(r.id)) return nuevos.get(r.id);
+        if (parches.has(r.id)) return aplicarCampos(r, parches.get(r.id));
+        return r;
+      });
     const ya = new Set(lista.map(r => r && r.id));
     for (const r of upsert) if (!ya.has(r.id)) lista.push(r);
     out[c] = lista;
   }
-  if (d.s && Object.keys(d.s).length) out.settings = { ...(estado.settings || {}), ...d.s };
+  if (d.s) {
+    // Formato anterior de pasos: d.s = { clave: valor }.
+    const ds = d.s.set || d.s.unset || d.s.sub ? d.s : { set: d.s, unset: [], sub: {} };
+    out.settings = aplicarCampos(estado.settings || {}, ds);
+  }
   return normalizeData(out);
 }
 // Hash corto (FNV-1a de 32 bits) para ids estables.
@@ -788,7 +838,7 @@ export function saveData(nextState, prevState) {
   const next = normalizeData(nextState);
   const prev = prevState ? normalizeData(prevState) : (_ultimaVista || _baseState);
   const d = calcularDiff(prev, next);
-  if (Object.keys(d.c).length || Object.keys(d.s).length) _pasos = [..._pasos, { id: nuevoIdPaso(), d }];
+  if (Object.keys(d.c).length || d.s) _pasos = [..._pasos, { id: nuevoIdPaso(), d }];
   _ultimaVista = next;
   guardarMisPasos();
   cacheLocal(next);

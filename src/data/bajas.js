@@ -17,16 +17,28 @@ function sinMarcasDeRemito(rental) {
 
 const hayLista = (data) => Boolean(data) && Array.isArray(data.rentals);
 
+// Motivo de baja: obligatorio (pedido de Sergio, 5-nov-2026: un alquiler aparecio dado de
+// baja sin que nadie supiera por que). Minimo 3 letras.
+export const motivoValido = (m) => String(m || '').trim().length >= 3;
+
+// Historial de estados del alquiler: cada baja (con su motivo) y cada reactivacion quedan
+// anotadas y no se borran nunca, aunque el alquiler se reactive.
+function anotar(rental, entrada) {
+  return [...(Array.isArray(rental.historialEstado) ? rental.historialEstado : []), entrada];
+}
+
 // Marca el alquiler como finalizado. Si no existe o ya estaba finalizado devuelve
 // el MISMO objeto `data` (no pisa finalizedAt ni genera un segundo remito).
-export function aplicarBaja(data, rentalId, ahoraIso) {
-  if (!hayLista(data) || rentalId == null) return data;
+// Sin motivo valido NO da de baja (devuelve el mismo `data`).
+export function aplicarBaja(data, rentalId, ahoraIso, motivo) {
+  if (!hayLista(data) || rentalId == null || !motivoValido(motivo)) return data;
   const rental = data.rentals.find(r => r.id === rentalId);
   if (!rental || rental.status === 'finalizado') return data;
+  const m = String(motivo).trim();
   return {
     ...data,
     rentals: data.rentals.map(r => (r.id === rentalId
-      ? { ...sinMarcasDeRemito(r), status: 'finalizado', finalizedAt: ahoraIso, remitoRetiroPendiente: true }
+      ? { ...sinMarcasDeRemito(r), status: 'finalizado', finalizedAt: ahoraIso, remitoRetiroPendiente: true, motivoBaja: m, historialEstado: anotar(r, { fecha: ahoraIso, accion: 'baja', motivo: m }) }
       : r)),
   };
 }
@@ -59,9 +71,11 @@ export function marcarRemitoRetiro(data, rentalId, { numero, fecha, pendiente = 
 // Un alquiler que vuelve a estar en curso deja de tener baja: se borran su fecha de baja
 // y las marcas del remito de retiro. Si se da de baja otra vez, corresponde una fecha y un
 // remito nuevos (antes quedaba la fecha vieja y el remito salia con ella).
-export function reactivarAlquiler(rental) {
+export function reactivarAlquiler(rental, ahoraIso) {
   const copia = sinMarcasDeRemito(rental);
   delete copia.finalizedAt;
+  delete copia.motivoBaja;
+  if (ahoraIso && rental.status === 'finalizado') copia.historialEstado = anotar(rental, { fecha: ahoraIso, accion: 'reactivado' });
   return copia;
 }
 
@@ -71,18 +85,31 @@ export function reactivarAlquiler(rental) {
 //  - ya estaba finalizado: conserva su fecha de baja y sus marcas, tomadas del registro de
 //    la base (el formulario pudo abrirse antes de que el remito se marcara)
 //  - vuelve a estar en curso: se limpian las marcas del remito
-export function sellarFinalizacion(anterior, nuevo, ahoraIso) {
-  if (nuevo.status !== 'finalizado') {
-    return anterior && anterior.status === 'finalizado' ? reactivarAlquiler(nuevo) : nuevo;
+export function sellarFinalizacion(anterior, nuevo, ahoraIso, motivo) {
+  // El historial de estados manda el de la base (el formulario pudo abrirse antes).
+  const hist = Array.isArray(anterior?.historialEstado) ? anterior.historialEstado : nuevo.historialEstado;
+  const base = hist ? { ...nuevo, historialEstado: hist } : nuevo;
+  if (base.status !== 'finalizado') {
+    if (!anterior || anterior.status !== 'finalizado') return base;
+    return { ...reactivarAlquiler({ ...base, status: 'finalizado' }, ahoraIso), status: base.status };
   }
-  if (!anterior) return { ...nuevo, finalizedAt: nuevo.finalizedAt || ahoraIso };
+  if (!anterior) return { ...base, finalizedAt: base.finalizedAt || ahoraIso };
   if (anterior.status === 'finalizado') {
-    const resultado = { ...sinMarcasDeRemito(nuevo), finalizedAt: anterior.finalizedAt || nuevo.finalizedAt || ahoraIso };
+    const resultado = { ...sinMarcasDeRemito(base), finalizedAt: anterior.finalizedAt || base.finalizedAt || ahoraIso };
     if (anterior.remitoRetiro) resultado.remitoRetiro = anterior.remitoRetiro;
     if (anterior.remitoRetiroPendiente) resultado.remitoRetiroPendiente = anterior.remitoRetiroPendiente;
+    if (anterior.motivoBaja) resultado.motivoBaja = anterior.motivoBaja;
     return resultado;
   }
-  return { ...reactivarAlquiler(nuevo), finalizedAt: ahoraIso, remitoRetiroPendiente: true };
+  // Pasa de en curso a finalizado desde el formulario: tambien con motivo y en el historial.
+  const m = String(motivo || '').trim();
+  const resultado = { ...sinMarcasDeRemito(base), finalizedAt: ahoraIso, remitoRetiroPendiente: true };
+  delete resultado.motivoBaja;
+  if (m) {
+    resultado.motivoBaja = m;
+    resultado.historialEstado = anotar(base, { fecha: ahoraIso, accion: 'baja', motivo: m });
+  }
+  return resultado;
 }
 
 // Estado del remito de retiro de un alquiler finalizado:
