@@ -399,7 +399,8 @@ if (isInitialDatabase(currentDb)) {
   writeDatabase(currentDb);
 }
 
-server.listen(PORT, () => {
+// Solo esta PC (antes escuchaba en toda la red local, sin clave).
+server.listen(PORT, '127.0.0.1', () => {
   console.log('========================================');
   console.log('Inser Salud App');
   console.log('========================================');
