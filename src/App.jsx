@@ -3,7 +3,7 @@ import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDat
 import { Icon, EquipoFoto, Avatar } from './ui';
 import { periodoDe, addDaysStr, precioEquipoPorPeriodo, periodosCobradosEnMes, montoCobradoEnMes, periodosContratadosEnMes, mesDeBaja, vigenteEnMes, periodosImpagos, primerVencimientoImpago, nextMonthDate, alignDueDay, rollingDueDate, normalizarAlquiler } from './data/periodos';
 import { precioMensualEquipo, itemsADescontar, descontarStock, devolverStock, faltantesDeStock, CATS_STOCK } from './data/stock';
-import { aplicarBaja, marcarRemitoRetiro, sellarFinalizacion, estadoRemitoRetiro, datosRemitoRetiro } from './data/bajas';
+import { motivoValido, aplicarBaja, marcarRemitoRetiro, sellarFinalizacion, estadoRemitoRetiro, datosRemitoRetiro } from './data/bajas';
 import { onRemitoListo, avisarRemitoListo } from './data/remitoAviso';
 import './App.css';
 
@@ -99,11 +99,27 @@ async function emitirRemitoRetiro(rental, data, updateData, { bajaNueva = false 
 
 // Da de baja un alquiler (finaliza + remito de retiro). Los pedidos de confirmacion
 // los hace quien llama. Devuelve false si no se pudo dar de baja.
-async function darDeBajaAlquiler(rental, data, updateData) {
+// Pide el motivo de la baja (obligatorio). Devuelve el texto, o null si se cancela o se deja
+// vacio: en ese caso NO se da de baja.
+function pedirMotivoBaja(detalle) {
+  const texto = window.prompt(`${detalle}\n\nEscribí el MOTIVO de la baja (obligatorio):`, '');
+  if (texto === null) return null;
+  if (!motivoValido(texto)) {
+    alert('No se dio de baja: el motivo es obligatorio (al menos 3 letras).');
+    return null;
+  }
+  return texto.trim();
+}
+
+async function darDeBajaAlquiler(rental, data, updateData, motivo) {
+  if (!motivoValido(motivo)) {
+    alert('No se dio de baja: falta el motivo.');
+    return false;
+  }
   let dadoDeBaja = null;
   try {
     updateData(cur => {
-      const siguiente = aplicarBaja(cur, rental.id, new Date().toISOString());
+      const siguiente = aplicarBaja(cur, rental.id, new Date().toISOString(), motivo);
       if (siguiente !== cur) dadoDeBaja = siguiente.rentals.find(r => r.id === rental.id);
       return siguiente;
     });
@@ -706,8 +722,9 @@ function HomePage({ data, updateData }) {
             + `- Se genera el remito de retiro (PDF)\n`
             + `- El equipo vuelve al stock para alquilar\n`
             + `- El alquiler pasa a Finalizados`;
-          if (!confirm(msg)) return;
-          darDeBajaAlquiler(r, data, updateData);
+          const motivo = pedirMotivoBaja(msg);
+          if (!motivo) return;
+          darDeBajaAlquiler(r, data, updateData, motivo);
         };
 
         const handleReminder = (r) => {
@@ -1248,6 +1265,37 @@ function PatientHistorialModal({ patient, rentals, equipment, onClose }) {
             </div>
           </>
         )}
+        {(() => {
+          // Bajas y reactivaciones de los alquileres del paciente, con su motivo.
+          const eventos = rentals.filter(r => r.patientId === patient.id).flatMap(r => {
+            const equipo = equipment.find(e => e.id === r.equipmentId)?.name || 'Equipo';
+            const hist = Array.isArray(r.historialEstado) ? r.historialEstado : [];
+            const lista = hist.map(h => ({ ...h, equipo }));
+            // Bajas anteriores a este registro (sin historial): igual se muestran.
+            if (r.status === 'finalizado' && !hist.some(h => h.accion === 'baja')) {
+              lista.push({ fecha: r.finalizedAt || r.endDate || '', accion: 'baja', motivo: r.motivoBaja || '', equipo });
+            }
+            return lista;
+          }).sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+          if (!eventos.length) return null;
+          return (
+            <div style={{ marginTop: 18 }}>
+              <h3 style={{ fontSize: 15, margin: '0 0 8px', color: '#0D47A1' }}>Historial de bajas</h3>
+              {eventos.map((ev, i) => (
+                <div key={i} style={{ padding: '8px 10px', borderBottom: '1px solid #EEF3F8', fontSize: 13 }}>
+                  <div style={{ fontWeight: 700 }}>
+                    {ev.accion === 'baja' ? 'Dado de baja' : 'Reactivado'}
+                    {' '}{ev.fecha ? formatDate(/T/.test(String(ev.fecha)) ? toLocalDateStr(new Date(ev.fecha)) : String(ev.fecha).slice(0, 10)) : 's/f'}
+                    {' '}· {ev.equipo}
+                  </div>
+                  {ev.accion === 'baja' && (
+                    <div style={{ color: ev.motivo ? '#5A6978' : '#B45309' }}>Motivo: {ev.motivo || 'sin motivo registrado (baja anterior al registro de motivos)'}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1425,8 +1473,9 @@ function RentalsPage({ data, updateData }) {
       + `- Se genera el remito de retiro (PDF)\n`
       + `- El equipo vuelve al stock para alquilar\n`
       + `- El alquiler pasa a Finalizados`;
-    if (!confirm(msg)) return;
-    darDeBajaAlquiler(rental, data, updateData);
+    const motivo = pedirMotivoBaja(msg);
+    if (!motivo) return;
+    darDeBajaAlquiler(rental, data, updateData, motivo);
   };
 
   const handleSave = (payload) => {
@@ -1455,6 +1504,14 @@ function RentalsPage({ data, updateData }) {
       const actualizado = payload.update || payload;
       // Pasa a finalizado (antes no lo estaba) -> remito de retiro.
       if (actualizado.status === 'finalizado' && editingRental.status !== 'finalizado') retiro = actualizado;
+    }
+    // Pasar a Finalizado desde el formulario tambien es una baja: motivo obligatorio.
+    let motivoBajaForm = null;
+    if (retiro) {
+      motivoBajaForm = pedirMotivoBaja(`Vas a dar de baja el alquiler de ${getPatientName(retiro.patientId)}.`);
+      if (!motivoBajaForm) return;
+    }
+    if (editingRental) {
       // Equipos extra agregados al mismo paciente -> remito de entrega por esos.
       if (payload.create?.length) {
         entrega = { patientId: payload.create[0].patientId, equipmentIds: payload.create.map(r => ({ id: r.equipmentId, period: r.period })), ids: payload.create.map(r => r.id) };
@@ -1472,7 +1529,15 @@ function RentalsPage({ data, updateData }) {
         // Tampoco el remito de entrega (numero fijo): se conserva el que tenga guardado.
         return actual ? { ...nr, paymentStatusByMonth: actual.paymentStatusByMonth, ...(actual.remitoEntrega ? { remitoEntrega: actual.remitoEntrega } : {}) } : nr;
       };
-      const stamp = (nr) => sellarFinalizacion(cur.rentals.find(r => r.id === nr.id), conPagosActuales(nr), ahoraIso);
+      // Si OTRO dispositivo dio de baja este alquiler mientras el formulario estaba abierto y el
+      // usuario no toco el Estado, se conserva la baja (antes se "reactivaba" sin aviso).
+      const conBajaAjena = (nr) => {
+        const actual = cur.rentals.find(r => r.id === nr.id);
+        const original = editingRental && editingRental.id === nr.id ? editingRental : null;
+        if (!actual || !original || actual.status !== 'finalizado' || original.status === 'finalizado' || nr.status !== original.status) return nr;
+        return { ...nr, status: actual.status, finalizedAt: actual.finalizedAt, remitoRetiro: actual.remitoRetiro, remitoRetiroPendiente: actual.remitoRetiroPendiente, endDate: actual.endDate };
+      };
+      const stamp = (nr) => sellarFinalizacion(cur.rentals.find(r => r.id === nr.id), conBajaAjena(conPagosActuales(nr)), ahoraIso, nr.id === retiro?.id ? motivoBajaForm : undefined);
       let newRentals = [...cur.rentals];
       if (editingRental && payload.update) {
         newRentals = newRentals.map(r => r.id === payload.update.id ? stamp(payload.update) : r);
@@ -1641,6 +1706,11 @@ function RentalsPage({ data, updateData }) {
                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
                           <span className={`badge badge-${status}`}>{status}</span>
                           {estadoRemitoRetiro(rental) === 'pendiente' && <span className="badge badge-por_vencer" title="La baja quedó registrada, pero el remito de retiro no se generó o no se pudo descargar. Usá el botón Remito.">Remito pendiente</span>}
+                          {rental.status === 'finalizado' && (
+                            <span style={{ fontSize: 12, color: rental.motivoBaja ? 'var(--muted)' : '#B45309', lineHeight: 1.3, maxWidth: 220 }}>
+                              Baja {rental.finalizedAt ? formatDate(toLocalDateStr(new Date(rental.finalizedAt))) : ''}: {rental.motivoBaja || 'sin motivo registrado'}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="td-acciones">
@@ -3256,6 +3326,9 @@ function ContabilidadPage({ data, updateData }) {
     margenNeto: guardada.margenNeto ?? 20,
     gastoEntrega: guardada.gastoEntrega ?? 0,
   });
+  // Como estaban al abrir: al guardar se mandan SOLO los parametros que el usuario cambio (no
+  // se pisa uno cambiado en otro dispositivo mientras tanto).
+  const [cfgInicial] = useState(() => ({ ...cfg }));
   const sinGuardar = Number(cfg.margenBruto) !== Number(guardada.margenBruto ?? 30)
     || Number(cfg.margenNeto) !== Number(guardada.margenNeto ?? 20)
     || Number(cfg.gastoEntrega) !== Number(guardada.gastoEntrega ?? 0);
@@ -3266,9 +3339,10 @@ function ContabilidadPage({ data, updateData }) {
       settings: {
         ...(cur.settings || {}),
         contabilidad: {
-          margenBruto: Number(cfg.margenBruto) || 0,
-          margenNeto: Number(cfg.margenNeto) || 0,
-          gastoEntrega: Number(cfg.gastoEntrega) || 0,
+          ...((cur.settings || {}).contabilidad || {}),
+          ...Object.fromEntries(['margenBruto', 'margenNeto', 'gastoEntrega']
+            .filter(k => Number(cfg[k]) !== Number(cfgInicial[k]))
+            .map(k => [k, Number(cfg[k]) || 0])),
         }
       }
     }));
@@ -3967,6 +4041,7 @@ function CambiarClaveCard() {
 function SettingsPage({ data, updateData }) {
   const { settings, patients, equipment, rentals } = data;
   const [form, setForm] = useState(settings);
+  const [formInicial] = useState(settings); // como estaba al abrir (para guardar solo lo cambiado)
   const [importing, setImporting] = useState(false);
 
   const handleSave = () => {
@@ -3975,7 +4050,9 @@ function SettingsPage({ data, updateData }) {
     // se abrio la pantalla, y guardarla entera revertia la clave API regenerada o la
     // configuracion de Contabilidad cambiada en otro dispositivo.
     const CAMPOS = ['companyName', 'companyPhone', 'companyAddress', 'monthlyRentalPrice', 'dailyRentalPrice'];
-    const cambios = Object.fromEntries(CAMPOS.filter(k => k in form).map(k => [k, form[k]]));
+    // Y solo los que el usuario cambio: asi no se revierte un dato cambiado en otro dispositivo.
+    const cambios = Object.fromEntries(CAMPOS.filter(k => k in form && String(form[k] ?? '') !== String(formInicial[k] ?? '')).map(k => [k, form[k]]));
+    if (!Object.keys(cambios).length) { alert('No hay cambios para guardar'); return; }
     updateData(cur => ({ ...cur, settings: { ...cur.settings, ...cambios } }));
     alert('Configuración guardada');
   };
@@ -4008,10 +4085,12 @@ function SettingsPage({ data, updateData }) {
   };
 
   const handleBackup = () => {
+    // La clave de la API de Santi no va en el archivo (es un secreto y no hace falta restaurarla).
+    const { apiKey: _sinClave, _pasosAplicados: _sinIds, ...settingsBackup } = data.settings || {};
     const backup = {
       version: 1,
       date: new Date().toISOString(),
-      data
+      data: { ...data, settings: settingsBackup }
     };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -4035,7 +4114,8 @@ function SettingsPage({ data, updateData }) {
           return;
         }
         if (confirm(`¿Restaurar backup del ${backup.date ? new Date(backup.date).toLocaleString('es-AR') : 'archivo'}? Se reemplazarán todos los datos actuales.`)) {
-          updateData(restored);
+          // Se conserva la clave API actual (un backup viejo traeria una revocada o ninguna).
+          updateData(cur => ({ ...restored, settings: { ...(restored.settings || {}), apiKey: cur.settings?.apiKey } }));
           alert('Datos restaurados correctamente');
         }
       } catch {
