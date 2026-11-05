@@ -57,7 +57,10 @@ function diasEntre(desde, hasta) {
 // la funcion app_api_data de la base compara la clave contra settings.apiKey y
 // solo entonces devuelve los datos.
 async function getAuthorizedData(req, res) {
-  const key = req.query?.key;
+  // La clave puede venir en un header (recomendado: no queda en logs ni historiales) o, por
+  // compatibilidad, en ?key=.
+  const auth = String(req.headers?.authorization || '');
+  const key = req.headers?.['x-api-key'] || (auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '') || req.query?.key;
   if (!key) {
     res.status(401).json({ error: 'Falta la clave API (parametro key)' });
     return null;
@@ -169,7 +172,7 @@ async function handleVencimientos(req, res) {
   const proximos = activos.filter((r) => r.endDate > hoy && r.endDate <= hasta7).map(item)
     .sort((a, b) => a.fecha_vencimiento.localeCompare(b.fecha_vencimiento));
 
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Sin CORS: Santi (Hermes) llama servidor a servidor; ningun navegador ajeno lee estos datos.
   res.setHeader('Cache-Control', 'no-store');
   res.status(200).json({
     generado: new Date().toISOString(),
@@ -234,7 +237,7 @@ async function handlePrecios(req, res) {
 
   // Filtro opcional por categoria para respuestas mas chicas: ?cat=alquiler|venta|mascaras
   const cat = (req.query?.cat || '').toString().toLowerCase();
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Sin CORS: Santi (Hermes) llama servidor a servidor; ningun navegador ajeno lee estos datos.
   res.setHeader('Cache-Control', 'no-store');
   const out = {
     generado: new Date().toISOString(),
@@ -335,7 +338,7 @@ async function handleContabilidad(req, res) {
   }));
 
   const c = data.settings?.contabilidad || {};
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Sin CORS: Santi (Hermes) llama servidor a servidor; ningun navegador ajeno lee estos datos.
   res.setHeader('Cache-Control', 'no-store');
   res.status(200).json({
     generado: new Date().toISOString(),
@@ -405,8 +408,9 @@ async function handleImageProxy(req, res) {
       res.status(502).json({ error: `Upstream ${upstream.status}` });
       return;
     }
-    const contentType = upstream.headers.get('content-type') || '';
-    if (!contentType.startsWith('image/')) {
+    const contentType = (upstream.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    // Solo formatos de foto. SVG NO: puede llevar codigo que se ejecutaria en el dominio de la app.
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(contentType)) {
       res.status(415).json({ error: 'No es una imagen' });
       return;
     }
@@ -421,6 +425,9 @@ async function handleImageProxy(req, res) {
       return;
     }
     res.setHeader('Content-Type', contentType);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'public, max-age=86400, s-maxage=604800');
     res.status(200).send(buf);
@@ -499,7 +506,10 @@ async function handleSubirFoto(req, res) {
     headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ p_token: String(token || '') }),
   });
-  if (!sesion.ok) {
+  // Ademas del status, la base tiene que devolver una version (un token invalido no puede
+  // pasar aunque la funcion responda 200 con null).
+  const tsSesion = sesion.ok ? await sesion.json().catch(() => null) : null;
+  if (!sesion.ok || tsSesion === null || tsSesion === undefined || tsSesion === '') {
     res.status(403).json({ error: 'Sesion invalida: volve a ingresar con la contraseña' });
     return;
   }
@@ -512,6 +522,14 @@ async function handleSubirFoto(req, res) {
   const buf = Buffer.from(m[3], 'base64');
   if (buf.length > 3 * 1024 * 1024) {
     res.status(413).json({ error: 'La foto pesa mas de 3 MB' });
+    return;
+  }
+  // El contenido tiene que ser de verdad una imagen del tipo declarado (firma de los bytes).
+  const firmaOk = m[2] === 'jpeg' ? buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff
+    : m[2] === 'png' ? buf.slice(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    : buf.slice(0, 4).toString('latin1') === 'RIFF' && buf.slice(8, 12).toString('latin1') === 'WEBP';
+  if (!firmaOk) {
+    res.status(400).json({ error: 'El archivo no es una imagen valida' });
     return;
   }
   const ext = m[2] === 'jpeg' ? 'jpg' : m[2];
@@ -527,7 +545,7 @@ export default async function handler(req, res) {
     try {
       await handleSubirFoto(req, res);
     } catch (e) {
-      res.status(500).json({ error: 'No se pudo subir la foto', detail: String(e?.message || e) });
+      console.error('API:', e); res.status(500).json({ error: 'No se pudo subir la foto' });
     }
     return;
   }
@@ -535,7 +553,7 @@ export default async function handler(req, res) {
     try {
       await handleVencimientos(req, res);
     } catch (e) {
-      res.status(500).json({ error: 'Error interno', detail: String(e?.message || e) });
+      console.error('API:', e); res.status(500).json({ error: 'Error interno' });
     }
     return;
   }
@@ -543,7 +561,7 @@ export default async function handler(req, res) {
     try {
       await handlePrecios(req, res);
     } catch (e) {
-      res.status(500).json({ error: 'Error interno', detail: String(e?.message || e) });
+      console.error('API:', e); res.status(500).json({ error: 'Error interno' });
     }
     return;
   }
@@ -551,7 +569,7 @@ export default async function handler(req, res) {
     try {
       await handleContabilidad(req, res);
     } catch (e) {
-      res.status(500).json({ error: 'Error interno', detail: String(e?.message || e) });
+      console.error('API:', e); res.status(500).json({ error: 'Error interno' });
     }
     return;
   }
