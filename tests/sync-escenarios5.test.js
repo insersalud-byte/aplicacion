@@ -44,3 +44,26 @@ test('R6A-2 cuerpo de respuesta colgado bloquea el candado para siempre', async 
   globalThis.__insersaludTopeRpcMs = 0;
   assert.equal(r, 'termino');
 });
+
+test('R9-2 dos dispositivos pagan meses distintos del mismo alquiler: quedan los dos pagos', async () => {
+  const { db } = crearEntorno({ remoto: base() });
+  const A = await cargarModulo(); const uA = app(A, await A.loadData());
+  const B = await cargarModulo(); const uB = app(B, await B.loadData());
+  const pagar = (mk) => (d) => ({ ...d, rentals: d.rentals.map(r => r.id === 'r1' ? { ...r, paymentStatusByMonth: { ...(r.paymentStatusByMonth || {}), [mk]: { paid: true } } } : r) });
+  await uA.update(pagar('2026-09'));
+  await uB.update(pagar('2026-10'));           // B todavia no vio el pago de A
+  const r1 = db.data.rentals.find(r => r.id === 'r1');
+  assert.ok(r1.paymentStatusByMonth['2026-09']?.paid, 'se perdio el pago de septiembre');
+  assert.ok(r1.paymentStatusByMonth['2026-10']?.paid);
+});
+
+test('R9-2 editar campos distintos del mismo paciente en dos dispositivos', async () => {
+  const { db } = crearEntorno({ remoto: base() });
+  const A = await cargarModulo(); const uA = app(A, await A.loadData());
+  const B = await cargarModulo(); const uB = app(B, await B.loadData());
+  await uA.update(d => ({ ...d, patients: d.patients.map(p => p.id === 'p1' ? { ...p, phone: '351' } : p) }));
+  await uB.update(d => ({ ...d, patients: d.patients.map(p => p.id === 'p1' ? { ...p, address: 'Calle 1' } : p) }));
+  const p1 = db.data.patients.find(p => p.id === 'p1');
+  assert.equal(p1.phone, '351');
+  assert.equal(p1.address, 'Calle 1');
+});

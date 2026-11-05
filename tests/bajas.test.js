@@ -17,7 +17,7 @@ const gen = (prefijo, nombre) => `${prefijo}-${nombre.split(',')[0].toUpperCase(
 
 test('aplicarBaja finaliza, sella la fecha y deja el remito pendiente sin tocar el resto', () => {
   const d = base();
-  const n = aplicarBaja(d, 'r1', AHORA);
+  const n = aplicarBaja(d, 'r1', AHORA, 'Fin del tratamiento');
   const r1 = n.rentals.find(r => r.id === 'r1');
   assert.equal(r1.status, 'finalizado');
   assert.equal(r1.finalizedAt, AHORA);
@@ -28,16 +28,16 @@ test('aplicarBaja finaliza, sella la fecha y deja el remito pendiente sin tocar 
 });
 
 test('aplicarBaja sobre un alquiler ya finalizado o inexistente devuelve el mismo objeto', () => {
-  const d = aplicarBaja(base(), 'r1', AHORA);
-  assert.equal(aplicarBaja(d, 'r1', '2030-01-01T00:00:00.000Z'), d);
+  const d = aplicarBaja(base(), 'r1', AHORA, 'Fin del tratamiento');
+  assert.equal(aplicarBaja(d, 'r1', '2030-01-01T00:00:00.000Z', 'Fin del tratamiento'), d);
   assert.equal(d.rentals.find(r => r.id === 'r1').finalizedAt, AHORA, 'no pisa la fecha de baja');
-  assert.equal(aplicarBaja(d, 'no-existe', AHORA), d);
+  assert.equal(aplicarBaja(d, 'no-existe', AHORA, 'Fin del tratamiento'), d);
   const sinLista = { patients: [] };
-  assert.equal(aplicarBaja(sinLista, 'r1', AHORA), sinLista);
+  assert.equal(aplicarBaja(sinLista, 'r1', AHORA, 'Fin del tratamiento'), sinLista);
 });
 
 test('marcarRemitoRetiro saca el pendiente y guarda numero y fecha', () => {
-  const baja = aplicarBaja(base(), 'r1', AHORA);
+  const baja = aplicarBaja(base(), 'r1', AHORA, 'Fin del tratamiento');
   const n = marcarRemitoRetiro(baja, 'r1', { numero: 'RET-PEREZ-X1', fecha: '2026-10-17' });
   const r1 = n.rentals.find(r => r.id === 'r1');
   assert.equal(r1.remitoRetiroPendiente, undefined);
@@ -53,11 +53,11 @@ test('estadoRemitoRetiro: en curso no aplica y una baja vieja es "sin dato"', ()
 });
 
 test('reactivar limpia las marcas: la proxima baja genera un remito nuevo', () => {
-  const emitido = marcarRemitoRetiro(aplicarBaja(base(), 'r1', AHORA), 'r1', { numero: 'RET-A', fecha: '2026-10-17' });
+  const emitido = marcarRemitoRetiro(aplicarBaja(base(), 'r1', AHORA, 'Fin del tratamiento'), 'r1', { numero: 'RET-A', fecha: '2026-10-17' });
   const r = reactivarAlquiler({ ...emitido.rentals[0], status: 'activo' });
   assert.equal(r.remitoRetiro, undefined);
   assert.equal(r.remitoRetiroPendiente, undefined);
-  const segunda = aplicarBaja({ ...emitido, rentals: [r, emitido.rentals[1]] }, 'r1', '2026-11-01T12:00:00.000Z');
+  const segunda = aplicarBaja({ ...emitido, rentals: [r, emitido.rentals[1]] }, 'r1', '2026-11-01T12:00:00.000Z', 'Fin del tratamiento');
   assert.equal(datosRemitoRetiro(segunda, segunda.rentals[0], { hoy: '2026-11-01', generarNumero: () => 'RET-B' }).numero, 'RET-B');
 });
 
@@ -74,7 +74,7 @@ test('datosRemitoRetiro arma el remito con paciente, equipo y periodo', () => {
 });
 
 test('datosRemitoRetiro reutiliza numero y fecha de un remito ya emitido', () => {
-  const d = marcarRemitoRetiro(aplicarBaja(base(), 'r1', AHORA), 'r1', { numero: 'RET-ORIGINAL', fecha: '2026-10-17' });
+  const d = marcarRemitoRetiro(aplicarBaja(base(), 'r1', AHORA, 'Fin del tratamiento'), 'r1', { numero: 'RET-ORIGINAL', fecha: '2026-10-17' });
   const datos = datosRemitoRetiro(d, d.rentals[0], { hoy: '2026-12-31', generarNumero: () => 'RET-NUEVO' });
   assert.equal(datos.numero, 'RET-ORIGINAL');
   assert.equal(datos.fecha, '2026-10-17');
@@ -96,8 +96,8 @@ test('datosRemitoRetiro sin paciente usa un nombre por defecto', () => {
 });
 
 test('con datos nulos o sin lista las funciones no inventan un estado vacio', () => {
-  assert.equal(aplicarBaja(null, 'r1', AHORA), null);
-  assert.equal(aplicarBaja(undefined, 'r1', AHORA), undefined);
+  assert.equal(aplicarBaja(null, 'r1', AHORA, 'Fin del tratamiento'), null);
+  assert.equal(aplicarBaja(undefined, 'r1', AHORA, 'Fin del tratamiento'), undefined);
   assert.equal(marcarRemitoRetiro(null, 'r1', { numero: 'X', fecha: '2026-10-17' }), null);
   const sinLista = { patients: [] };
   assert.equal(marcarRemitoRetiro(sinLista, 'r1', { numero: 'X', fecha: '2026-10-17' }), sinLista);
@@ -105,7 +105,7 @@ test('con datos nulos o sin lista las funciones no inventan un estado vacio', ()
 
 test('aplicarBaja ignora un id indefinido', () => {
   const d = { rentals: [{ id: undefined, status: 'activo' }] };
-  assert.equal(aplicarBaja(d, undefined, AHORA), d);
+  assert.equal(aplicarBaja(d, undefined, AHORA, 'Fin del tratamiento'), d);
 });
 
 test('marcarRemitoRetiro no toca alquileres que no estan finalizados ni inexistentes', () => {
@@ -115,12 +115,12 @@ test('marcarRemitoRetiro no toca alquileres que no estan finalizados ni inexiste
 });
 
 test('marcarRemitoRetiro con la misma marca devuelve el mismo objeto (no hay guardado de mas)', () => {
-  const emitido = marcarRemitoRetiro(aplicarBaja(base(), 'r1', AHORA), 'r1', { numero: 'RET-A', fecha: '2026-10-17' });
+  const emitido = marcarRemitoRetiro(aplicarBaja(base(), 'r1', AHORA, 'Fin del tratamiento'), 'r1', { numero: 'RET-A', fecha: '2026-10-17' });
   assert.equal(marcarRemitoRetiro(emitido, 'r1', { numero: 'RET-A', fecha: '2026-10-17' }), emitido);
 });
 
 test('si el navegador no dejo bajar el PDF el numero se guarda pero sigue pendiente', () => {
-  const baja = aplicarBaja(base(), 'r1', AHORA);
+  const baja = aplicarBaja(base(), 'r1', AHORA, 'Fin del tratamiento');
   const n = marcarRemitoRetiro(baja, 'r1', { numero: 'RET-A', fecha: '2026-10-17', pendiente: true });
   const r1 = n.rentals.find(r => r.id === 'r1');
   assert.equal(r1.remitoRetiro.numero, 'RET-A');
@@ -173,13 +173,13 @@ test('sellarFinalizacion cubre alta, transicion, ya finalizado y reactivacion', 
 
 test('reactivar borra la fecha de baja: la segunda baja lleva su propia fecha en el remito', () => {
   const d = base();
-  const primera = aplicarBaja(d, 'r1', new Date(2026, 9, 1, 10, 0, 0).toISOString());
+  const primera = aplicarBaja(d, 'r1', new Date(2026, 9, 1, 10, 0, 0).toISOString(), 'Fin del tratamiento');
   const emitida = marcarRemitoRetiro(primera, 'r1', { numero: 'RET-1RA', fecha: '2026-10-01' });
   // se reactiva con Editar y se vuelve a dar de baja
   const reactivado = sellarFinalizacion(emitida.rentals[0], { ...emitida.rentals[0], status: 'activo' }, AHORA);
   assert.equal(reactivado.finalizedAt, undefined);
   assert.equal(reactivado.remitoRetiro, undefined);
-  const segunda = aplicarBaja({ ...emitida, rentals: [reactivado, emitida.rentals[1]] }, 'r1', new Date(2026, 9, 17, 18, 0, 0).toISOString());
+  const segunda = aplicarBaja({ ...emitida, rentals: [reactivado, emitida.rentals[1]] }, 'r1', new Date(2026, 9, 17, 18, 0, 0).toISOString(), 'Fin del tratamiento');
   const rec = segunda.rentals.find(r => r.id === 'r1');
   const datos = datosRemitoRetiro(segunda, rec, { hoy: '2026-10-17', generarNumero: () => 'RET-2DA' });
   assert.equal(datos.fecha, '2026-10-17');
@@ -203,7 +203,7 @@ test('guardar un formulario viejo de un alquiler finalizado no pisa las marcas d
 
 test('una copia sale con el detalle que tenia el remito aunque despues se borre el equipo', () => {
   const d = base();
-  const baja = aplicarBaja(d, 'r1', AHORA);
+  const baja = aplicarBaja(d, 'r1', AHORA, 'Fin del tratamiento');
   const original = datosRemitoRetiro(baja, baja.rentals[0], { hoy: '2026-10-17', generarNumero: gen });
   const emitido = marcarRemitoRetiro(baja, 'r1', { numero: original.numero, fecha: original.fecha, equipos: original.equipos });
   assert.deepEqual(emitido.rentals[0].remitoRetiro.equipos, [{ name: 'CPAP X', serialNumber: 'SN1', periodo: 'quincenal' }]);
@@ -218,7 +218,7 @@ test('una copia sale con el detalle que tenia el remito aunque despues se borre 
 
 test('sin equipo no se congela el aviso: el remito queda pendiente y se rehace cuando el equipo vuelve', () => {
   const d = base();
-  const baja = aplicarBaja({ ...d, equipment: [] }, 'r1', AHORA);
+  const baja = aplicarBaja({ ...d, equipment: [] }, 'r1', AHORA, 'Fin del tratamiento');
   const datos = datosRemitoRetiro(baja, baja.rentals[0], { hoy: '2026-10-17', generarNumero: gen });
   assert.equal(datos.faltaEquipo, true);
   const n = marcarRemitoRetiro(baja, 'r1', { numero: datos.numero, fecha: datos.fecha, pendiente: true, equipos: undefined });
@@ -233,4 +233,28 @@ test('sin equipo no se congela el aviso: el remito queda pendiente y se rehace c
   const ok = marcarRemitoRetiro(n, 'r1', { numero: rehecho.numero, fecha: rehecho.fecha, equipos: rehecho.equipos });
   assert.equal(estadoRemitoRetiro(ok.rentals[0]), 'emitido');
   assert.equal(ok.rentals[0].remitoRetiro.equipos.length, 1);
+});
+
+test('sin motivo no hay baja; con motivo queda anotado y sobrevive a la reactivacion', async () => {
+  const { reactivarAlquiler: reactivar, motivoValido, sellarFinalizacion: sellar } = await import('../src/data/bajas.js');
+  const d = base();
+  assert.equal(aplicarBaja(d, 'r1', AHORA), d);
+  assert.equal(aplicarBaja(d, 'r1', AHORA, '  '), d);
+  assert.equal(motivoValido('ok'), false);
+  const b = aplicarBaja(d, 'r1', AHORA, 'Fallecimiento del paciente');
+  const r1 = b.rentals.find(r => r.id === 'r1');
+  assert.equal(r1.motivoBaja, 'Fallecimiento del paciente');
+  assert.deepEqual(r1.historialEstado, [{ fecha: AHORA, accion: 'baja', motivo: 'Fallecimiento del paciente' }]);
+  const re = { ...reactivar(r1, '2026-11-01T10:00:00.000Z'), status: 'activo' };
+  assert.equal(re.motivoBaja, undefined);
+  assert.equal(re.historialEstado.length, 2);
+  assert.equal(re.historialEstado[1].accion, 'reactivado');
+  // Desde el formulario de edicion: tambien con motivo, y el historial de la base manda.
+  const viaForm = sellar(re, { ...re, status: 'finalizado', historialEstado: [] }, '2026-11-05T10:00:00.000Z', 'Lo devolvio');
+  assert.equal(viaForm.motivoBaja, 'Lo devolvio');
+  assert.equal(viaForm.historialEstado.length, 3);
+  // Editar notas de un finalizado conserva motivo e historial.
+  const editado = sellar(viaForm, { ...viaForm, notes: 'x', motivoBaja: undefined }, '2026-11-06T10:00:00.000Z');
+  assert.equal(editado.motivoBaja, 'Lo devolvio');
+  assert.equal(editado.historialEstado.length, 3);
 });
