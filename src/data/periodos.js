@@ -252,3 +252,57 @@ function pasoNormalizar(rental, hoy) {
   if (estado !== r.status) r = { ...r, status: estado };
   return r;
 }
+
+// ---- Historial de un alquiler: cuota por cuota, con su vencimiento ----
+// Arma la grilla de cuotas desde el inicio con la MISMA regla que periodosImpagos (cada cuota
+// se paga con la clave del periodo que vence) y dice de cada una si se pago, esta vencida
+// sin pagar o es la proxima. Asi el historial muestra fechas reales y no solo meses sueltos.
+// - alta: el primer periodo (inicio -> primer vencimiento) se cobra al iniciar. En mensual el
+//   mes de inicio tildado es ese mismo cobro (datos viejos), igual que periodosCobradosEnMes.
+// - otros: pagos tildados con claves que no caen en la grilla (cargados a mano): se listan
+//   aparte para no esconder ninguno.
+// - sinRegistro: cuotas viejas, anteriores al vencimiento guardado, sin pago tildado. Son los
+//   alquileres cargados con su fecha de inicio real cuando la app arranco: esos meses se cobraron
+//   por fuera y NO son deuda (periodosImpagos tampoco los cuenta).
+// - discrepancia: el vencimiento guardado no coincide con la primera cuota sin pagar.
+export function historialDeCuotas(rental, hoy = getToday()) {
+  const periodo = periodoDe(rental);
+  const pagos = rental.paymentStatusByMonth || {};
+  const pagada = (k) => Boolean(pagos[k]?.paid);
+  const fechaPago = (k) => (pagos[k]?.updatedAt ? String(pagos[k].updatedAt) : '');
+  const finalizado = rental.status === 'finalizado';
+  const baja = finalizado ? diaDeBaja(rental) : '';
+  const desde = esFecha(rental.endDate) ? rental.endDate : '';
+  const usadas = new Set();
+  const cuotas = [];
+  let proximo = '';
+  let primerImpago = '';
+  if (esFecha(rental.startDate)) {
+    const inicio = rental.startDate;
+    const claveAlta = claveDePeriodo(inicio, periodo);
+    const primerVto = nextDueAfter(inicio, inicio, periodo);
+    const altaTildada = periodo === 'mensual' && pagada(claveAlta);
+    if (altaTildada) usadas.add(claveAlta);
+    cuotas.push({ tipo: 'alta', desde: inicio, hasta: primerVto, clave: altaTildada ? claveAlta : '', fechaPago: altaTildada ? fechaPago(claveAlta) || inicio : inicio });
+    let d = primerVto;
+    let guard = 0;
+    while (d && guard < 400) {
+      const clave = claveDePeriodo(d, periodo);
+      const paga = pagada(clave);
+      const sig = nextDueAfter(d, inicio, periodo);
+      if (finalizado && (!baja || d > baja) && !paga) break;
+      if (!paga && d > hoy) { proximo = d; if (!primerImpago) primerImpago = d; break; }
+      const tipo = paga ? 'pagada' : (desde && d < desde ? 'sinRegistro' : 'impaga');
+      cuotas.push({ tipo, desde: d, hasta: sig, vence: d, clave, fechaPago: paga ? fechaPago(clave) : '' });
+      usadas.add(clave);
+      if (tipo === 'impaga' && !primerImpago) primerImpago = d;
+      d = sig; guard++;
+    }
+  }
+  const otros = Object.keys(pagos).filter(k => pagada(k) && !usadas.has(k)).sort()
+    .map(k => ({ clave: k, fechaPago: fechaPago(k) }));
+  const discrepancia = !finalizado && esFecha(rental.startDate) && esFecha(rental.endDate) && primerImpago && rental.endDate !== primerImpago
+    ? { guardado: rental.endDate, segunPagos: primerImpago } : null;
+  const cobradas = cuotas.filter(c => c.tipo === 'alta' || c.tipo === 'pagada').length + otros.length;
+  return { periodo, cuotas, otros, proximo, primerImpago, discrepancia, cobradas, impagas: cuotas.filter(c => c.tipo === 'impaga').length };
+}
