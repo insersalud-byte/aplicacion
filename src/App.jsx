@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { loadData, saveData, generateId, generateDocNumber, getToday, toLocalDateStr, formatDate, formatCurrency, getDaysUntilEnd, parseExcelData, sendWhatsApp, generateInvoicePDF, downloadInvoicePDF, generateRemitoEquipoPDF, subirFoto, onSyncStatus, getSyncStatus, onDataChange, syncIfRemoteChanged, login, logout, getSessionToken, onAuthRequired, hayCambiosSinSubir, cambiarClave } from './data/database';
 import { Icon, EquipoFoto, Avatar } from './ui';
-import { periodoDe, addDaysStr, precioEquipoPorPeriodo, periodosCobradosEnMes, montoCobradoEnMes, periodosContratadosEnMes, mesDeBaja, vigenteEnMes, periodosImpagos, primerVencimientoImpago, nextMonthDate, alignDueDay, rollingDueDate, normalizarAlquiler } from './data/periodos';
+import { periodoDe, addDaysStr, precioEquipoPorPeriodo, periodosCobradosEnMes, montoCobradoEnMes, periodosContratadosEnMes, mesDeBaja, vigenteEnMes, periodosImpagos, primerVencimientoImpago, nextMonthDate, alignDueDay, rollingDueDate, normalizarAlquiler, historialDeCuotas } from './data/periodos';
 import { precioMensualEquipo, itemsADescontar, descontarStock, devolverStock, faltantesDeStock, CATS_STOCK } from './data/stock';
 import { motivoValido, aplicarBaja, marcarRemitoRetiro, sellarFinalizacion, estadoRemitoRetiro, datosRemitoRetiro } from './data/bajas';
 import { onRemitoListo, avisarRemitoListo } from './data/remitoAviso';
@@ -1188,114 +1188,136 @@ function PatientsPage({ data, updateData }) {
   );
 }
 
-// Historial de pagos de un paciente: cada mes cobrado, con la fecha en que se
-// registro el pago, el equipo y el importe. Al final, la suma total.
-function PatientHistorialModal({ patient, rentals, equipment, onClose }) {
-  const equipName = (id) => equipment.find(e => e.id === id)?.name || 'Sin equipo';
-
-  const pagos = [];
-  rentals
-    .filter(r => r.patientId === patient.id)
-    .forEach(r => {
-      const meses = r.paymentStatusByMonth || {};
-      // El primer periodo se cobra al iniciar (no tiene clave tildada). Mismo criterio que
-      // periodosCobradosEnMes: en mensual, si el mes de alta tambien esta tildado, no se duplica.
-      const mesAlta = String(r.startDate || '').slice(0, 7);
-      const altaYaTildada = periodoDe(r) === 'mensual' && meses[mesAlta]?.paid;
-      if (r.startDate && !altaYaTildada) {
-        pagos.push({
-          mes: String(r.startDate),
-          alta: true,
-          periodo: periodoDe(r),
-          fechaPago: String(r.startDate),
-          equipo: equipName(r.equipmentId),
-          monto: Number(r.price) || 0,
-        });
-      }
-      Object.keys(meses).forEach(mk => {
-        if (!meses[mk]?.paid) return;
-        pagos.push({
-          mes: mk,
-          periodo: periodoDe(r),
-          fechaPago: meses[mk].updatedAt || '',
-          equipo: equipName(r.equipmentId),
-          monto: Number(r.price) || 0,
-        });
-      });
-    });
-  // Mas recientes primero (por mes cobrado).
-  pagos.sort((a, b) => String(b.mes).localeCompare(String(a.mes)));
-  const total = pagos.reduce((s, p) => s + p.monto, 0);
+// Historial de un paciente (o de un solo alquiler, desde Alquileres): por cada alquiler, su
+// estado y proximo vencimiento, cada cuota con el periodo que cubre y la fecha en que vencia,
+// si se pago y cuando, las vencidas sin pagar, y las bajas/reactivaciones con su motivo.
+function PatientHistorialModal({ patient, rentals, equipment, onClose, soloRentalId = null }) {
+  const equipo = (id) => equipment.find(e => e.id === id);
+  // Mas reciente primero: los en curso arriba, despues los finalizados.
+  const lista = rentals
+    .filter(r => (soloRentalId ? r.id === soloRentalId : r.patientId === patient?.id))
+    .sort((a, b) => (a.status === 'finalizado') - (b.status === 'finalizado') || String(b.startDate || '').localeCompare(String(a.startDate || '')));
+  const secciones = lista.map(r => ({ r, h: historialDeCuotas(r) }));
+  const total = secciones.reduce((s, { r, h }) => s + h.cobradas * (Number(r.price) || 0), 0);
+  const fechaDe = (iso) => (iso ? formatDate(/T/.test(String(iso)) ? toLocalDateStr(new Date(iso)) : String(iso).slice(0, 10)) : 's/f');
+  const fila = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '7px 0', borderBottom: '1px solid #E3F2FD' };
+  const chico = { fontSize: 12, color: '#5A6978' };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
-          <h2 className="modal-title">Historial de pagos</h2>
+          <h2 className="modal-title">Historial</h2>
           <span className="modal-close" onClick={onClose}>×</span>
         </div>
+        <p style={{ fontWeight: 600, marginBottom: 12 }}>{patient?.name || 'Paciente'}</p>
 
-        <p style={{ fontWeight: 600, marginBottom: 4 }}>{patient.name}</p>
-        <p className="page-subtitle" style={{ marginBottom: 14 }}>
-          {pagos.length} {pagos.length === 1 ? 'pago registrado' : 'pagos registrados'}
-        </p>
-
-        {pagos.length === 0 ? (
-          <p style={{ textAlign: 'center', color: '#5A6978', padding: 16 }}>
-            Este paciente todavia no tiene pagos registrados.
-          </p>
-        ) : (
-          <>
-            {pagos.map((p, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid #E3F2FD' }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, textTransform: p.alta ? 'none' : 'capitalize' }}>{p.alta ? `Alta del ${formatDate(p.mes)} (primer periodo)` : etiquetaPeriodo(p.mes)}</div>
-                  <div style={{ fontSize: 12, color: '#5A6978' }}>{p.equipo}</div>
-                  <div style={{ fontSize: 12, color: '#5A6978' }}>
-                    Pagado el {p.fechaPago ? formatDate(String(p.fechaPago).slice(0, 10)) : 's/f'}
-                  </div>
-                </div>
-                <strong style={{ color: '#2E7D32', whiteSpace: 'nowrap' }}>{formatCurrency(p.monto)}</strong>
-              </div>
-            ))}
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, padding: '12px 14px', background: '#E8F5E9', border: '1px solid #A5D6A7', borderRadius: 8 }}>
-              <span style={{ fontWeight: 700, color: '#2E7D32' }}>TOTAL COBRADO</span>
-              <strong style={{ fontSize: 18, color: '#2E7D32' }}>{formatCurrency(total)}</strong>
-            </div>
-          </>
+        {secciones.length === 0 && (
+          <p style={{ textAlign: 'center', color: '#5A6978', padding: 16 }}>Este paciente no tiene alquileres registrados.</p>
         )}
-        {(() => {
-          // Bajas y reactivaciones de los alquileres del paciente, con su motivo.
-          const eventos = rentals.filter(r => r.patientId === patient.id).flatMap(r => {
-            const equipo = equipment.find(e => e.id === r.equipmentId)?.name || 'Equipo';
-            const hist = Array.isArray(r.historialEstado) ? r.historialEstado : [];
-            const lista = hist.map(h => ({ ...h, equipo }));
-            // Bajas anteriores a este registro (sin historial): igual se muestran.
-            if (r.status === 'finalizado' && !hist.some(h => h.accion === 'baja')) {
-              lista.push({ fecha: r.finalizedAt || r.endDate || '', accion: 'baja', motivo: r.motivoBaja || '', equipo });
-            }
-            return lista;
-          }).sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
-          if (!eventos.length) return null;
+
+        {secciones.map(({ r, h }) => {
+          const eq = equipo(r.equipmentId);
+          const finalizado = r.status === 'finalizado';
+          const precio = Number(r.price) || 0;
+          const hist = Array.isArray(r.historialEstado) ? r.historialEstado : [];
+          const eventos = [...hist];
+          if (finalizado && !hist.some(x => x.accion === 'baja')) eventos.push({ fecha: r.finalizedAt || r.endDate || '', accion: 'baja', motivo: r.motivoBaja || '' });
+          eventos.sort((a, b) => String(b.fecha).localeCompare(String(a.fecha)));
+          // Las cuotas viejas sin registro (anteriores a la carga en la app) van en una sola linea.
+          const viejas = h.cuotas.filter(c => c.tipo === 'sinRegistro');
+          const cuotas = h.cuotas.filter(c => c.tipo !== 'sinRegistro' && c.tipo !== 'alta').reverse();
+          const alta = h.cuotas.find(c => c.tipo === 'alta');
           return (
-            <div style={{ marginTop: 18 }}>
-              <h3 style={{ fontSize: 15, margin: '0 0 8px', color: '#0D47A1' }}>Historial de bajas</h3>
-              {eventos.map((ev, i) => (
-                <div key={i} style={{ padding: '8px 10px', borderBottom: '1px solid #EEF3F8', fontSize: 13 }}>
-                  <div style={{ fontWeight: 700 }}>
-                    {ev.accion === 'baja' ? 'Dado de baja' : 'Reactivado'}
-                    {' '}{ev.fecha ? formatDate(/T/.test(String(ev.fecha)) ? toLocalDateStr(new Date(ev.fecha)) : String(ev.fecha).slice(0, 10)) : 's/f'}
-                    {' '}· {ev.equipo}
-                  </div>
-                  {ev.accion === 'baja' && (
-                    <div style={{ color: ev.motivo ? '#5A6978' : '#B45309' }}>Motivo: {ev.motivo || 'sin motivo registrado (baja anterior al registro de motivos)'}</div>
-                  )}
+            <div key={r.id} style={{ border: '1px solid #DCE6F0', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700 }}>{eq?.name || 'Equipo no encontrado'}{eq?.serialNumber ? ` (${eq.serialNumber})` : ''}</div>
+                  <div style={chico}>{PERIODO_LABEL[h.periodo]} · {formatCurrency(precio)} · Inicio {formatDate(r.startDate)}</div>
                 </div>
-              ))}
+                <span className={`badge badge-${finalizado ? 'finalizado' : (h.impagas ? 'vencido' : 'activo')}`}>{finalizado ? 'finalizado' : (h.impagas ? 'vencido' : 'activo')}</span>
+              </div>
+
+              <div style={{ marginTop: 10, padding: '8px 10px', borderRadius: 8, fontSize: 13.5, fontWeight: 600,
+                background: finalizado ? '#F1F5F9' : h.impagas ? '#FDECEC' : '#E8F5E9',
+                color: finalizado ? '#475569' : h.impagas ? '#B91C1C' : '#2E7D32' }}>
+                {finalizado
+                  ? `Dado de baja el ${fechaDe(r.finalizedAt || r.endDate)}`
+                  : h.impagas
+                    ? `Debe ${h.impagas} ${h.impagas === 1 ? 'cuota' : 'cuotas'}: vencido desde el ${formatDate(h.primerImpago)}`
+                    : `Al día. Próximo vencimiento: ${formatDate(h.proximo || r.endDate)}`}
+              </div>
+              {h.discrepancia && (
+                <div style={{ marginTop: 6, padding: '6px 10px', borderRadius: 8, fontSize: 12.5, background: '#FFF7E6', color: '#B45309' }}>
+                  Revisar: el vencimiento cargado es {formatDate(h.discrepancia.guardado)}, pero según los pagos debería ser {formatDate(h.discrepancia.segunPagos)}.
+                </div>
+              )}
+
+              <div style={{ marginTop: 8 }}>
+                {!finalizado && h.proximo && h.impagas === 0 && (
+                  <div style={fila}>
+                    <div><div style={{ fontWeight: 600 }}>Próxima cuota: {formatDate(h.proximo)}</div><div style={chico}>Todavía no vence</div></div>
+                    <span style={{ ...chico, whiteSpace: 'nowrap' }}>Pendiente</span>
+                  </div>
+                )}
+                {[...cuotas, ...(viejas.length ? [{ tipo: 'viejas' }] : []), ...(alta ? [alta] : [])].map((c, i) => c.tipo === 'viejas' ? (
+                  <div key="viejas" style={fila}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, color: '#5A6978' }}>{viejas.length} {viejas.length === 1 ? 'cuota anterior' : 'cuotas anteriores'}: {formatDate(viejas[0].desde)} al {formatDate(viejas[viejas.length - 1].hasta)}</div>
+                      <div style={chico}>Antes de cargar los pagos en el sistema. No figuran como deuda.</div>
+                    </div>
+                    <span style={{ ...chico, whiteSpace: 'nowrap' }}>Sin registro</span>
+                  </div>
+                ) : (
+                  <div key={i} style={fila}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600 }}>
+                        {c.tipo === 'alta' ? `Alta: ${formatDate(c.desde)} al ${formatDate(c.hasta)}` : `Cuota del ${formatDate(c.desde)} al ${formatDate(c.hasta)}`}
+                      </div>
+                      <div style={chico}>
+                        {c.tipo === 'alta' ? 'Primer periodo, se cobra al iniciar' : `Vencía el ${formatDate(c.vence)}`}
+                        {c.tipo !== 'impaga' && ` · Pagado el ${fechaDe(c.fechaPago)}`}
+                      </div>
+                    </div>
+                    {c.tipo === 'impaga'
+                      ? <strong style={{ color: '#B91C1C', whiteSpace: 'nowrap' }}>Sin pagar</strong>
+                      : <strong style={{ color: '#2E7D32', whiteSpace: 'nowrap' }}>{formatCurrency(precio)}</strong>}
+                  </div>
+                ))}
+                {h.otros.map((o, i) => (
+                  <div key={'o' + i} style={fila}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, textTransform: 'capitalize' }}>{etiquetaPeriodo(o.clave)}</div>
+                      <div style={chico}>Pago cargado fuera de las fechas de vencimiento · Pagado el {fechaDe(o.fechaPago)}</div>
+                    </div>
+                    <strong style={{ color: '#2E7D32', whiteSpace: 'nowrap' }}>{formatCurrency(precio)}</strong>
+                  </div>
+                ))}
+              </div>
+
+              {eventos.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#0D47A1', marginBottom: 4 }}>Bajas y reactivaciones</div>
+                  {eventos.map((ev, i) => (
+                    <div key={i} style={{ fontSize: 13, padding: '4px 0' }}>
+                      <span style={{ fontWeight: 600 }}>{ev.accion === 'baja' ? 'Dado de baja' : 'Reactivado'} {fechaDe(ev.fecha)}</span>
+                      {ev.accion === 'baja' && (
+                        <span style={{ color: ev.motivo ? '#5A6978' : '#B45309' }}> · Motivo: {ev.motivo || 'sin motivo registrado (baja anterior al registro de motivos)'}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           );
-        })()}
+        })}
+
+        {secciones.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 14px', background: '#E8F5E9', border: '1px solid #A5D6A7', borderRadius: 8 }}>
+            <span style={{ fontWeight: 700, color: '#2E7D32' }}>TOTAL COBRADO</span>
+            <strong style={{ fontSize: 18, color: '#2E7D32' }}>{formatCurrency(total)}</strong>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1360,6 +1382,7 @@ function RentalsPage({ data, updateData }) {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingRental, setEditingRental] = useState(null);
+  const [historialRental, setHistorialRental] = useState(null);
 
   const getPatientName = (id) => patients.find(p => p.id === id)?.name || '-';
   const getEquipmentName = (id) => equipment.find(e => e.id === id)?.name || '-';
@@ -1686,7 +1709,7 @@ function RentalsPage({ data, updateData }) {
                   <th>Paciente</th>
                   <th>Equipo</th>
                   <th>Inicio</th>
-                  <th>Fin</th>
+                  <th>Vence</th>
                   <th>Precio</th>
                   <th>Estado</th>
                   <th>Acciones</th>
@@ -1716,6 +1739,7 @@ function RentalsPage({ data, updateData }) {
                       <td className="td-acciones">
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                           <button className="btn btn-sm btn-secondary" onClick={() => { setEditingRental(rental); setShowModal(true); }} title="Editar" aria-label="Editar"><Icon name="edit" size={16} /></button>
+                          <button className="btn btn-sm btn-secondary" onClick={() => setHistorialRental(rental)} title="Historial: cuotas, vencimientos, pagos y bajas de este alquiler"><Icon name="clipboard" size={15} /><span className="btn-txt">Historial</span></button>
                           <button className="btn btn-sm btn-secondary" title={rental.status === 'finalizado' ? (estadoRemitoRetiro(rental) === 'emitido' ? 'Descargar otra copia del remito de retiro' : 'Generar remito de retiro') : 'Generar remito de entrega'} onClick={() => handleRemitoManual(rental)}><Icon name="file" size={15} /><span className="btn-txt">Remito</span></button>
                           {rental.status !== 'finalizado' && (
                             <button className="btn btn-sm btn-danger" onClick={() => handleBaja(rental)} title="Dar de baja: genera remito de retiro y libera el equipo" aria-label="Dar de baja"><Icon name="stop" size={15} /><span className="btn-txt">Dar de baja</span></button>
@@ -1754,7 +1778,17 @@ function RentalsPage({ data, updateData }) {
             }));
             return newPatient;
           }}
-          onClose={() => { setShowModal(false); setEditingRental(null); }} 
+          onClose={() => { setShowModal(false); setEditingRental(null); }}
+        />
+      )}
+
+      {historialRental && (
+        <PatientHistorialModal
+          patient={patients.find(p => p.id === historialRental.patientId) || { name: getPatientName(historialRental.patientId) }}
+          rentals={rentals}
+          equipment={equipment}
+          soloRentalId={historialRental.id}
+          onClose={() => setHistorialRental(null)}
         />
       )}
     </div>
