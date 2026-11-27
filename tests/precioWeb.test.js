@@ -110,3 +110,45 @@ test('auditoria: el vinculo inicial es de una sola vez', () => {
   assert.equal(vinculosPendientes(borrado), 0);
   assert.equal(aplicarVinculoWeb(borrado, () => 'id'), borrado);
 });
+
+import { aplicarPreciosDeLaWeb } from '../src/data/precioWeb.js';
+
+test('la web manda: copia el precio en pesos al precio principal, sin tocar lo no vinculado', () => {
+  const productos = { a: { moneda: 'ARS', monto: 520000, pesos: 520000 }, b: { moneda: 'USD', monto: 35, pesos: 56875 } };
+  for (let i = 0; i < 10; i++) productos['x' + i] = { moneda: 'ARS', monto: 1, pesos: 1 };
+  const data = {
+    equiposNuevos: [{ id: 1, name: 'CPAP', price: 499000, webSlug: 'a' }, { id: 2, name: 'otro', price: 5 }],
+    mascaras: [{ id: 3, name: 'RESCOMF', precio: 0, webSlug: 'b' }, { id: 4, name: 'sin vinculo', precio: 9 }],
+    patients: [{ id: 'p' }],
+  };
+  const { data: out, cambios } = aplicarPreciosDeLaWeb(data, { productos });
+  assert.equal(out.equiposNuevos[0].price, 520000);
+  assert.equal(out.equiposNuevos[0].webMoneda, 'ARS');
+  assert.equal(out.equiposNuevos[1], data.equiposNuevos[1]);
+  assert.equal(out.mascaras[0].precio, 56875);
+  assert.equal(out.mascaras[0].webPrecio, 35);
+  assert.equal(out.mascaras[1], data.mascaras[1]);
+  assert.equal(out.patients, data.patients);
+  assert.equal(cambios.length, 2);
+  // otra vez: nada que cambiar, mismo objeto (no genera guardado)
+  assert.equal(aplicarPreciosDeLaWeb(out, { productos }).data, out);
+  // archivo roto o casi vacio: no toca nada
+  assert.equal(aplicarPreciosDeLaWeb(data, { productos: { a: productos.a } }).data, data);
+  assert.equal(aplicarPreciosDeLaWeb(data, null).data, data);
+});
+
+test('la web manda: si muchos precios saltan de golpe (dolar mal cargado) no copia nada', () => {
+  const productos = {}, equiposNuevos = [];
+  for (let i = 0; i < 12; i++) { productos['s' + i] = { moneda: 'USD', monto: 100, pesos: 16250000 }; equiposNuevos.push({ id: i, price: 162500, webSlug: 's' + i, webCopiado: true }); }
+  const data = { equiposNuevos, mascaras: [] };
+  const r = aplicarPreciosDeLaWeb(data, { productos });
+  assert.equal(r.data, data);
+  assert.equal(r.frenado, 12);
+  // uno solo que sube mucho: pasa
+  const p2 = { ...productos }; for (let i = 0; i < 12; i++) p2['s' + i] = { moneda: 'USD', monto: 100, pesos: 162500 };
+  p2.s0 = { moneda: 'USD', monto: 200, pesos: 325000 };
+  assert.equal(aplicarPreciosDeLaWeb(data, { productos: p2 }).data.equiposNuevos[0].price, 325000);
+  // primera copia (precios viejos cargados a mano): no frena aunque salten
+  const viejos = { equiposNuevos: equiposNuevos.map(r => { const o = { ...r }; delete o.webCopiado; return o; }), mascaras: [] };
+  assert.equal(aplicarPreciosDeLaWeb(viejos, { productos }).data.equiposNuevos[3].price, 16250000);
+});
