@@ -5,6 +5,9 @@ import { periodoDe, addDaysStr, precioEquipoPorPeriodo, periodosCobradosEnMes, m
 import { precioMensualEquipo, itemsADescontar, descontarStock, devolverStock, faltantesDeStock, CATS_STOCK } from './data/stock';
 import { motivoValido, aplicarBaja, marcarRemitoRetiro, sellarFinalizacion, estadoRemitoRetiro, datosRemitoRetiro } from './data/bajas';
 import { onRemitoListo, avisarRemitoListo } from './data/remitoAviso';
+import { precioPropuesto, textoPrecioWeb, normalizarCamposWeb, errorCamposWeb, igualarPrecioWeb, cambioCamposWeb, saltoPrecioWeb } from './data/precioWeb';
+import { WEB_CATALOGO } from './data/webCatalogo';
+import { vinculosPendientes, aplicarVinculoWeb } from './data/vinculoWebInicial';
 import './App.css';
 
 // ── Remitos de alquiler (entrega / retiro) ──────────────────────────────────
@@ -2410,10 +2413,57 @@ function conStockActual(original, editado, actual) {
   return igual ? { ...editado, stock: actual.stock } : editado;
 }
 
+// Precio de venta en insersalud.com (Equipos nuevos y Mascarillas). Lo que se carga aca pasa a la
+// web todos los dias a las 10:20; los precios en dolares la web los muestra en pesos al dolar BNA.
+function CamposPrecioWeb({ form, setForm, registros = [] }) {
+  // Al elegir (o cambiar) el producto de la web se propone su precio: el que ya tienen los otros
+  // registros de ese producto o, si es el primero, el que hoy tiene la web. Nunca queda el precio
+  // del producto anterior (se copiaria a las unidades del nuevo).
+  const elegir = (slug) => setForm(f => {
+    if (slug === (f.webSlug || '')) return f;
+    const ref = WEB_CATALOGO.find(p => p.slug === slug);
+    const propuesto = slug ? precioPropuesto(slug, registros.filter(r => r.id !== f.id), ref?.precio) : null;
+    const out = { ...f, webSlug: slug, webPrecio: propuesto?.webPrecio ?? '', webMoneda: propuesto?.webMoneda ?? 'ARS' };
+    delete out.webConfirmado;
+    return out;
+  });
+  return (
+    <div className="form-group" style={{ border: '1px solid var(--line)', borderRadius: 10, padding: '10px 12px' }}>
+      <label className="form-label">Precio de venta en insersalud.com</label>
+      <select className="form-select" value={form.webSlug || ''} onChange={e => elegir(e.target.value)}>
+        <option value="">No se publica en la web</option>
+        {WEB_CATALOGO.map(p => <option key={p.slug} value={p.slug}>{p.categoria} · {p.nombre}</option>)}
+      </select>
+      {form.webSlug && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px', gap: 8, marginTop: 8 }}>
+          <input type="number" min="0" step="1" className="form-input" placeholder="Precio de venta" value={form.webPrecio ?? ''} onChange={e => setForm(f => ({ ...f, webPrecio: e.target.value }))} />
+          <select className="form-select" value={form.webMoneda === 'USD' ? 'USD' : 'ARS'} onChange={e => setForm(f => ({ ...f, webMoneda: e.target.value }))}>
+            <option value="ARS">Pesos ($)</option>
+            <option value="USD">Dólares (U$S)</option>
+          </select>
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: '#5A6978', marginTop: 6 }}>
+        Pasa a la web todos los días a las 10:20. Si está en dólares, la web lo muestra en pesos al dólar oficial BNA del día.
+      </div>
+    </div>
+  );
+}
+
+// Contra que precio se mide un salto al guardar: el anterior del registro si ya era ese producto;
+// si es nuevo o cambio de producto, el de las otras unidades o el de referencia de la web.
+function referenciaWeb(antes, despues, registros) {
+  if (!despues || !despues.webSlug) return null;
+  if (antes && antes.webSlug === despues.webSlug) return antes;
+  const ref = WEB_CATALOGO.find(p => p.slug === despues.webSlug);
+  const prop = precioPropuesto(despues.webSlug, registros.filter(r => r.id !== despues.id), ref?.precio);
+  return prop ? { webSlug: despues.webSlug, ...prop } : null;
+}
+
 // Formulario de Equipo Nuevo. Componente de nivel superior: definido dentro del render de
 // la pagina se desmontaba en cada redibujo (p. ej. al llegar un cambio de otro dispositivo)
 // y se perdia lo tipeado y la foto.
-function EquipoNuevoModal({ editing, onSave, onClose }) {
+function EquipoNuevoModal({ editing, registros, onSave, onClose }) {
   const [form, setForm] = useState(editing || { name: '', description: '', price: '', priceUsd: '', priceVentaUsd: '', stock: '', imageUrl: '', serialNumber: '' });
   const [cantidad, setCantidad] = useState(1);
   const [serials, setSerials] = useState(() => {
@@ -2470,7 +2520,9 @@ subirFoto(dataUrl, 'equipos-nuevos')
         <form onSubmit={e => {
           e.preventDefault();
           if (!form.name) { alert('Nombre obligatorio'); return; }
-          const base = { ...form, price: Number(form.price), priceUsd: Number(form.priceUsd || 0), priceVentaUsd: Number(form.priceVentaUsd || 0) };
+          const errWeb = errorCamposWeb(form);
+          if (errWeb) { alert(errWeb); return; }
+          const base = normalizarCamposWeb({ ...form, price: Number(form.price), priceUsd: Number(form.priceUsd || 0), priceVentaUsd: Number(form.priceVentaUsd || 0) });
           if (editing) {
             const stk = Number(form.stock || 0);
             const series = serials.slice(0, Math.max(1, stk)).map(s => String(s ?? '').trim());
@@ -2516,6 +2568,7 @@ subirFoto(dataUrl, 'equipos-nuevos')
             <div className="form-group"><label className="form-label">Precio USD</label><input type="number" className="form-input" value={form.priceUsd || ''} onChange={e => setForm({...form, priceUsd: e.target.value})} /></div>
             <div className="form-group"><label className="form-label">Venta USD</label><input type="number" className="form-input" value={form.priceVentaUsd || ''} onChange={e => setForm({...form, priceVentaUsd: e.target.value})} /></div>
           </div>
+          <CamposPrecioWeb form={form} setForm={setForm} registros={registros} />
           <div className="form-group">
             <label className="form-label">Foto</label>
             <input type="file" accept="image/*" onChange={handleImg} className="form-input" />
@@ -2547,7 +2600,24 @@ function EquiposNuevosPage({ data, updateData }) {
         ? `¿Guardar los cambios de "${nombre}"?`
         : (cant > 1 ? `¿Agregar ${cant} unidades individuales de "${nombre}" al catalogo?` : `¿Agregar "${nombre}" al catalogo?`);
     if (!confirm(msg)) return;
+    let ref = isArray ? payload[0] : payload;
+    // Precio de la web: un salto de mas de 40% se confirma y queda marcado (la tarea diaria no
+    // publica saltos asi sin confirmar). Solo si cambio la parte web se iguala a las otras unidades.
+    const salto = saltoPrecioWeb(referenciaWeb(editing && editing.id ? editing : null, ref, [...(data.equiposNuevos || []), ...(data.mascaras || [])]), ref);
+    if (salto && !confirm(salto)) return;
+    const igualar = Boolean(ref && ref.webSlug) && (!(editing && editing.id) || cambioCamposWeb(editing, ref));
+    if (igualar) {
+      // Guardado desde el formulario = precio confirmado por el dueño (la tarea lo publica aunque salte).
+      payload = isArray ? payload.map(it => ({ ...it, webConfirmado: it.webPrecio })) : { ...payload, webConfirmado: payload.webPrecio };
+      ref = isArray ? payload[0] : payload;
+    }
     updateData(cur => {
+      const nuevo = guardarEquipoNuevo(cur);
+      return igualar ? igualarPrecioWeb(nuevo, ref && { ...ref, id: ref.id || reemplazaId || null }) : nuevo;
+    });
+    setShowModal(false);
+    setEditing(null);
+    function guardarEquipoNuevo(cur) {
       const lista = cur.equiposNuevos || [];
       if (reemplazaId) {
         // la primera unidad conserva el id original para no perder la posicion en el catalogo.
@@ -2566,9 +2636,7 @@ function EquiposNuevosPage({ data, updateData }) {
           ? lista.map(e => e.id === payload.id ? conStockActual(editing, payload, e) : e)
           : [...lista, ...(isArray ? payload : [payload]).map(it => ({ ...it, id: generateId() }))]
       };
-    });
-    setShowModal(false);
-    setEditing(null);
+    }
   };
 
   const handleDelete = (id) => {
@@ -2586,6 +2654,16 @@ function EquiposNuevosPage({ data, updateData }) {
       <div className="card" style={{ padding: 12, marginBottom: 15 }}>
         <input type="text" className="form-input" placeholder="Buscar equipo..." value={search} onChange={e => setSearch(e.target.value)} />
       </div>
+      {vinculosPendientes(data) > 0 && (
+        <div className="card" style={{ padding: 12, marginBottom: 15, border: '1px solid #99F6E4', background: '#F0FDFA' }}>
+          <div style={{ fontWeight: 700, marginBottom: 4 }}>Vincular con insersalud.com</div>
+          <div style={{ fontSize: 13, color: '#5A6978', marginBottom: 8 }}>Carga en los equipos y mascarillas el producto de la web y el precio que hoy tiene la web. Desde ahí, lo que cambies acá pasa a la web cada día a las 10:20.</div>
+          <button className="btn btn-sm btn-primary" onClick={() => {
+            if (!confirm(`¿Vincular ${vinculosPendientes(data)} productos con insersalud.com, con los precios que hoy tiene la web?`)) return;
+            updateData(cur => aplicarVinculoWeb(cur, generateId));
+          }}>Vincular ahora</button>
+        </div>
+      )}
       <button className="btn btn-primary btn-block" onClick={() => { setEditing(null); setShowModal(true); }} style={{ marginBottom: 20 }}>+ Agregar Equipo Nuevo</button>
       {filtered.length === 0 ? (
         <div className="empty-state"><div className="empty-icon"><Icon name="tag" size={28} /></div><div className="empty-title">Sin equipos nuevos</div></div>
@@ -2601,6 +2679,7 @@ function EquiposNuevosPage({ data, updateData }) {
               {avisoPrecioEquipoNuevo(eq) && <div style={{ fontSize: 12, fontWeight: 700, color: '#B45309', background: 'var(--warn-50)', borderRadius: 6, padding: '3px 6px', margin: '4px 0' }}>{avisoPrecioEquipoNuevo(eq)}</div>}
               {eq.priceUsd > 0 && <div style={{ fontSize: 13, color: '#43A047', fontWeight: 600 }}>USD {eq.priceUsd}</div>}
               {eq.priceVentaUsd > 0 && <div style={{ fontSize: 12, color: '#5A6978' }}>Venta: USD {eq.priceVentaUsd}</div>}
+              {textoPrecioWeb(eq) && <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F766E' }}>En la web: {textoPrecioWeb(eq)}</div>}
               <div style={{ fontSize: 13, fontWeight: 600, color: Number(eq.stock) > 0 ? '#43A047' : '#E53935', marginBottom: 8 }}>Stock: {Number(eq.stock) || 0}</div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button className="btn btn-sm btn-secondary" title="Otra unidad con distinto N° de serie" onClick={() => { setEditing({ ...eq, id: null, serialNumber: '', stock: 1 }); setShowModal(true); }} aria-label="Duplicar" title="Duplicar"><Icon name="copy" size={16} /></button>
@@ -2612,7 +2691,7 @@ function EquiposNuevosPage({ data, updateData }) {
         </div>
       )}
       {showModal && (
-        <EquipoNuevoModal editing={editing} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); }} />
+        <EquipoNuevoModal editing={editing} registros={[...(data.equiposNuevos || []), ...(data.mascaras || [])]} onSave={handleSave} onClose={() => { setShowModal(false); setEditing(null); }} />
       )}
     </div>
   );
@@ -2641,12 +2720,20 @@ function MascarasPage({ data, updateData }) {
   const handleSave = (mascara) => {
     const isNew = !mascara.id;
     if (!confirm(isNew ? `¿Agregar el producto "${mascara.name}"?` : `¿Guardar los cambios de "${mascara.name}"?`)) return;
-    updateData(cur => ({
-      ...cur,
-      mascaras: isNew
-        ? [...cur.mascaras, { ...mascara, id: generateId() }]
-        : cur.mascaras.map(m => m.id === mascara.id ? conStockActual(editingMascara, mascara, m) : m)
-    }));
+    const salto = saltoPrecioWeb(referenciaWeb(isNew ? null : editingMascara, mascara, [...(data.equiposNuevos || []), ...(data.mascaras || [])]), mascara);
+    if (salto && !confirm(salto)) return;
+    const igualar = Boolean(mascara.webSlug) && (isNew || cambioCamposWeb(editingMascara, mascara));
+    if (igualar) mascara = { ...mascara, webConfirmado: mascara.webPrecio };
+    const id = mascara.id || generateId();
+    updateData(cur => {
+      const nuevo = {
+        ...cur,
+        mascaras: isNew
+          ? [...cur.mascaras, { ...mascara, id }]
+          : cur.mascaras.map(m => m.id === mascara.id ? conStockActual(editingMascara, mascara, m) : m)
+      };
+      return igualar ? igualarPrecioWeb(nuevo, { ...mascara, id }) : nuevo;
+    });
     setShowModal(false);
     setEditingMascara(null);
   };
@@ -2679,6 +2766,8 @@ function MascarasPage({ data, updateData }) {
       name: mascara.name + ' (copia)',
       stock: 0 
     };
+    // La copia suele ser otro producto: el vinculo con la web se elige de nuevo.
+    delete duplicate.webSlug; delete duplicate.webPrecio; delete duplicate.webMoneda; delete duplicate.webConfirmado;
     setEditingMascara(duplicate);
     setShowModal(true);
   };
@@ -2746,6 +2835,7 @@ function MascarasPage({ data, updateData }) {
                 {mascara.precio > 0 && (
                   <div style={{ fontSize: 13, color: '#1565C0', fontWeight: 'bold' }}>{formatCurrency(mascara.precio)}</div>
                 )}
+                {textoPrecioWeb(mascara) && <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F766E' }}>En la web: {textoPrecioWeb(mascara)}</div>}
                 <div style={{ display: 'flex', gap: 6, marginTop: 'auto', paddingTop: 8 }}>
                   <button className="btn btn-sm btn-secondary" style={{ flex: 1 }} onClick={() => { setEditingMascara(mascara); setShowModal(true); }}><Icon name="edit" size={15} /> Editar</button>
                   <button className="btn btn-sm btn-secondary" onClick={() => handleDuplicate(mascara)} aria-label="Duplicar" title="Duplicar"><Icon name="copy" size={16} /></button>
@@ -2758,13 +2848,13 @@ function MascarasPage({ data, updateData }) {
       )}
 
       {showModal && (
-        <MascaraModal mascara={editingMascara} onSave={handleSave} onClose={() => { setShowModal(false); setEditingMascara(null); }} />
+        <MascaraModal mascara={editingMascara} registros={[...(data.equiposNuevos || []), ...(data.mascaras || [])]} onSave={handleSave} onClose={() => { setShowModal(false); setEditingMascara(null); }} />
       )}
     </div>
   );
 }
 
-function MascaraModal({ mascara, onSave, onClose }) {
+function MascaraModal({ mascara, registros, onSave, onClose }) {
   const [form, setForm] = useState(mascara || {
     name: '',
     type: 'mascarilla',
@@ -2810,7 +2900,9 @@ function MascaraModal({ mascara, onSave, onClose }) {
       alert('Ingrese nombre');
       return;
     }
-    onSave(form);
+    const errWeb = errorCamposWeb(form);
+    if (errWeb) { alert(errWeb); return; }
+    onSave(normalizarCamposWeb(form));
   };
 
   return (
@@ -2853,6 +2945,7 @@ function MascaraModal({ mascara, onSave, onClose }) {
             <label className="form-label">Precio ($)</label>
             <input type="number" className="form-input" value={form.precio} onChange={e => setForm({...form, precio: Number(e.target.value)})} />
           </div>
+          <CamposPrecioWeb form={form} setForm={setForm} registros={registros} />
           
           <div className="form-group">
             <label className="form-label">Descripción</label>
