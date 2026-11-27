@@ -5,7 +5,7 @@ import { periodoDe, addDaysStr, precioEquipoPorPeriodo, periodosCobradosEnMes, m
 import { precioMensualEquipo, itemsADescontar, descontarStock, devolverStock, faltantesDeStock, CATS_STOCK } from './data/stock';
 import { motivoValido, aplicarBaja, marcarRemitoRetiro, sellarFinalizacion, estadoRemitoRetiro, datosRemitoRetiro } from './data/bajas';
 import { onRemitoListo, avisarRemitoListo } from './data/remitoAviso';
-import { precioPropuesto, textoPrecioWeb, normalizarCamposWeb, errorCamposWeb, igualarPrecioWeb, cambioCamposWeb, saltoPrecioWeb } from './data/precioWeb';
+import { precioPropuesto, textoPrecioWeb, normalizarCamposWeb, errorCamposWeb, igualarPrecioWeb, cambioCamposWeb, saltoPrecioWeb, aplicarPreciosDeLaWeb, URL_PRECIOS_WEB } from './data/precioWeb';
 import { WEB_CATALOGO } from './data/webCatalogo';
 import { vinculosPendientes, aplicarVinculoWeb } from './data/vinculoWebInicial';
 import './App.css';
@@ -471,6 +471,33 @@ function App() {
       clearInterval(iv);
     };
   }, [authed]);
+
+  // Precios de venta: la web manda (pedido del dueño). Al abrir la app y cada 30 minutos se lee
+  // insersalud.com/precios-web.json y se copia el precio en pesos en Equipos nuevos y Mascarillas
+  // vinculados a la web. La tarea programada de las 10:20 abre la app para que pase cada mañana.
+  useEffect(() => {
+    if (!authed || loading) return;
+    let vivo = true;
+    const traer = async () => {
+      if (!vivo || !dataRef.current) return;
+      try {
+        const r = await fetch(URL_PRECIOS_WEB, { cache: 'no-store' });
+        if (!r.ok) return;
+        const web = await r.json();
+        if (!vivo || !dataRef.current) return;
+        const prueba = aplicarPreciosDeLaWeb(dataRef.current, web);
+        if (prueba.frenado) { console.warn(`Precios de la web NO copiados: ${prueba.frenado} saltan mas de 40% de golpe (revisar el dolar de la web).`); return; }
+        if (prueba.data === dataRef.current) return;
+        updateData(cur => aplicarPreciosDeLaWeb(cur, web).data);
+      } catch (e) { console.warn('No se pudieron leer los precios de la web:', e.message); }
+    };
+    const t0 = setTimeout(traer, 4000);
+    const iv = setInterval(traer, 30 * 60 * 1000);
+    // Al vincular o editar un producto con la web, se trae su precio enseguida (no a los 30 min).
+    const ya = () => setTimeout(traer, 800);
+    window.addEventListener('insersalud-precios-web', ya);
+    return () => { vivo = false; clearTimeout(t0); clearInterval(iv); window.removeEventListener('insersalud-precios-web', ya); };
+  }, [authed, loading, updateData]);
 
   if (!authed) {
     return <LoginPage onLogin={() => { setLoading(true); setAuthed(true); }} />;
@@ -2413,8 +2440,8 @@ function conStockActual(original, editado, actual) {
   return igual ? { ...editado, stock: actual.stock } : editado;
 }
 
-// Precio de venta en insersalud.com (Equipos nuevos y Mascarillas). Lo que se carga aca pasa a la
-// web todos los dias a las 10:20; los precios en dolares la web los muestra en pesos al dolar BNA.
+// Vinculo con insersalud.com (Equipos nuevos y Mascarillas). La web manda: el precio se copia solo
+// desde la web (en pesos; los de dolares al dolar BNA del dia). Aca solo se elige el producto.
 function CamposPrecioWeb({ form, setForm, registros = [] }) {
   // Al elegir (o cambiar) el producto de la web se propone su precio: el que ya tienen los otros
   // registros de ese producto o, si es el primero, el que hoy tiene la web. Nunca queda el precio
@@ -2434,17 +2461,11 @@ function CamposPrecioWeb({ form, setForm, registros = [] }) {
         <option value="">No se publica en la web</option>
         {WEB_CATALOGO.map(p => <option key={p.slug} value={p.slug}>{p.categoria} · {p.nombre}</option>)}
       </select>
-      {form.webSlug && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 130px', gap: 8, marginTop: 8 }}>
-          <input type="number" min="0" step="1" className="form-input" placeholder="Precio de venta" value={form.webPrecio ?? ''} onChange={e => setForm(f => ({ ...f, webPrecio: e.target.value }))} />
-          <select className="form-select" value={form.webMoneda === 'USD' ? 'USD' : 'ARS'} onChange={e => setForm(f => ({ ...f, webMoneda: e.target.value }))}>
-            <option value="ARS">Pesos ($)</option>
-            <option value="USD">Dólares (U$S)</option>
-          </select>
-        </div>
+      {form.webSlug && textoPrecioWeb(form) && (
+        <div style={{ marginTop: 8, fontWeight: 700, color: '#0F766E' }}>En la web: {textoPrecioWeb(form)}</div>
       )}
       <div style={{ fontSize: 12, color: '#5A6978', marginTop: 6 }}>
-        Pasa a la web todos los días a las 10:20. Si está en dólares, la web lo muestra en pesos al dólar oficial BNA del día.
+        La web manda: el precio de este producto se copia solo desde insersalud.com (cada mañana a las 10:20 y cada vez que se abre la app), en pesos; los que están en dólares, al dólar oficial BNA del día. Para cambiarlo, se cambia en la web.
       </div>
     </div>
   );
@@ -2541,7 +2562,7 @@ subirFoto(dataUrl, 'equipos-nuevos')
           <div className="form-group"><label className="form-label">Nombre *</label><input type="text" className="form-input" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div>
           <div className="form-group"><label className="form-label">Descripcion (Marca / Modelo)</label><textarea className="form-textarea" value={form.description} onChange={e => setForm({...form, description: e.target.value})} /></div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div className="form-group"><label className="form-label">Precio ARS</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
+            <div className="form-group"><label className="form-label">Precio ARS{form.webSlug ? ' (lo copia de la web)' : ''}</label><input type="number" className="form-input" value={form.price} onChange={e => setForm({...form, price: e.target.value})} /></div>
             {editing
               ? <div className="form-group"><label className="form-label">Stock</label><input type="number" min="0" className="form-input" value={form.stock || ''} onChange={e => setStock(e.target.value)} /></div>
               : <div className="form-group"><label className="form-label">Cantidad</label><input type="number" min="1" className="form-input" value={cantidad} onChange={e => setCant(e.target.value)} /></div>
@@ -2615,6 +2636,7 @@ function EquiposNuevosPage({ data, updateData }) {
       const nuevo = guardarEquipoNuevo(cur);
       return igualar ? igualarPrecioWeb(nuevo, ref && { ...ref, id: ref.id || reemplazaId || null }) : nuevo;
     });
+    if (ref && ref.webSlug) window.dispatchEvent(new Event('insersalud-precios-web'));
     setShowModal(false);
     setEditing(null);
     function guardarEquipoNuevo(cur) {
@@ -2734,6 +2756,7 @@ function MascarasPage({ data, updateData }) {
       };
       return igualar ? igualarPrecioWeb(nuevo, { ...mascara, id }) : nuevo;
     });
+    if (mascara.webSlug) window.dispatchEvent(new Event('insersalud-precios-web'));
     setShowModal(false);
     setEditingMascara(null);
   };
@@ -2767,7 +2790,7 @@ function MascarasPage({ data, updateData }) {
       stock: 0 
     };
     // La copia suele ser otro producto: el vinculo con la web se elige de nuevo.
-    delete duplicate.webSlug; delete duplicate.webPrecio; delete duplicate.webMoneda; delete duplicate.webConfirmado;
+    delete duplicate.webSlug; delete duplicate.webPrecio; delete duplicate.webMoneda; delete duplicate.webConfirmado; delete duplicate.webCopiado;
     setEditingMascara(duplicate);
     setShowModal(true);
   };
@@ -2942,7 +2965,7 @@ function MascaraModal({ mascara, registros, onSave, onClose }) {
           </div>
 
           <div className="form-group">
-            <label className="form-label">Precio ($)</label>
+            <label className="form-label">Precio ($){form.webSlug ? ' (lo copia de la web)' : ''}</label>
             <input type="number" className="form-input" value={form.precio} onChange={e => setForm({...form, precio: Number(e.target.value)})} />
           </div>
           <CamposPrecioWeb form={form} setForm={setForm} registros={registros} />
