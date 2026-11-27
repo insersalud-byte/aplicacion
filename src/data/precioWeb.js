@@ -1,8 +1,7 @@
-// Precio de venta en insersalud.com de los Equipos nuevos y las Mascarillas (pedido 27-nov-2026).
-// Cada registro puede llevar: webSlug (ficha de la web, ver webCatalogo.js), webPrecio (numero
-// entero) y webMoneda ('ARS' o 'USD'). Todos los dias a las 10:20 una tarea lee estos campos y
-// pasa los precios a la web (scripts/sync-precios-app.mjs del repo INSER). Logica pura: se prueba
-// con node (tests/precioWeb.test.js).
+// Precio de venta de insersalud.com en los Equipos nuevos y las Mascarillas (27-nov-2026).
+// LA WEB MANDA: cada registro vinculado lleva webSlug (ficha de la web, ver webCatalogo.js) y la app
+// copia de la web el precio en pesos (aplicarPreciosDeLaWeb, mas abajo) en su precio principal;
+// webPrecio/webMoneda guardan el precio tal como figura en la web. Logica pura: tests/precioWeb.test.js.
 
 const miles = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, '.');
 
@@ -52,7 +51,7 @@ export function normalizarCamposWeb(form) {
   const o = { ...form };
   const slug = String(o.webSlug || '').trim();
   if (!slug) {
-    delete o.webSlug; delete o.webPrecio; delete o.webMoneda; delete o.webConfirmado;
+    delete o.webSlug; delete o.webPrecio; delete o.webMoneda; delete o.webConfirmado; delete o.webCopiado;
     return o;
   }
   o.webSlug = slug;
@@ -64,7 +63,7 @@ export function normalizarCamposWeb(form) {
 // Error para mostrar si el formulario quedo a medias (producto elegido sin precio).
 export function errorCamposWeb(form) {
   if (String(form.webSlug || '').trim() && !(Number(form.webPrecio) > 0)) {
-    return 'Cargá el precio de venta en la web, o elegí "No se publica en la web".';
+    return 'Ese producto todavía no tiene precio en la web: elegí otro o "No se publica en la web".';
   }
   return '';
 }
@@ -104,4 +103,45 @@ export function productosParaWeb(data) {
     }
   }
   return out;
+}
+
+// ---- La web manda (decision del dueño, 27-nov-2026) ----
+// insersalud.com publica /precios-web.json con el precio de venta de cada producto (en pesos; los que
+// estan en dolares, al dolar BNA del dia). La app lo copia en el precio principal de cada registro
+// vinculado: "Precio ARS" (price) de Equipos nuevos y "Precio ($)" (precio) de Mascarillas, y deja en
+// webPrecio/webMoneda el precio tal como figura en la web. Devuelve el MISMO objeto si no hay cambios.
+export const URL_PRECIOS_WEB = 'https://insersalud.com/precios-web.json';
+export function aplicarPreciosDeLaWeb(data, web) {
+  const productos = web && web.productos;
+  // Un archivo vacio o roto no borra ni cambia nada.
+  if (!data || !productos || Object.keys(productos).length < 10) return { data, cambios: [] };
+  const cambios = [];
+  let vinculados = 0, saltos = 0;
+  const pasar = (lista, campo) => {
+    if (!Array.isArray(lista)) return lista;
+    let cambio = false;
+    const out = lista.map(r => {
+      const p = r && r.webSlug ? productos[r.webSlug] : null;
+      if (!p || !(Number(p.pesos) > 0)) return r;
+      const pesos = Math.round(Number(p.pesos));
+      // El freno mira solo precios que ya venian de la web (webCopiado): la primera copia reemplaza
+      // precios viejos cargados a mano (o costos) y es normal que salte.
+      const antes = Number(r[campo]) || 0;
+      if (r.webCopiado) { vinculados++; if (antes > 0 && Math.abs(pesos / antes - 1) > 0.4) saltos++; }
+      const moneda = p.moneda === 'USD' ? 'USD' : 'ARS';
+      const monto = Math.round(Number(p.monto) || 0);
+      if (Number(r[campo]) === pesos && Number(r.webPrecio) === monto && r.webMoneda === moneda && r.webCopiado) return r;
+      cambio = true;
+      if (Number(r[campo]) !== pesos) cambios.push({ nombre: r.name || '', antes: Number(r[campo]) || 0, ahora: pesos });
+      return { ...r, [campo]: pesos, webPrecio: monto, webMoneda: moneda, webCopiado: true };
+    });
+    return cambio ? out : lista;
+  };
+  const equiposNuevos = pasar(data.equiposNuevos, 'price');
+  const mascaras = pasar(data.mascaras, 'precio');
+  // Freno: si muchos precios saltan mas de 40% de golpe (p. ej. un dolar mal cargado en la web), no
+  // se copia nada y se avisa. Un salto aislado (un producto que cambio de precio) pasa.
+  if (saltos >= 4 && saltos > vinculados * 0.3) return { data, cambios: [], frenado: saltos };
+  if (equiposNuevos === data.equiposNuevos && mascaras === data.mascaras) return { data, cambios };
+  return { data: { ...data, equiposNuevos, mascaras }, cambios };
 }
