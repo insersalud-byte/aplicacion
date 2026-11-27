@@ -55,10 +55,12 @@
 - Logica pura `historialDeCuotas` en periodos.js (tests en tests/historial.test.js). Misma regla que periodosImpagos: las cuotas sin pagar ANTERIORES al vencimiento guardado son "sin registro" (alquileres viejos cargados con su inicio real; se cobraron antes de la app), no deuda. Avisa si el vencimiento guardado no coincide con la primera cuota impaga.
 - La columna "Fin" de Alquileres ahora se llama "Vence" (siempre mostro el vencimiento).
 
-### Precios de la web desde la app (27-nov-2026)
-- Equipos nuevos y Mascarillas tienen "Precio de venta en insersalud.com": webSlug (ficha de la web, lista en src/data/webCatalogo.js), webPrecio, webMoneda ('ARS'|'USD') y webConfirmado (= webPrecio cuando se guardo desde el formulario). Logica pura en src/data/precioWeb.js (tests/precioWeb.test.js). Al guardar un cambio web se copia a las otras unidades del mismo producto (igualarPrecioWeb); salto >40% o cambio de moneda pide confirmar.
-- Vinculo inicial unico (src/data/vinculoWebInicial.js, boton "Vincular ahora" en Equipos nuevos, marca settings.webVinculoInicial): cargo los precios que tenia la web ese dia (decision del dueño: la web como base).
-- Una tarea programada diaria a las 10:20 (Argentina) lee esos campos desde el Chrome de Sergio y corre scripts/sync-precios-app.mjs del repo INSER, que reescribe el price de LandingPage.jsx y lista las otras menciones del precio (FAQ, landings, patologias, Santi) para cambiarlas. La web muestra los precios en dolares en pesos al dolar BNA del dia.
+### Precios de venta: la web manda (27-nov-2026)
+- Equipos nuevos y Mascarillas se vinculan a un producto de insersalud.com (webSlug; lista en src/data/webCatalogo.js). Decision del dueño: LA WEB MANDA, la app copia.
+- La web genera en cada build /precios-web.json (scripts/prerender-meta.mjs del repo INSER, CORS *) con el precio de cada producto en pesos (los de dolares x src/data/dolar.json, dolar BNA del dia).
+- La app lo lee al abrir, cada 30 min y al guardar un producto vinculado (efecto en App, aplicarPreciosDeLaWeb en src/data/precioWeb.js) y copia los pesos en el precio principal: price de Equipos nuevos y precio de Mascarillas; webPrecio/webMoneda = como figura en la web. Freno: si 4+ precios (y mas del 30% de los vinculados) saltan mas de 40% de golpe, no copia nada. JSON roto o con menos de 10 productos: no toca nada.
+- La tarea programada de las 10:20 abre la app en el Chrome de Sergio para que la copia pase cada mañana y avisa si algo falla. El vinculo inicial (vinculoWebInicial.js, settings.webVinculoInicial) se hizo una sola vez el 27-nov. CSP: connect-src incluye https://insersalud.com.
+- scripts/sync-precios-app.mjs (INSER, app -> web) quedo sin uso desde que se invirtio la direccion.
 
 ### Auditoria de logica (3-nov-2026)
 - Logica pura separada y con tests (`npm test`, node --test): `src/data/periodos.js` (vencimientos, normalizacion de Inicio `normalizarAlquiler`, cobrado/contratado/vigente por mes, baja en hora local), `src/data/stock.js` (precio mensual de alquiler, stock de ventas), `src/data/fechas.js`. Tests en `tests/` (periodos, bajas, stock, sync).
