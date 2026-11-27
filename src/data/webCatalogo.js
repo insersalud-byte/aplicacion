@@ -1,0 +1,43 @@
+// Productos a la venta de insersalud.com (ofertas y tienda de LandingPage.jsx del repo INSER), para
+// vincular cada equipo nuevo o mascarilla de la app con su ficha de la web. El precio que se carga
+// en la app ("Precio en insersalud.com") pasa a la web todos los dias a las 10:20.
+// Si se agrega un producto a la web, sumarlo aca (slug exacto de LandingPage.jsx).
+// precio = el de la web al 27-nov-2026 (solo referencia; manda el que se carga en la app).
+export const WEB_CATALOGO = [
+  {slug: "bipap-bmc-g2-con-frecuencia-respiratoria-y-humidificador",nombre: "BiPAP BMC G3 con Frecuencia Respiratoria y Humidificador",categoria: "BiPAP",precio: "$1.300.000"},
+  {slug: "stellar-50-resmed-con-humidificador-y-bateria",nombre: "STELLAR 150 RESMED con Humidificador y Batería",categoria: "BiPAP",precio: "U$S 7.342"},
+  {slug: "concentrador-de-oxigeno-bmc-estacionario",nombre: "Concentrador de Oxígeno BMC Estacionario",categoria: "Concentrador",precio: "$999.000"},
+  {slug: "concentrador-de-oxigeno-yuwell-10-litros",nombre: "Concentrador de Oxígeno YUWELL 10 Litros (Alto Flujo)",categoria: "Concentrador",precio: "$2.800.000"},
+  {slug: "concentrador-de-oxigeno-yuwell-7f-5b",nombre: "Concentrador de Oxígeno YUWELL 7F-5B 5 Litros",categoria: "Concentrador",precio: "$1.170.000"},
+  {slug: "concentrador-de-oxigeno-estacionario1",nombre: "Concentrador de Oxígeno YUWELL Estacionario",categoria: "Concentrador",precio: "U$S 713"},
+  {slug: "concentrador-portatil-gce-zen-o-con-carrito-y-2-baterias",nombre: "Concentrador Portátil GCE Zen-O (2 Bat. + Carro)",categoria: "Concentrador",precio: "U$S 3.747"},
+  {slug: "concentrador-de-oxigeno-portatil-simplygo",nombre: "Concentrador Portátil PHILIPS SIMPLYGO",categoria: "Concentrador",precio: "U$S 3.887"},
+  {slug: "cough-asisst-asistente-tos",nombre: "Cough Assist — Asistente de Tos",categoria: "Cough Assist",precio: "U$S 9.084"},
+  {slug: "autocpap-bmc-g2s",nombre: "AUTOCPAP BMC G2S con Humidificador",categoria: "CPAP",precio: "$630.000"},
+  {slug: "oferta-autocpap-bmc-g2s-m1-mini-con-almohadillas-nasales-con-humidificador-p2h-",nombre: "AUTOCPAP BMC G2S Mini con Humidificador p2H",categoria: "CPAP",precio: "U$S 1.400"},
+  {slug: "autocpap-philips-dreamstation-con-humidificador-y-conectividad-",nombre: "AUTOCPAP PHILIPS DREAMSTATION con Humidificador",categoria: "CPAP",precio: "U$S 758"},
+  {slug: "autocpap-resmed-airsense-10-con-nube",nombre: "AUTOCPAP RESMED AIRSENSE 10 con Conectividad",categoria: "CPAP",precio: "U$S 907"},
+  {slug: "cpap-bmc-g2s",nombre: "CPAP BMC G2S con Humidificador",categoria: "CPAP",precio: "$520.000"},
+  {slug: "cpap-philips-dreamstation-con-humidificador-y-conectividad-",nombre: "CPAP PHILIPS DREAMSTATION con Humidificador",categoria: "CPAP",precio: "U$S 579"},
+  {slug: "cpap-resmed-airsense-10",nombre: "CPAP ResMed AirSense 10",categoria: "CPAP",precio: "$974.000"},
+  {slug: "cpap-yuwell-yh-360-con-humidificador",nombre: "CPAP YUWELL YH-360 con Humidificador",categoria: "CPAP",precio: "U$S 416"},
+  {slug: "poligrafo-bmc-yh-600b-pro-",nombre: "POLÍGRAFO BMC YH-600B PRO (equipo para profesionales)",categoria: "Diagnóstico",precio: "U$S 1.570"},
+  {slug: "buconasal-sin-apoya-frente-bmc-sml-f5a-cpapbpap",nombre: "Buconasal BMC F5A sin Apoya Frente (S/M/L)",categoria: "Máscara",precio: "U$S 52"},
+  {slug: "buconasal-con-apoya-frente-yuwell-cpapbpap",nombre: "Buconasal YUWELL con Apoya Frente CPAP/BiPAP",categoria: "Máscara",precio: "U$S 52"},
+  {slug: "buconasal-sin-apoya-frente-yuwell-yf02-cpapbpap",nombre: "Buconasal YUWELL YF02 sin Apoya Frente",categoria: "Máscara",precio: "U$S 55"},
+  {slug: "nascara-nasal-pediatrica-infant-cpap-kit-00-0-1-2-3-4-5",nombre: "Infant CPAP Kit Pediátrico (00, 0, 1, 2, 3, 4, 5)",categoria: "Máscara",precio: "U$S 97"},
+  {slug: "mascara-buconasal-bmc-f2-codo-azul",nombre: "Máscara Buconasal BMC F2 Codo Azul — Terapia Intensiva",categoria: "Máscara",precio: "$68.000"},
+  {slug: "-mascara-nasal-airfit-mimimo-contacto-talles-swsm-resmed",nombre: "Máscara Nasal AirFit Mínimo Contacto RESMED (SW/S/M)",categoria: "Máscara",precio: "U$S 157"},
+  {slug: "nascara-nasal-con-apoya-frente-bmc-n4-talle-m-l",nombre: "Máscara Nasal BMC N4 con Apoya Frente (M/L)",categoria: "Máscara",precio: "U$S 36"},
+  {slug: "nascara-nasal-sin-apoya-frente-bmc-n5a-talles-swsm-",nombre: "Máscara Nasal BMC N5a sin Apoya Frente (SW/S/M)",categoria: "Máscara",precio: "U$S 60"},
+  {slug: "nascara-nasal-pediatrica-nasal-hsiner-cirri-mini-s-m-l-xs",nombre: "Máscara Nasal Pediátrica HSINER Cirri Mini (XS/S/M/L)",categoria: "Máscara",precio: "U$S 105"},
+  {slug: "nascara-nasal-peditrica-jirafa-philips-respironics",nombre: "Máscara Nasal Pediátrica Philips Wisp (jirafa)",categoria: "Máscara",precio: "U$S 227"},
+  {slug: "mascara-nasal-yuwell-pillow-l-o-m-yp-01-para-cpap-y-bipap",nombre: "Máscara Nasal Pillow YUWELL YP-01 (L/M)",categoria: "Máscara",precio: "U$S 42"},
+  {slug: "mascara-nasal-para-cpap-y-bipap",nombre: "Máscara Nasal RESCOMF CPAP/BIPAP",categoria: "Máscara",precio: "U$S 35"},
+  {slug: "mascara-cpap-bipap-bmc-f6-nasobucal-con-apoya-frontal-",nombre: "Máscara Nasobucal BMC F6 Multitalle",categoria: "Máscara",precio: "U$S 124"},
+  {slug: "mascarilla-nasal-cpap",nombre: "Mascarilla Nasal DreamWear — Mínimo Contacto",categoria: "Máscara",precio: "U$S 153"},
+  {slug: "mascarilla-nasobucal-dreamwear-philips-cpap",nombre: "Mascarilla Nasobucal DreamWear Philips CPAP",categoria: "Máscara",precio: "U$S 157"},
+  {slug: "mascarilla-nasobucal-airfit-f30-resmed-cpapbpap",nombre: "Nasobucal AirFit F30 RESMED CPAP/BiPAP",categoria: "Máscara",precio: "U$S 212"},
+  {slug: "mochila-de-oxigeno-tubo-de0415-regulador-bolso-carga",nombre: "Mochila de Oxígeno (Tubo 0,415 + Regulador + Bolso)",categoria: "Oxígeno",precio: "U$S 270"},
+  {slug: "tubuladura-para-cpap-bipap",nombre: "Tubuladura para CPAP / BiPAP",categoria: "Oxígeno",precio: "$50.000"},
+];
